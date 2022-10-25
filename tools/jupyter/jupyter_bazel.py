@@ -18,7 +18,22 @@ For Drake developers:
 """
 
 
-def _jupyter_bazel_notebook_main(cur_dir, notebook_file, argv):
+class _ExecutePreprocessorNoWidgets(ExecutePreprocessor):
+    """Customizes ExecutePreprocessor so that ipywidgets works on Ubuntu 22.
+    See https://github.com/RobotLocomotion/drake/issues/17433.
+    """
+
+    def preprocess_cell(self, *args, **kwargs):
+        # Turn off some broken ipywidgets hooks.
+        try:
+            self.comm_open_handlers.clear()
+        except AttributeError:
+            pass
+        # Then, continue as usual.
+        return super().preprocess_cell(*args, **kwargs)
+
+
+def _jupyter_bazel_notebook_main(notebook_path, argv):
     # This should *ONLY* be called by targets generated via `jupyter_py_*`
     # rules.
     parser = argparse.ArgumentParser()
@@ -26,22 +41,13 @@ def _jupyter_bazel_notebook_main(cur_dir, notebook_file, argv):
         "--test", action="store_true", help="Run as a test (non-interactive)")
     args = parser.parse_args(argv)
 
-    # Assume that (hopefully) the notebook neighbors this generated file.
-    # Failure mode: If user puts a slash in the `name` which does not match the
-    # notebook's location. This should be infrequent.
-    notebook_path = os.path.join(cur_dir, notebook_file)
-    if not os.path.isfile(notebook_path):
-        # `name` may contain a subdirectory. Just use basename of file.
-        notebook_path = os.path.join(cur_dir, os.path.basename(notebook_file))
-
     if not args.test:
         print("Running notebook interactively")
-        # TODO(eric.cousineau): Possible to spin up notebook server directly?
+        notebook_path = os.path.realpath(notebook_path)
         sys.argv = ["jupyter", "notebook", notebook_path]
         exit(_jupyter_main())
     else:
-        print("Running notebook as a test (non-interactive):")
-        print("  {}".format(notebook_file))
+        print("Running notebook as a test (non-interactive)")
         tmp_dir = os.environ.get("TEST_TMPDIR")
         if tmp_dir is not None:
             # Change IPython directory to use test directory.
@@ -54,7 +60,7 @@ def _jupyter_bazel_notebook_main(cur_dir, notebook_file, argv):
         # Execute using a preprocessor, rather than calling
         # `jupyter nbconvert`, as the latter writes an unused file to
         # `runfiles`.
-        with open(notebook_path) as f:
+        with open(notebook_path, encoding="utf-8") as f:
             nb = nbformat.read(f, as_version=4)
         # Ensure that we use the notebook's directory, since that is used for
         # interactive sessions.
@@ -65,7 +71,7 @@ def _jupyter_bazel_notebook_main(cur_dir, notebook_file, argv):
         os.environ["_DRAKE_DEPRECATION_IS_ERROR"] = "1"
         # TODO(eric.cousineau): See if there is a way to redirect this to
         # stdout, rather than having the notebook capture the output.
-        ep = ExecutePreprocessor(timeout=600, kernel_name='python3')
+        ep = _ExecutePreprocessorNoWidgets(timeout=600, kernel_name='python3')
         try:
             ep.preprocess(nb, resources={'metadata': {'path': notebook_dir}})
         except RuntimeError as e:

@@ -7,16 +7,17 @@
 #include <fmt/format.h>
 
 #include "drake/common/drake_assert.h"
+#include "drake/common/nice_type_name.h"
 #include "drake/geometry/geometry_instance.h"
 #include "drake/geometry/geometry_state.h"
 #include "drake/systems/framework/context.h"
-#include "drake/systems/rendering/pose_bundle.h"
 
 namespace drake {
 namespace geometry {
 
 using render::RenderLabel;
 using std::make_unique;
+using std::unordered_map;
 using std::vector;
 using systems::Context;
 using systems::InputPort;
@@ -24,7 +25,6 @@ using systems::LeafSystem;
 using systems::Parameters;
 using systems::State;
 using systems::SystemTypeTag;
-using systems::rendering::PoseBundle;
 
 namespace {
 
@@ -83,15 +83,12 @@ class GeometryStateValue final : public Value<GeometryState<T>> {
 
 template <typename T>
 SceneGraph<T>::SceneGraph()
-    : LeafSystem<T>(SystemTypeTag<SceneGraph>{}) {
+    : LeafSystem<T>(SystemTypeTag<SceneGraph>{}),
+      owned_model_(std::make_unique<GeometryState<T>>()),
+      model_(*owned_model_) {
   model_inspector_.set(&model_);
   geometry_state_index_ =
       this->DeclareAbstractParameter(GeometryStateValue<T>());
-
-  bundle_port_index_ = this->DeclareAbstractOutputPort(
-                               "lcm_visualization",
-                               &SceneGraph::CalcPoseBundle)
-                           .get_index();
 
   query_port_index_ =
       this->DeclareAbstractOutputPort("query", &SceneGraph::CalcQueryObject)
@@ -101,17 +98,18 @@ SceneGraph<T>::SceneGraph()
       "Cache guard for pose updates", &SceneGraph::CalcPoseUpdate,
       {this->all_input_ports_ticket()});
   pose_update_index_ = pose_update_cache_entry.cache_index();
+
+  auto& configuration_update_cache_entry = this->DeclareCacheEntry(
+      "Cache guard for configuration updates",
+      &SceneGraph::CalcConfigurationUpdate, {this->all_input_ports_ticket()});
+  configuration_update_index_ = configuration_update_cache_entry.cache_index();
 }
 
 template <typename T>
 template <typename U>
 SceneGraph<T>::SceneGraph(const SceneGraph<U>& other)
     : SceneGraph() {
-  // TODO(SeanCurtis-TRI) This is very brittle; we are essentially assuming that
-  //  T = AutoDiffXd. For now, that's true. If we ever support
-  //  symbolic::Expression, this U --> T conversion will have to be more
-  //  generic.
-  model_ = *(other.model_.ToAutoDiffXd());
+  model_ = GeometryState<T>(other.model_);
 
   // We need to guarantee that the same source ids map to the same port indices.
   // We'll do this by processing the source ids in monotonically increasing
@@ -136,8 +134,12 @@ SceneGraph<T>::SceneGraph(const SceneGraph<U>& other)
     const auto& new_ports = input_source_ids_[source_id];
     const auto& ref_ports = other.input_source_ids_.at(source_id);
     DRAKE_DEMAND(new_ports.pose_port == ref_ports.pose_port);
+    DRAKE_DEMAND(new_ports.configuration_port == ref_ports.configuration_port);
   }
 }
+
+template <typename T>
+SceneGraph<T>::~SceneGraph() = default;
 
 template <typename T>
 SourceId SceneGraph<T>::RegisterSource(const std::string& name) {
@@ -156,6 +158,14 @@ const InputPort<T>& SceneGraph<T>::get_source_pose_port(
     SourceId id) const {
   ThrowUnlessRegistered(id, "Can't acquire pose port for unknown source id: ");
   return this->get_input_port(input_source_ids_.at(id).pose_port);
+}
+
+template <typename T>
+const InputPort<T>& SceneGraph<T>::get_source_configuration_port(
+    SourceId id) const {
+  ThrowUnlessRegistered(
+      id, "Can't acquire configuration port for unknown source id: ");
+  return this->get_input_port(input_source_ids_.at(id).configuration_port);
 }
 
 template <typename T>
@@ -209,6 +219,23 @@ GeometryId SceneGraph<T>::RegisterAnchoredGeometry(
 }
 
 template <typename T>
+GeometryId SceneGraph<T>::RegisterDeformableGeometry(
+    SourceId source_id, FrameId frame_id,
+    std::unique_ptr<GeometryInstance> geometry, double resolution_hint) {
+  return model_.RegisterDeformableGeometry(
+      source_id, frame_id, std::move(geometry), resolution_hint);
+}
+
+template <typename T>
+GeometryId SceneGraph<T>::RegisterDeformableGeometry(
+    Context<T>* context, SourceId source_id, FrameId frame_id,
+    std::unique_ptr<GeometryInstance> geometry, double resolution_hint) const {
+  auto& g_state = mutable_geometry_state(context);
+  return g_state.RegisterDeformableGeometry(
+      source_id, frame_id, std::move(geometry), resolution_hint);
+}
+
+template <typename T>
 void SceneGraph<T>::RemoveGeometry(SourceId source_id, GeometryId geometry_id) {
   model_.RemoveGeometry(source_id, geometry_id);
 }
@@ -229,6 +256,16 @@ void SceneGraph<T>::AddRenderer(
 template <typename T>
 bool SceneGraph<T>::HasRenderer(const std::string& name) const {
   return model_.HasRenderer(name);
+}
+
+template <typename T>
+std::string SceneGraph<T>::GetRendererTypeName(const std::string& name) const {
+  const render::RenderEngine* engine = model_.GetRenderEngineByName(name);
+  if (engine == nullptr) {
+    return {};
+  }
+
+  return NiceTypeName::Get(*engine);
 }
 
 template <typename T>
@@ -353,6 +390,11 @@ void SceneGraph<T>::MakeSourcePorts(SourceId source_id) {
       this->DeclareAbstractInputPort(model_.GetName(source_id) + "_pose",
                                      Value<FramePoseVector<T>>())
           .get_index();
+  source_ports.configuration_port =
+      this->DeclareAbstractInputPort(
+              model_.GetName(source_id) + "_configuration",
+              Value<GeometryConfigurationVector<T>>())
+          .get_index();
 }
 
 template <typename T>
@@ -371,43 +413,6 @@ void SceneGraph<T>::CalcQueryObject(const Context<T>& context,
   // See the todo in the header for an alternate formulation.
   output->set(&context, this);
 }
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-template <typename T>
-void SceneGraph<T>::CalcPoseBundle(const Context<T>& context,
-                                   PoseBundle<T>* output) const {
-  static const logging::Warn log_once(
-      "Do not use SceneGraph's PoseBundle-valued output port. It is deprecated "
-      "for removal after 2021-12-01. Instead use the QueryObject-valued port "
-      "and directly query for any information you need.");
-  // Note: This functionality can potentially lead to strange visualization
-  // artifacts. No invariant is maintained on what poses are being reported.
-  // That means, when computing the output, *any* frame with illustration
-  // geometry will have a pose reported, even if those frames had not been
-  // present during the corresponding visualization "initialization" call.
-  FullPoseUpdate(context);
-  const auto& g_state = geometry_state(context);
-
-  vector<FrameId> dynamic_frames =
-      GetDynamicFrames(g_state, Role::kIllustration);
-
-  if (output->get_num_poses() != static_cast<int>(dynamic_frames.size())) {
-    *output = PoseBundle<T>(dynamic_frames.size());
-  }
-
-  for (int i = 0; i < output->get_num_poses(); ++i) {
-    const FrameId f_id = dynamic_frames[i];
-    const SourceId s_id = g_state.get_source_id(f_id);
-    const std::string& source_name = g_state.GetName(s_id);
-    const std::string& frame_name = g_state.GetName(f_id);
-    output->set_name(i, source_name + "::" + frame_name);
-    output->set_model_instance_id(i, g_state.GetFrameGroup(f_id));
-    output->set_transform(i, g_state.get_pose_in_world(f_id));
-    // TODO(SeanCurtis-TRI): Handle velocity.
-  }
-}
-#pragma GCC diagnostic pop
 
 template <typename T>
 std::vector<FrameId> SceneGraph<T>::GetDynamicFrames(
@@ -434,7 +439,10 @@ void SceneGraph<T>::CalcPoseUpdate(const Context<T>& context,
   using std::to_string;
 
   const GeometryState<T>& state = geometry_state(context);
-  GeometryState<T>& mutable_state = const_cast<GeometryState<T>&>(state);
+  // See KinematicsData class documentation for why this caching violation is
+  // needed and is correct.
+  internal::KinematicsData<T>& kinematics_data =
+      state.mutable_kinematics_data();
 
   // Process all sources *except*:
   //   - the internal source and
@@ -455,13 +463,54 @@ void SceneGraph<T>::CalcPoseUpdate(const Context<T>& context,
         }
         const auto& poses =
             pose_port.template Eval<FramePoseVector<T>>(context);
-        mutable_state.SetFramePoses(source_id, poses);
+        state.SetFramePoses(
+            source_id, poses, &kinematics_data);
       }
     }
   }
 
-  mutable_state.FinalizePoseUpdate();
-  // TODO(SeanCurtis-TRI): Add velocity as appropriate.
+  state.FinalizePoseUpdate(kinematics_data,
+                           &state.mutable_proximity_engine(),
+                           state.GetMutableRenderEngines());
+}
+
+template <typename T>
+void SceneGraph<T>::CalcConfigurationUpdate(const Context<T>& context,
+                                            int*) const {
+  const GeometryState<T>& state = geometry_state(context);
+  // See KinematicsData class documentation for why this caching violation is
+  // needed and is correct.
+  internal::KinematicsData<T>& kinematics_data =
+      state.mutable_kinematics_data();
+  // Process all sources *except*:
+  //   - the internal source and
+  //   - sources with no deformable geometries.
+  // The internal source will be included in source_deformable_geometry_id_map_
+  // but *not* in input_source_ids_.
+  for (const auto& [source_id, geometry_id_set] :
+       state.source_deformable_geometry_id_map_) {
+    if (geometry_id_set.size() > 0) {
+      const auto itr = input_source_ids_.find(source_id);
+      if (itr != input_source_ids_.end()) {
+        const auto& configuration_port =
+            this->get_input_port(itr->second.configuration_port);
+        if (!configuration_port.HasValue(context)) {
+          throw std::logic_error(fmt::format(
+              "Source '{}' (id: {}) has registered deformable geometry "
+              "but is not connected to the appropriate input port.",
+              state.GetName(source_id), source_id));
+        }
+        const auto& configs =
+            configuration_port
+                .template Eval<GeometryConfigurationVector<T>>(context);
+        state.SetGeometryConfiguration(source_id, configs, &kinematics_data);
+      }
+    }
+  }
+
+  state.FinalizeConfigurationUpdate(kinematics_data,
+                                    &state.mutable_proximity_engine(),
+                                    state.GetMutableRenderEngines());
 }
 
 template <typename T>
@@ -488,9 +537,15 @@ const GeometryState<T>& SceneGraph<T>::geometry_state(
       .template get_abstract_parameter<GeometryState<T>>(geometry_state_index_);
 }
 
-// Explicitly instantiates on the most common scalar types.
-template class SceneGraph<double>;
-template class SceneGraph<AutoDiffXd>;
-
 }  // namespace geometry
+
+namespace systems {
+namespace scalar_conversion {
+template <> struct Traits<geometry::SceneGraph> : public FromDoubleTraits {};
+}  // namespace scalar_conversion
+}  // namespace systems
+
 }  // namespace drake
+
+DRAKE_DEFINE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(
+    class ::drake::geometry::SceneGraph)

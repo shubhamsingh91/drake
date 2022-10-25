@@ -62,8 +62,7 @@ drake_cc_googletest(
     name = "sample_test",
     deps = [
         ":sample",
-        "//common:autodiff",
-        "//common:symbolic",
+        "//common:default_scalars",
         "//common/test_utilities",
         "//common/yaml",
     ],
@@ -81,6 +80,8 @@ sh_test(
         "test/goal/sample.h",
         "test/lcmt_sample_t.lcm",
     ],
+    # Valgrind Memcheck reports several leaks in the sed executable.
+    tags = ["no_memcheck"],
 )
 
 add_lint_tests()

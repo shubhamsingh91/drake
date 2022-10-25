@@ -71,9 +71,6 @@ Some (but not all) exceptions to the above rules:
 - `drake/common/autodiff.h` symbols live in `pydrake.autodiffutils`.
 - `drake/common/symbolic.h` symbols live in `pydrake.symbolic`.
 - `drake/common/value.h` symbols live in `pydrake.common.value`.
-- `drake/solvers/mathematical_program.h` symbols live in
-`pydrake.solvers.mathematicalprogram` (notice the Python name has no
-underscore).
 - `drake/systems/framework/*.h` symbols live in `pydrake.systems.framework`
 (per the rule) and the bindings are ultimately linked via
 `pydrake/systems/framework_py.cc`, but for compilation speed the binding
@@ -304,7 +301,7 @@ To view the documentation rendered in Sphinx:
 
     bazel run //doc/pydrake:serve_sphinx [-- --browser=false]
 
-@note Drake's online Python documentation is generated on Ubuntu Bionic, and it
+@note Drake's online Python documentation is generated on Ubuntu Focal, and it
 is suggested to preview documentation using this platform. Other platforms may
 have slightly different generated documentation.
 

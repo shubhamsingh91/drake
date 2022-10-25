@@ -130,7 +130,7 @@ std::ostream& operator<<(std::ostream& out, const FullBodyName& name) {
 
 namespace {
 
-/* The fixed number of faces in the test mesh for hydroleastic contact. */
+/* The fixed number of faces in the test mesh for hydroelastic contact. */
 constexpr int kNumFaces = 2;
 constexpr int kNumPointPerTri = 3;
 
@@ -277,8 +277,9 @@ class ContactResultsToLcmTest : public ::testing::Test {
                      MultibodyPlant<T>* plant, vector<string>* body_names,
                      unordered_map<GeometryId, FullBodyName>* id_to_body,
                      FullBodyName ref_name) {
-    const auto& body =
-        plant->AddRigidBody(body_name, model_index, SpatialInertia<double>());
+    // To avoid unnecessary warnings/errors, use a non-zero spatial inertia.
+    const auto& body = plant->AddRigidBody(body_name, model_index,
+        SpatialInertia<double>::MakeUnitary());
     /* The expected format based on knowledge of the ContactResultToLcmSystem's
      implementation. */
     body_names->push_back(fmt::format("{}({})", body_name, model_index));
@@ -406,7 +407,7 @@ TYPED_TEST(ContactResultsToLcmTest, Constructor) {
      match the tables we build by hand. */
     unordered_map<GeometryId, FullBodyName> expected_geo_body_map;
     /* The world body will always be the first listed. */
-    vector<string> expected_body_names{{"WorldBody(0)"}};
+    vector<string> expected_body_names{{"world(0)"}};
 
     auto namer = [use_custom_names](GeometryId id) {
       if (use_custom_names) {
@@ -598,11 +599,11 @@ TYPED_TEST(ContactResultsToLcmTest, PointPairContactOnly) {
   }
 }
 
-/* Tests the case where ContactResults contains *only* hydroleastic data. This
- test bears primary responsibility to make sure that hydroleastic data is
+/* Tests the case where ContactResults contains *only* hydroelastic data. This
+ test bears primary responsibility to make sure that hydroelastic data is
  serialized correctly.
 
- Translation of hydroleastic contact results to lcm message is straightforward.
+ Translation of hydroelastic contact results to lcm message is straightforward.
  There are *three* things that this system does in the process:
 
    - Extracts double values from T-Valued quantities.
@@ -647,8 +648,8 @@ TYPED_TEST(ContactResultsToLcmTest, HydroContactOnly) {
     const auto& pair_message = message_in.hydroelastic_contacts[i];
     const auto& pair_data = contacts_in.hydroelastic_contact_info(i);
     const auto& surface = pair_data.contact_surface();
-    const auto& mesh = surface.mesh_W();
-    const auto& field = surface.e_MN();
+    const auto& mesh = surface.tri_mesh_W();
+    const auto& field = surface.tri_e_MN();
 
     const auto& name1 = geo_to_body_map.at(surface.id_M());
     EXPECT_EQ(pair_message.body1_name, name1.body);
@@ -849,7 +850,9 @@ class ConnectVisualizerTest : public ::testing::Test {
     plant_ = &system_pair.plant;
     scene_graph_ = &system_pair.scene_graph;
 
-    const auto& body = plant_->AddRigidBody("link", SpatialInertia<double>());
+    // To avoid unnecessary warnings/errors, use a non-zero spatial inertia.
+    const auto& body = plant_->AddRigidBody("link",
+        SpatialInertia<double>::MakeUnitary());
     plant_->RegisterCollisionGeometry(body, {}, Sphere(1.0), kGeoName,
                                       CoulombFriction<double>{});
     plant_->Finalize();
@@ -921,16 +924,6 @@ class ConnectVisualizerTest : public ::testing::Test {
   static constexpr char kGeoName[] = "test_sphere";
 };
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-TEST_F(ConnectVisualizerTest, DeprecatedConnectToPlantDefaultNames) {
-  ConfigureDiagram(false /* is_nested */);
-  auto* publisher = ConnectContactResultsToDrakeVisualizer(&builder_, *plant_);
-  ExpectValidPublisher(publisher);
-  ExpectGeometryNameSemantics(true /* expect_default_names */);
-}
-#pragma GCC diagnostic push
-
 TEST_F(ConnectVisualizerTest, ConnectToPlantSceneGraphNames) {
   ConfigureDiagram(false /* is_nested */);
   auto* publisher =
@@ -938,17 +931,6 @@ TEST_F(ConnectVisualizerTest, ConnectToPlantSceneGraphNames) {
   ExpectValidPublisher(publisher);
   ExpectGeometryNameSemantics(false /* expect_default_names */);
 }
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-TEST_F(ConnectVisualizerTest, DeprecatedConnectToPortDefaultNames) {
-  ConfigureDiagram(true /* is_nested */);
-  auto* publisher = ConnectContactResultsToDrakeVisualizer(
-      &builder_, *plant_, *contact_results_port_);
-  ExpectValidPublisher(publisher);
-  ExpectGeometryNameSemantics(true /* expect_default_names */);
-}
-#pragma GCC diagnostic pop
 
 TEST_F(ConnectVisualizerTest, ConnectToPortSceneGraphNames) {
   ConfigureDiagram(true /* is_nested */);
@@ -958,17 +940,6 @@ TEST_F(ConnectVisualizerTest, ConnectToPortSceneGraphNames) {
   ExpectGeometryNameSemantics(false /* expect_default_names */);
 }
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-TEST_F(ConnectVisualizerTest, DeprecatedConnectToPlantDefaultNamesWithPeriod) {
-  ConfigureDiagram(false /* is_nested */);
-  auto* publisher = ConnectContactResultsToDrakeVisualizer(
-      &builder_, *plant_, nullptr, 0.5);
-  ExpectValidPublisher(publisher, 0.5);
-  ExpectGeometryNameSemantics(true /* expect_default_names */);
-}
-#pragma GCC diagnostic pop
-
 TEST_F(ConnectVisualizerTest, ConnectToPlantSceneGraphNamesWithPeriod) {
   ConfigureDiagram(false /* is_nested */);
   auto* publisher = ConnectContactResultsToDrakeVisualizer(
@@ -976,17 +947,6 @@ TEST_F(ConnectVisualizerTest, ConnectToPlantSceneGraphNamesWithPeriod) {
   ExpectValidPublisher(publisher, 0.5);
   ExpectGeometryNameSemantics(false /* expect_default_names */);
 }
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-TEST_F(ConnectVisualizerTest, DeprecatedConnectToPortDefaultNamesWithPeriod) {
-  ConfigureDiagram(true /* is_nested */);
-  auto* publisher = ConnectContactResultsToDrakeVisualizer(
-      &builder_, *plant_, *contact_results_port_, nullptr, 0.5);
-  ExpectValidPublisher(publisher, 0.5);
-  ExpectGeometryNameSemantics(true /* expect_default_names */);
-}
-#pragma GCC diagnostic pop
 
 TEST_F(ConnectVisualizerTest, ConnectToPortSceneGraphNamesWithPeriod) {
   ConfigureDiagram(true /* is_nested */);

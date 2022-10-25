@@ -11,7 +11,7 @@ enum SolutionResult {
   kInfeasibleConstraints = -2,  ///< The primal is infeasible.
   kUnbounded = -3,              ///< The primal is unbounded.
   kUnknownError = -4,           ///< Unknown error.
-  kInfeasible_Or_Unbounded =
+  kInfeasibleOrUnbounded =
       -5,                ///< The primal is either infeasible or unbounded.
   kIterationLimit = -6,  ///< Reaches the iteration limits.
   kDualInfeasible = -7,  ///< Dual problem is infeasible. In this case we cannot

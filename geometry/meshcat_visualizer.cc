@@ -1,11 +1,13 @@
 #include "drake/geometry/meshcat_visualizer.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include <fmt/format.h>
 
+#include "drake/common/extract_double.h"
 #include "drake/geometry/utilities.h"
 
 namespace drake {
@@ -95,6 +97,11 @@ systems::EventStatus MeshcatVisualizer<T>::UpdateMeshcat(
     version_ = current_version;
   }
   SetTransforms(context, query_object);
+  std::optional<double> rate = realtime_rate_calculator_.UpdateAndRecalculate(
+      ExtractDoubleOrThrow(context.get_time()));
+  if (rate) {
+    meshcat_->SetRealtimeRate(rate.value());
+  }
 
   return systems::EventStatus::Succeeded();
 }
@@ -166,7 +173,9 @@ void MeshcatVisualizer<T>::SetTransforms(
   for (const auto& [frame_id, path] : dynamic_frames_) {
     const math::RigidTransformd X_WF =
         internal::convert_to_double(query_object.GetPoseInWorld(frame_id));
-    meshcat_->SetTransform(path, X_WF);
+    if (!recording_ || set_transforms_while_recording_) {
+      meshcat_->SetTransform(path, X_WF);
+    }
     if (recording_) {
       animation_->SetTransform(
           animation_->frame(ExtractDoubleOrThrow(context.get_time())), path,

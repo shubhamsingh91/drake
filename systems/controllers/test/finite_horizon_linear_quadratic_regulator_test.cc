@@ -85,6 +85,17 @@ GTEST_TEST(FiniteHorizonLQRTest, InfiniteHorizonTest) {
   EXPECT_TRUE(CompareMatrices(result.S->value(t0), lqr_result.S, 1e-12));
   EXPECT_TRUE(CompareMatrices(result.K->value(t0), lqr_result.K, 1e-12));
   // Already confirmed above that sx, s0, and k0 stay zero.
+
+  // Test that the Square Root Method also maintains the fixed point.
+  options.use_square_root_method = true;
+  result = FiniteHorizonLinearQuadraticRegulator(sys, *context, t0, t0 + 2.0, Q,
+                                                 R, options);
+  EXPECT_TRUE(CompareMatrices(result.S->value(t0), lqr_result.S, 1e-4));
+  EXPECT_TRUE(CompareMatrices(result.K->value(t0), lqr_result.K, 1e-4));
+  EXPECT_TRUE(CompareMatrices(result.x0->value(t0), Eigen::Vector2d::Zero()));
+  EXPECT_TRUE(CompareMatrices(result.x0->value(tf), Eigen::Vector2d::Zero()));
+  EXPECT_TRUE(CompareMatrices(result.u0->value(t0), Vector1d::Zero()));
+  EXPECT_TRUE(CompareMatrices(result.u0->value(tf), Vector1d::Zero()));
 }
 
 // Verify that we can stabilize a non-zero fixed-point specified via the
@@ -210,8 +221,8 @@ GTEST_TEST(FiniteHorizonLQRTest, DoubleIntegratorWithNonZeroGoal) {
 // fixed point at x0=0, B*u0 = -c.  Normally, we would stabilize as a linear
 // system in relative to x0, u0 using LQR.  Here we will leave the coordinate
 // system alone (x0=0, u0=0), but set B*ud = -c.  The steady-state solution to
-// the finite-horizon LQR problem should lots of the affine terms in order to
-// get back to the offset form of this LQR controller.
+// the finite-horizon LQR problem will contain non-zero affine terms in order
+// to get back to the offset form of this LQR controller.
 GTEST_TEST(FiniteHorizonLQRTest, AffineSystemTest) {
   Eigen::Matrix2d A;
   Eigen::Matrix2d B;
@@ -253,11 +264,11 @@ GTEST_TEST(FiniteHorizonLQRTest, AffineSystemTest) {
   // the in linear system in xbar=(x-x0), ubar=(u-0); and the LQR solution is
   // xbar'Sxbar, with x0=0.  However, in the finite-horizon version, all of the
   // affine terms must be correct to cancel each other out.
-  EXPECT_TRUE(CompareMatrices(result.S->value(t0), lqr_result.S, 1e-5));
+  EXPECT_TRUE(CompareMatrices(result.S->value(t0), lqr_result.S, 2e-5));
   EXPECT_TRUE(result.sx->value(t0).isZero(1e-5));
   EXPECT_TRUE(result.s0->value(t0).isZero(1e-5));
   // The LQR controller would be u0 - Kx, so Kx = lqr.K, k0 = -u0.
-  EXPECT_TRUE(CompareMatrices(result.K->value(t0), lqr_result.K, 1e-5));
+  EXPECT_TRUE(CompareMatrices(result.K->value(t0), lqr_result.K, 2e-4));
   EXPECT_TRUE(CompareMatrices(result.k0->value(t0), -udv, 1e-5));
 
   // Test that the System version also works.
@@ -269,7 +280,17 @@ GTEST_TEST(FiniteHorizonLQRTest, AffineSystemTest) {
   regulator->get_input_port(0).FixValue(regulator_context.get(), x);
   EXPECT_TRUE(
       CompareMatrices(regulator->get_output_port(0).Eval(*regulator_context),
-                      udv - lqr_result.K * x, 1e-5));
+                      udv - lqr_result.K * x, 4e-5));
+
+  // Test that the square root method also works.
+  options.use_square_root_method = true;
+  result = FiniteHorizonLinearQuadraticRegulator(sys, *context, t0, tf, Q, R,
+                                                 options);
+  EXPECT_TRUE(CompareMatrices(result.S->value(t0), lqr_result.S, 1e-4));
+  EXPECT_TRUE(result.sx->value(t0).isZero(1e-5));
+  EXPECT_TRUE(result.s0->value(t0).isZero(1e-5));
+  EXPECT_TRUE(CompareMatrices(result.K->value(t0), lqr_result.K, 1e-4));
+  EXPECT_TRUE(CompareMatrices(result.k0->value(t0), -udv, 1e-4));
 }
 
 // Ensures that we can scalar convert the System version of the regulator.

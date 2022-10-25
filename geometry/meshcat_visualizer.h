@@ -10,6 +10,7 @@
 #include "drake/geometry/meshcat_visualizer_params.h"
 #include "drake/geometry/rgba.h"
 #include "drake/geometry/scene_graph.h"
+#include "drake/systems/analysis/instantaneous_realtime_rate_calculator.h"
 #include "drake/systems/framework/diagram_builder.h"
 #include "drake/systems/framework/leaf_system.h"
 
@@ -78,11 +79,18 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   existing frame in the animation.  Frames are added at the index
   MeshcatAnimation::frame(context.get_time()).
 
+  @param set_transforms_while_recording if true, then each Publish will set the
+  transform in Meshcat *and* record the transform in the animation.  Set to
+  false to avoid updating the visualization during recording.  Note that
+  animations do not support SetObject, so the objects must still be sent to the
+  visualizer during the recording.
+
   @returns a mutable pointer to the current recording.  See
   get_mutable_recording().
   */
-  MeshcatAnimation* StartRecording() {
+  MeshcatAnimation* StartRecording(bool set_transforms_while_recording = true) {
     recording_ = true;
+    set_transforms_while_recording_ = set_transforms_while_recording;
     return get_mutable_recording();
   }
 
@@ -133,8 +141,7 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   static MeshcatVisualizer<T>& AddToBuilder(
       systems::DiagramBuilder<T>* builder,
       const systems::OutputPort<T>& query_object_port,
-      std::shared_ptr<Meshcat> meshcat,
-      MeshcatVisualizerParams params = {});
+      std::shared_ptr<Meshcat> meshcat, MeshcatVisualizerParams params = {});
 
  private:
   /* MeshcatVisualizer of different scalar types can all access each other's
@@ -205,6 +212,12 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   /* Recording status.  True means that each new Publish event will record a
   frame in the animation. */
   bool recording_{false};
+  bool set_transforms_while_recording_{true};
+
+  /* TODO(#16486): ideally this mutable state will go away once it is safe to
+  run Meshcat multithreaded */
+  mutable systems::internal::InstantaneousRealtimeRateCalculator
+      realtime_rate_calculator_{};
 };
 
 /** A convenient alias for the MeshcatVisualizer class when using the `double`

@@ -157,6 +157,10 @@ def replace_html_tags(s):
     s = re.sub(r'</?ul>', r'', s, flags=re.IGNORECASE)
     s = re.sub(r'</li>', r'\n\n', s, flags=re.IGNORECASE)
 
+    s = re.sub(r'</?dl>', r'', s, flags=re.IGNORECASE)
+    s = re.sub(r'<dt>(.*?)</dt>', r'\n**\1**\n', s, flags=re.IGNORECASE)
+    s = re.sub(r'</?dd>', r'', s, flags=re.IGNORECASE)
+
     s = re.sub(r'<a href="([\w:.?/#]+)">(.*?)</a>', r'`\2 <\1>`_', s,
                flags=re.DOTALL | re.IGNORECASE)
 
@@ -285,6 +289,7 @@ def process_doxygen_commands(s):
     # Drake-specific Doxygen aliases.
     # TODO (betsymcphail): Not tested
     s = re.sub(r'[@\\]default\s+', r'\n$*Default:* ', s)
+    s = re.sub(r'[@\\]experimental\s+', '\n\n$Warning:\n\nThis feature is considered to be **experimental** and may change or be removed at any time, without any deprecation notice ahead of time.\n\n', s)  # noqa
 
     # Omit tparam scalar type boilerplate; the python documentation already
     # presents this information in a more useful manner.

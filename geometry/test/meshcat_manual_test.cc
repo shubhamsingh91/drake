@@ -1,4 +1,9 @@
+#include <cstdio>
+#include <fstream>
+#include <iostream>
+
 #include "drake/common/find_resource.h"
+#include "drake/common/temp_directory.h"
 #include "drake/geometry/meshcat.h"
 #include "drake/geometry/meshcat_animation.h"
 #include "drake/geometry/meshcat_visualizer.h"
@@ -6,9 +11,10 @@
 #include "drake/geometry/shape_specification.h"
 #include "drake/math/rigid_transform.h"
 #include "drake/math/rotation_matrix.h"
+#include "drake/multibody/meshcat/contact_visualizer.h"
 #include "drake/multibody/parsing/parser.h"
-#include "drake/multibody/plant/contact_results_to_meshcat.h"
 #include "drake/multibody/plant/multibody_plant.h"
+#include "drake/multibody/tree/prismatic_joint.h"
 #include "drake/systems/analysis/simulator.h"
 
 /* To test, you must manually run `bazel run //geometry:meshcat_manual_test`,
@@ -109,6 +115,31 @@ int do_main() {
                           RigidTransformd(Vector3d{7.75, -.25, 0}));
   }
 
+  // SetTriangleColorMesh.
+  {
+    // clang-format off
+    Eigen::Matrix3Xd vertices(3, 4);
+    vertices <<
+      0, 0.5, 0.5, 0,
+      0, 0,   0.5, 0.5,
+      0, 0,   0,   0.5;
+    Eigen::Matrix3Xi faces(3, 2);
+    faces <<
+      0, 2,
+      1, 3,
+      2, 0;
+    Eigen::Matrix3Xd colors(3, 4);
+    colors <<
+      1, 0, 0, 1,
+      0, 1, 0, 1,
+      0, 0, 1, 0;
+    // clang-format on
+    meshcat->SetTriangleColorMesh("triangle_color_mesh", vertices, faces,
+                                  colors);
+    meshcat->SetTransform("triangle_color_mesh",
+                          RigidTransformd(Vector3d{8.75, -.25, 0}));
+  }
+
   std::cout << R"""(
 Open up your browser to the URL above.
 
@@ -126,9 +157,15 @@ Open up your browser to the URL above.
   - 4 green vertical line segments (in z).
   - a purple triangle mesh with 2 faces.
   - the same purple triangle mesh drawn as a wireframe.
+  - the same triangle mesh drawn in multicolor.
 )""";
   std::cout << "[Press RETURN to continue]." << std::endl;
   std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+  std::cout << "Calling meshcat.Flush(), which will block until all clients "
+               "have received all the data)...";
+  meshcat->Flush();
+  std::cout << "Done." << std::endl;
 
   std::cout << "Animations:\n";
   MeshcatAnimation animation;
@@ -209,74 +246,149 @@ Open up your browser to the URL above.
 
   meshcat->SetProperty("/Lights/AmbientLight/<object>", "intensity", 0.6);
 
-  systems::DiagramBuilder<double> builder;
-  auto [plant, scene_graph] =
-      multibody::AddMultibodyPlantSceneGraph(&builder, 0.001);
-  multibody::Parser parser(&plant);
-  parser.AddModelFromFile(
-      FindResourceOrThrow("drake/manipulation/models/iiwa_description/urdf/"
-                          "iiwa14_spheres_collision.urdf"));
-  plant.WeldFrames(plant.world_frame(),
-                   plant.GetFrameByName("base"));
-  parser.AddModelFromFile(
-      FindResourceOrThrow("drake/examples/kuka_iiwa_arm/models/table/"
-                          "extra_heavy_duty_table_surface_only_collision.sdf"));
-  const double table_height = 0.7645;
-  plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("link"),
-                   RigidTransformd(Vector3d{0, 0, -table_height-.01}));
-  plant.Finalize();
+  {
+    systems::DiagramBuilder<double> builder;
+    auto [plant, scene_graph] =
+        multibody::AddMultibodyPlantSceneGraph(&builder, 0.0);
 
-  builder.ExportInput(plant.get_actuation_input_port(), "actuation_input");
-  MeshcatVisualizerParams params;
-  params.delete_on_initialization_event = false;
-  auto& visualizer = MeshcatVisualizerd::AddToBuilder(
-      &builder, scene_graph, meshcat, std::move(params));
+    multibody::Parser parser(&plant);
 
-  multibody::ContactResultsToMeshcatParams cparams;
-  cparams.newtons_per_meter = 60.0;
-  auto& contact = multibody::ContactResultsToMeshcatd::AddToBuilder(
-      &builder, plant, meshcat, std::move(cparams));
+    // Add the hydroelastic spheres and joints between them.
+    const std::string hydro_sdf =
+        FindResourceOrThrow("drake/multibody/meshcat/test/hydroelastic.sdf");
+    parser.AddModelFromFile(hydro_sdf);
+    const auto& body1 = plant.GetBodyByName("body1");
+    plant.AddJoint<multibody::PrismaticJoint>("body1", plant.world_body(),
+                                              std::nullopt, body1, std::nullopt,
+                                              Eigen::Vector3d::UnitZ());
+    const auto& body2 = plant.GetBodyByName("body2");
+    plant.AddJoint<multibody::PrismaticJoint>("body2", plant.world_body(),
+                                              std::nullopt, body2, std::nullopt,
+                                              Eigen::Vector3d::UnitX());
+    plant.Finalize();
 
-  auto diagram = builder.Build();
-  auto context = diagram->CreateDefaultContext();
-  diagram->get_input_port().FixValue(context.get(), Eigen::VectorXd::Zero(7));
+    MeshcatVisualizerParams params;
+    params.delete_on_initialization_event = false;
+    auto& visualizer = MeshcatVisualizerd::AddToBuilder(
+        &builder, scene_graph, meshcat, std::move(params));
 
-  diagram->Publish(*context);
+    multibody::meshcat::ContactVisualizerParams cparams;
+    cparams.newtons_per_meter = 60.0;
+    auto& contact = multibody::meshcat::ContactVisualizerd::AddToBuilder(
+        &builder, plant, meshcat, std::move(cparams));
+
+    auto diagram = builder.Build();
+    auto context = diagram->CreateDefaultContext();
+
+    plant.SetPositions(&plant.GetMyMutableContextFromRoot(context.get()),
+                       Eigen::Vector2d{0.1, 0.3});
+    diagram->Publish(*context);
+    std::cout << "- Now you should see three colliding hydroelastic spheres."
+              << std::endl;
+    std::cout << "[Press RETURN to continue]." << std::endl;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    contact.Delete();
+    visualizer.Delete();
+  }
+
+  {
+    systems::DiagramBuilder<double> builder;
+    auto [plant, scene_graph] =
+        multibody::AddMultibodyPlantSceneGraph(&builder, 0.001);
+    multibody::Parser parser(&plant);
+    parser.AddModelFromFile(
+        FindResourceOrThrow("drake/manipulation/models/iiwa_description/urdf/"
+                            "iiwa14_spheres_collision.urdf"));
+    plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base"));
+    parser.AddModelFromFile(FindResourceOrThrow(
+        "drake/examples/kuka_iiwa_arm/models/table/"
+        "extra_heavy_duty_table_surface_only_collision.sdf"));
+    const double table_height = 0.7645;
+    plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("link"),
+                     RigidTransformd(Vector3d{0, 0, -table_height - .01}));
+    plant.Finalize();
+
+    builder.ExportInput(plant.get_actuation_input_port(), "actuation_input");
+    MeshcatVisualizerParams params;
+    params.delete_on_initialization_event = false;
+    auto& visualizer = MeshcatVisualizerd::AddToBuilder(
+        &builder, scene_graph, meshcat, std::move(params));
+
+    multibody::meshcat::ContactVisualizerParams cparams;
+    cparams.newtons_per_meter = 60.0;
+    auto& contact = multibody::meshcat::ContactVisualizerd::AddToBuilder(
+        &builder, plant, meshcat, std::move(cparams));
+
+    auto diagram = builder.Build();
+    auto context = diagram->CreateDefaultContext();
+    diagram->get_input_port().FixValue(context.get(), Eigen::VectorXd::Zero(7));
+
+    diagram->Publish(*context);
+    std::cout
+        << "- Now you should see a kuka model (from MultibodyPlant/SceneGraph)"
+        << std::endl;
+
+    std::cout << "[Press RETURN to continue]." << std::endl;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    std::cout << "Now we'll run the simulation...\n"
+              << "- You should see the robot fall down and hit the table\n"
+              << "- You should see the contact force vectors (when it hits)\n"
+              << "- You will also see large forces near the wrist until we "
+                 "resolve #15965\n"
+              << std::endl;
+
+    systems::Simulator<double> simulator(*diagram, std::move(context));
+    simulator.set_target_realtime_rate(1.0);
+    visualizer.StartRecording();
+    simulator.AdvanceTo(4.0);
+    visualizer.PublishRecording();
+    contact.Delete();
+
+    std::cout
+        << "The recorded simulation results should now be available as an "
+           "animation.  Use the animation GUI to confirm.  The contact "
+           "forces are not recorded (yet)."
+        << std::endl;
+
+    std::cout << "[Press RETURN to continue]." << std::endl;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+  }
+
+  const std::string html_filename(temp_directory() + "/meshcat_static.html");
+  std::ofstream html_file(html_filename);
+  html_file << meshcat->StaticHtml();
+  html_file.close();
+
+  std::cout << "A standalone HTML file capturing this scene (including the "
+               "animation) has been written to file://"
+            << html_filename
+            << "\nOpen that location in your browser now and confirm that "
+               "the iiwa is visible and the animation plays."
+            << std::endl;
+
+  std::cout << "[Press RETURN to continue]." << std::endl;
+  std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+  std::remove(html_filename.c_str());
   std::cout
-      << "- Now you should see a kuka model (from MultibodyPlant/SceneGraph)"
-      << std::endl;
-
-  std::cout << "[Press RETURN to continue]." << std::endl;
-  std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
-  std::cout << "Now we'll run the simulation...\n"
-            << "- You should see the robot fall down and hit the table\n"
-            << "- You should see the contact force vectors (when it hits)\n"
-            << "- You will also see large forces near the wrist until we "
-               "resolve #15965\n"
-            << std::endl;
-
-  systems::Simulator<double> simulator(*diagram, std::move(context));
-  simulator.set_target_realtime_rate(1.0);
-  visualizer.StartRecording();
-  simulator.AdvanceTo(4.0);
-  visualizer.PublishRecording();
-  contact.Delete();
-
-  std::cout << "The recorded simulation results should now be available as an "
-               "animation.  Use the animation GUI to confirm.  The contact "
-               "forces are not recorded (yet)."
-            << std::endl;
-
-  std::cout << "[Press RETURN to continue]." << std::endl;
-  std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+      << "Note: I've deleted the temporary HTML file (it's several Mb).\n\n";
 
   meshcat->AddButton("ButtonTest");
-  meshcat->AddSlider("SliderTest", 0, 1, 0.01, 0.5);
+  meshcat->AddButton("Press t Key");
+  meshcat->AddButton("Press t Key", "KeyT");  // Now the keycode is assigned.
+  meshcat->AddSlider("SliderTest", 0, 1, 0.01, 0.5, "ArrowLeft", "ArrowRight");
 
-  std::cout << "I've added a button and a slider to the controls menu.\n";
+  std::cout << "I've added two buttons and a slider to the controls menu.\n";
   std::cout << "- Click the ButtonTest button a few times.\n";
+  std::cout << "- Press the 't' key in the meshcat window, which "
+               "should be equivalent to pressing the second button.\n";
+  std::cout << "The buttons do nothing, but the total number of clicks for "
+               "each button will be reported after you press RETURN.\n";
   std::cout << "- Move SliderTest slider.\n";
+  std::cout << "- Confirm that the ArrowLeft and ArrowRight keys also move the "
+               "slider.\n";
   std::cout << "- Open a second browser (" << meshcat->web_url()
             << ") and confirm that moving the slider in one updates the slider "
                "in the other.\n";
@@ -286,6 +398,8 @@ Open up your browser to the URL above.
 
   std::cout << "Got " << meshcat->GetButtonClicks("ButtonTest")
             << " clicks on ButtonTest.\n"
+            << "Got " << meshcat->GetButtonClicks("Press t Key")
+            << " clicks on \"Press t Key\".\n"
             << "Got " << meshcat->GetSliderValue("SliderTest")
             << " value for SliderTest." << std::endl;
 

@@ -13,6 +13,8 @@
 #include "drake/common/drake_deprecated.h"
 #include "drake/common/eigen_types.h"
 #include "drake/geometry/proximity/mesh_traits.h"
+#include "drake/math/linear_solve.h"
+#include "drake/math/rigid_transform.h"
 
 namespace drake {
 namespace geometry {
@@ -80,12 +82,14 @@ inline bool operator!=(const VolumeElement& e1, const VolumeElement& e2) {
 
 namespace internal {
 // Forward declaration for friend declaration.
-template <typename> class MeshDeformer;
+template <typename>
+class MeshDeformer;
 }  // namespace internal
 
 // Forward declaration of VolumeMeshTester<T>. VolumeMesh<T> will grant
 // friend access to VolumeMeshTester<T>.
-template <typename T> class VolumeMeshTester;
+template <typename T>
+class VolumeMeshTester;
 
 /** %VolumeMesh represents a tetrahedral volume mesh.
  @tparam T  The underlying scalar type for coordinates, e.g., double or
@@ -173,7 +177,9 @@ class VolumeMesh {
    */
   int num_vertices() const { return vertices_.size(); }
 
-  /** Calculates volume of a tetrahedral element.
+  /** Calculates volume of a tetrahedral element. It is a signed volume, i.e.,
+   it can be negative depending on the order of the four vertices of the
+   tetrahedron.
    @pre `f ∈ [0, num_elements())`.
    */
   T CalcTetrahedronVolume(int e) const {
@@ -190,7 +196,6 @@ class VolumeMesh {
     // b, c. With this convention, the computed volume will be positive,
     // otherwise negative.
     const T volume = (d - a).dot((b - a).cross(c - a)) / T(6.0);
-    DRAKE_ASSERT(volume > T(0));
     return volume;
   }
 
@@ -241,7 +246,8 @@ class VolumeMesh {
     }
     Vector4<ReturnType> b;
     b << ReturnType(1.0), p_MQ;
-    const Vector4<ReturnType> b_Q = A.partialPivLu().solve(b);
+    const math::LinearSolver<Eigen::PartialPivLU, Matrix4<ReturnType>> A_lu(A);
+    const Vector4<ReturnType> b_Q = A_lu.Solve(b);
     // TODO(DamrongGuoy): Save the inverse of the matrix instead of
     //  calculating it on the fly. We can reduce to 3x3 system too.  See
     //  issue #11653.
@@ -297,6 +303,12 @@ class VolumeMesh {
     }
     return gradu_M;
   }
+
+  /** Transforms the vertices of this mesh from its initial frame M to the new
+   frame N.
+   @param[in] transform  The transform X_NM relating the mesh in frame M to the
+   new frame N. */
+  void TransformVertices(const math::RigidTransform<T>& transform);
 
  private:
   // Client attorney class that provides a means to modify vertex positions.

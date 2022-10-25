@@ -28,13 +28,13 @@ drake_cc_package_library(
         ":linear_system",
         ":linear_transform_density",
         ":matrix_gain",
+        ":multilayer_perceptron",
         ":multiplexer",
         ":pass_through",
         ":port_switch",
         ":random_source",
         ":saturation",
-        ":signal_log",
-        ":signal_logger",
+        ":shared_pointer_system",
         ":sine",
         ":symbolic_vector_system",
         ":trajectory_affine_system",
@@ -60,10 +60,12 @@ drake_cc_library(
     name = "affine_system",
     srcs = ["affine_system.cc"],
     hdrs = ["affine_system.h"],
-    deps = [
-        "//common:symbolic",
-        "//common:symbolic_decompose",
+    interface_deps = [
+        "//common/symbolic:expression",
         "//systems/framework",
+    ],
+    deps = [
+        "//common/symbolic:polynomial",
     ],
 )
 
@@ -165,11 +167,13 @@ drake_cc_library(
     name = "linear_system",
     srcs = ["linear_system.cc"],
     hdrs = ["linear_system.h"],
-    deps = [
+    interface_deps = [
         ":affine_system",
         "//common:essential",
-        "//common:symbolic",
-        "//common:symbolic_decompose",
+        "//common/symbolic:expression",
+    ],
+    deps = [
+        "//common/symbolic:polynomial",
         "//math:autodiff",
         "//math:gradient",
         "//systems/framework",
@@ -191,6 +195,15 @@ drake_cc_library(
     hdrs = ["matrix_gain.h"],
     deps = [
         ":linear_system",
+        "//systems/framework",
+    ],
+)
+
+drake_cc_library(
+    name = "multilayer_perceptron",
+    srcs = ["multilayer_perceptron.cc"],
+    hdrs = ["multilayer_perceptron.h"],
+    deps = [
         "//systems/framework",
     ],
 )
@@ -240,28 +253,17 @@ drake_cc_library(
     srcs = ["saturation.cc"],
     hdrs = ["saturation.h"],
     deps = [
-        "//math:saturate",
         "//systems/framework",
     ],
 )
 
 drake_cc_library(
-    name = "signal_logger",
-    srcs = ["signal_logger.cc"],
-    hdrs = ["signal_logger.h"],
+    name = "shared_pointer_system",
+    srcs = ["shared_pointer_system.cc"],
+    hdrs = ["shared_pointer_system.h"],
     deps = [
-        ":signal_log",
-        "//systems/framework",
-    ],
-)
-
-drake_cc_library(
-    name = "signal_log",
-    srcs = ["signal_log.cc"],
-    hdrs = ["signal_log.h"],
-    deps = [
-        "//common:default_scalars",
-        "//common:essential",
+        "//systems/framework:diagram_builder",
+        "//systems/framework:leaf_system",
     ],
 )
 
@@ -271,7 +273,6 @@ drake_cc_library(
     hdrs = ["symbolic_vector_system.h"],
     deps = [
         "//common:default_scalars",
-        "//common:symbolic",
         "//math:gradient",
         "//systems/framework",
     ],
@@ -532,6 +533,18 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
+    name = "multilayer_perceptron_test",
+    deps = [
+        ":multilayer_perceptron",
+        "//common/test_utilities:eigen_matrix_compare",
+        "//common/test_utilities:expect_throws_message",
+        "//common/test_utilities:limit_malloc",
+        "//math:gradient",
+        "//systems/framework/test_utilities",
+    ],
+)
+
+drake_cc_googletest(
     name = "multiplexer_test",
     deps = [
         ":multiplexer",
@@ -617,29 +630,9 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
-    name = "signal_logger_test",
-    deps = [
-        ":affine_system",
-        ":constant_vector_source",
-        ":linear_system",
-        ":signal_logger",
-        "//common/test_utilities:eigen_matrix_compare",
-        "//common/test_utilities:expect_no_throw",
-        "//common/test_utilities:expect_throws_message",
-        "//systems/analysis:simulator",
-        "//systems/framework",
-        "//systems/framework/test_utilities:scalar_conversion",
-    ],
-)
-
-drake_cc_googletest(
     name = "sine_test",
-    srcs = [
-        "test/sine_test.cc",
-    ],
     deps = [
         ":sine",
-        "//common:symbolic",
         "//common/test_utilities:eigen_matrix_compare",
         "//common/test_utilities:expect_throws_message",
         "//systems/framework",
@@ -648,10 +641,17 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
+    name = "shared_pointer_system_test",
+    deps = [
+        ":shared_pointer_system",
+    ],
+)
+
+drake_cc_googletest(
     name = "symbolic_vector_system_test",
     deps = [
         ":symbolic_vector_system",
-        "//common/test_utilities:eigen_geometry_compare",
+        "//common/test_utilities:eigen_matrix_compare",
         "//common/test_utilities:symbolic_test_util",
         "//systems/framework/test_utilities:scalar_conversion",
     ],

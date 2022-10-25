@@ -19,13 +19,15 @@ This guide describes how to set up Drake in the JetBrains CLion IDE on Ubuntu.
 First, you **must** install Bazel and build Drake with Bazel, following
 [the Drake Bazel instructions](/bazel.html).
 
-To use Drake with CLion, your Drake checkout **must** be named ``drake``.
+To use Drake with CLion, your Drake source directory (or git 
+clone) **must** be named ``drake``.
 
 ## Installing CLion
 
 
-1. Go to [https://www.jetbrains.com/clion/download/](https://www.jetbrains.com/clion/download/). Look for "Other versions"
-   and download the appropriate version of CLion (see below).
+1. Go to [https://www.jetbrains.com/clion/download/](https://www.jetbrains.com/clion/download/).
+   Look for "Other versions" and download the appropriate version of CLion
+   (see below).
 2. Install CLion. Exact steps depend on your platform, but it's
    straightforward. Just using defaults for everything is fine. You now have a
    30-day trial version of CLion. Either try it out as is, or get a free
@@ -168,7 +170,7 @@ CLion such that the modification may not be immediately apparent. When in doubt,
 select away from the target file and back; this will cause the file to refresh
 and you can confirm that the file has been modified as expected.
 
-First, make sure you have installed ``clang-format-9``
+First, make sure you have installed ``clang-format-12``
 (see [Tools for Code Style Compliance](/code_style_tools.html)).
 
 ### Clang format selected file
@@ -178,7 +180,7 @@ following values for the fields:
 
 * **Name:** ``Clang Format Full File``
 * **Description:** ``Apply clang-format to the active file``
-* **Program:** ``clang-format-9``
+* **Program:** ``clang-format-12``
 * **Arguments:** ``-i $FileName$``
 * **Working directory:** ``$FileDir$``
 * **Advanced Options:** Uncheck ``Open console for tool output``
@@ -192,7 +194,7 @@ following values for the fields:
 
 * **Name:** ``Clang Format Selected Lines``
 * **Description:** ``Apply clang-format to the selected lines``
-* **Program:** ``clang-format-9``
+* **Program:** ``clang-format-12``
 * **Arguments:** ``-lines $SelectionStartLine$:$SelectionEndLine$ -i $FileName$``
 * **Working directory:** ``$FileDir$``
 * **Advanced Options:** Uncheck ``Open console for tool output``

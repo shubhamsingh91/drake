@@ -18,6 +18,7 @@ load(
     "@drake//tools/skylark:drake_py.bzl",
     "drake_py_unittest",
 )
+load(":header_lint.bzl", "cc_check_allowed_headers")
 load("//tools/lint:lint.bzl", "add_lint_tests")
 load(":build_components.bzl", "LIBDRAKE_COMPONENTS")
 load(
@@ -28,6 +29,12 @@ load(
 install_cmake_config(
     package = "drake",
     versioned = False,
+)
+
+# Verify that extra include paths are not leaking into our interface deps.
+cc_check_allowed_headers(
+    name = "allowed_headers_lint",
+    deps = LIBDRAKE_COMPONENTS,
 )
 
 # Annotate all of the LIBDRAKE_COMPONENTS as `alwayslink = True`, so that we
@@ -92,6 +99,7 @@ install(
     install_tests = [
         "test/find_package_drake_install_test.py",
         "test/snopt_visibility_install_test.py",
+        "test/rpath_install_test.py",
     ],
     targets = ["libdrake.so"],
     hdrs = [":libdrake_headers"],
@@ -119,7 +127,6 @@ cc_library(
     name = "dreal_deps",
     deps = select({
         "//conditions:default": [
-            "@nlopt",
             "@ibex",
         ],
         "//tools:no_dreal": [],
@@ -155,17 +162,6 @@ cc_library(
     }),
 )
 
-# Depend on NLOPT's shared library iff NLOPT is enabled.
-cc_library(
-    name = "nlopt_deps",
-    deps = select({
-        "//conditions:default": [
-            "@nlopt",
-        ],
-        "//tools:no_nlopt": [],
-    }),
-)
-
 # Depend on the subset of VTK's shared libraries that Drake uses.
 cc_library(
     name = "vtk_deps",
@@ -175,11 +171,14 @@ cc_library(
         # declared without having to repeat this list here.
         "@vtk//:vtkCommonCore",
         "@vtk//:vtkCommonDataModel",
+        "@vtk//:vtkCommonExecutionModel",
         "@vtk//:vtkCommonTransforms",
         "@vtk//:vtkFiltersGeneral",
         "@vtk//:vtkFiltersSources",
+        "@vtk//:vtkIOExport",
         "@vtk//:vtkIOGeometry",
         "@vtk//:vtkIOImage",
+        "@vtk//:vtkIOImport",
         "@vtk//:vtkRenderingCore",
         "@vtk//:vtkRenderingOpenGL2",
     ],
@@ -229,14 +228,11 @@ cc_library(
         ":gurobi_deps",
         ":ipopt_deps",
         ":mosek_deps",
-        ":nlopt_deps",
         ":vtk_deps",
         ":x11_deps",
         "//common:drake_marker_shared_library",
         "@lcm",
         "@spdlog",
-        "@tinyxml2",
-        "@yaml_cpp",
     ],
 )
 

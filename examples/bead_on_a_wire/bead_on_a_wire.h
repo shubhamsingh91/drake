@@ -1,8 +1,8 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <unsupported/Eigen/AutoDiff>
 
-#include "drake/common/autodiff.h"
 #include "drake/systems/framework/leaf_system.h"
 
 namespace drake {
@@ -74,6 +74,14 @@ namespace bead_on_a_wire {
 ///         m/s, respectively, for the bead simulated in absolute coordinates.
 ///
 /// Outputs: same as state.
+///
+/// @system
+/// name: BeadOnAWire
+/// input_ports:
+/// - u0
+/// output_ports:
+/// - y0
+/// @endsystem
 ///
 /// @tparam_double_only
 template <typename T>

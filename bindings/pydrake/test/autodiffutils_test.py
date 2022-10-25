@@ -8,15 +8,6 @@ from pydrake.autodiffutils import (
     InitializeAutoDiffTuple,
 )
 
-# TODO(sherm1) To be deprecated asap.
-from pydrake.autodiffutils import (
-    autoDiffToGradientMatrix,
-    autoDiffToValueMatrix,
-    initializeAutoDiff,
-    initializeAutoDiffGivenGradientMatrix,
-    initializeAutoDiffTuple,
-)
-
 import copy
 import itertools
 import unittest
@@ -31,7 +22,6 @@ from pydrake.test.autodiffutils_test_util import (
     autodiff_vector3_pass_through,
 )
 from pydrake.common.test_utilities import numpy_compare
-from pydrake.common.test_utilities.deprecation import catch_drake_warnings
 from pydrake.common.test_utilities.pickle_compare import assert_pickle
 
 # Use convenience abbreviation.
@@ -83,10 +73,10 @@ class TestAutoDiffXd(unittest.TestCase):
                 "don't know how to convert scalar number to float",
                 str(cm.exception))
         else:
-            self.assertEqual(
-                "float() argument must be a string or a number, not "
-                "'pydrake.autodiffutils.AutoDiffXd'",
-                str(cm.exception))
+            self.assertRegex(
+                str(cm.exception),
+                r"float\(\) argument must be a string or a (real )?number, "
+                r"not 'pydrake\.autodiffutils\.AutoDiffXd'")
         # Test multi-element pass-through.
         x = np.array([AD(1.), AD(2.), AD(3.)])
         numpy_compare.assert_equal(autodiff_vector_pass_through(x), x)
@@ -270,43 +260,6 @@ class TestAutoDiffXd(unittest.TestCase):
                                       np.array([2, 3]).reshape((2, 1)))
         np.testing.assert_array_equal(ExtractGradient(c),
                                       np.array(c_grad))
-
-    def test_deprecated_math_utils(self):
-        with catch_drake_warnings(expected_count=1):
-            a = initializeAutoDiff([1, 2, 3])
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToValueMatrix(a),
-                                          np.array([[1, 2, 3]]).T)
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToGradientMatrix(a),
-                                          np.eye(3))
-
-        with catch_drake_warnings(expected_count=1):
-            a, b = initializeAutoDiffTuple([1], [2, 3])
-
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToValueMatrix(a),
-                                          np.array([[1]]))
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToValueMatrix(b),
-                                          np.array([[2, 3]]).T)
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToGradientMatrix(a),
-                                          np.eye(1, 3))
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToGradientMatrix(b),
-                                          np.hstack((np.zeros((2, 1)),
-                                                     np.eye(2))))
-
-        c_grad = [[2, 4, 5], [1, -1, 0]]
-        with catch_drake_warnings(expected_count=1):
-            c = initializeAutoDiffGivenGradientMatrix([2, 3], c_grad)
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToValueMatrix(c),
-                                          np.array([2, 3]).reshape((2, 1)))
-        with catch_drake_warnings(expected_count=1):
-            np.testing.assert_array_equal(autoDiffToGradientMatrix(c),
-                                          np.array(c_grad))
 
     def test_autodiff_equal_to(self):
         a = AD(1.0, [1.0, 2.0])

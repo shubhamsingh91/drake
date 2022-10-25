@@ -97,27 +97,14 @@ template <typename T>
 const T InitialValueProblem<T>::kMaxStepSize = static_cast<T>(1e-1);
 
 template <typename T>
-InitialValueProblem<T>::InitialValueProblem(const OdeFunction& ode_function,
-                                            const OdeContext& default_values)
-    : default_values_(default_values), current_values_(default_values) {
-  // Checks that preconditions are met.
-  if (!default_values_.t0) {
-    throw std::logic_error("No default initial time t0 was given.");
-  }
-  if (!default_values_.x0) {
-    throw std::logic_error("No default initial state x0 was given.");
-  }
-  if (!default_values_.k) {
-    throw std::logic_error("No default parameters vector k was given.");
-  }
-  // Instantiates the system using the given defaults as models.
-  system_ = std::make_unique<OdeSystem<T>>(
-      ode_function, default_values_.x0.value(), default_values_.k.value());
+InitialValueProblem<T>::InitialValueProblem(
+    const OdeFunction& ode_function, const Eigen::Ref<const VectorX<T>>& x0,
+    const Eigen::Ref<const VectorX<T>>& k) {
+  // Instantiates the system using the given initial conditions and parameters.
+  system_ = std::make_unique<OdeSystem<T>>(ode_function, x0, k);
 
-  // Allocates a new default integration context with the
-  // given default initial time.
+  // Allocates a new default integration context.
   context_ = system_->CreateDefaultContext();
-  context_->SetTime(default_values_.t0.value());
 
   // Instantiates an explicit RK3 integrator by default.
   integrator_ =
@@ -131,14 +118,11 @@ InitialValueProblem<T>::InitialValueProblem(const OdeFunction& ode_function,
 }
 
 template <typename T>
-VectorX<T> InitialValueProblem<T>::Solve(const T& tf,
-                                         const OdeContext& values) const {
-  // Gets all values to solve with, either given or default, while
-  // checking that all preconditions hold.
-  const OdeContext safe_values = SanitizeValuesOrThrow(tf, values);
+VectorX<T> InitialValueProblem<T>::Solve(const T& t0, const T& tf) const {
+  DRAKE_THROW_UNLESS(tf >= t0);
+  context_->SetTime(t0);
 
-  // Potentially invalidates the cache.
-  ResetCachedStateIfNecessary(tf, safe_values);
+  ResetState();
 
   // Initializes integrator if necessary.
   if (!integrator_->is_initialized()) {
@@ -158,21 +142,8 @@ VectorX<T> InitialValueProblem<T>::Solve(const T& tf,
 }
 
 template <typename T>
-void InitialValueProblem<T>::ResetCachedState(const OdeContext& values) const {
-  // Sets context (initial) time.
-  context_->SetTime(values.t0.value());
-
-  // Sets context (initial) state. This cast is safe because the
-  // ContinuousState<T> of a LeafSystem<T> is flat i.e. it is just
-  // a BasicVector<T>, and the implementation deals with LeafSystem<T>
-  // instances only by design.
-  BasicVector<T>& state_vector = dynamic_cast<BasicVector<T>&>(
-      context_->get_mutable_continuous_state_vector());
-  state_vector.set_value(values.x0.value());
-
-  // Sets context parameters.
-  BasicVector<T>& parameter_vector = context_->get_mutable_numeric_parameter(0);
-  parameter_vector.set_value(values.k.value());
+void InitialValueProblem<T>::ResetState() const {
+  system_->SetDefaultContext(context_.get());
 
   // Keeps track of current step size and accuracy settings (regardless
   // of whether these are actually used by the integrator instance or not).
@@ -190,62 +161,16 @@ void InitialValueProblem<T>::ResetCachedState(const OdeContext& values) const {
     integrator_->request_initial_step_size_target(initial_step_size);
     integrator_->set_target_accuracy(target_accuracy);
   }
-  // Keeps track of the current initial conditions and parameters
-  // for future cache invalidation.
-  current_values_ = values;
-}
-
-template <typename T>
-void InitialValueProblem<T>::ResetCachedStateIfNecessary(
-    const T& tf, const OdeContext& values) const {
-  // Only resets cache if necessary, i.e. if either initial
-  // conditions or parameters have changed or if the time
-  // the IVP is to be solved for is in the past with respect
-  // to the integration context time.
-  if (values != current_values_ || tf < context_->get_time()) {
-    ResetCachedState(values);
-  }
-}
-
-template <typename T>
-typename InitialValueProblem<T>::OdeContext
-InitialValueProblem<T>::SanitizeValuesOrThrow(const T& tf,
-                                              const OdeContext& values) const {
-  OdeContext safe_values;
-  safe_values.t0 = values.t0.has_value() ? values.t0 : default_values_.t0;
-  if (tf < safe_values.t0.value()) {
-    throw std::logic_error(
-        "Cannot solve IVP for a time"
-        " before the initial condition.");
-  }
-  safe_values.x0 = values.x0.has_value() ? values.x0 : default_values_.x0;
-  if (safe_values.x0.value().size() != default_values_.x0.value().size()) {
-    throw std::logic_error(
-        "IVP initial state vector x0 is"
-        " of the wrong dimension.");
-  }
-  safe_values.k = values.k.has_value() ? values.k : default_values_.k;
-  if (safe_values.k.value().size() != default_values_.k.value().size()) {
-    throw std::logic_error(
-        "IVP parameters vector k is "
-        " of the wrong dimension");
-  }
-  return safe_values;
 }
 
 template <typename T>
 std::unique_ptr<DenseOutput<T>> InitialValueProblem<T>::DenseSolve(
-    const T& tf, const OdeContext& values) const {
-  // Gets all values to solve with, either given or default, while
-  // checking that all preconditions hold.
-  const OdeContext safe_values = SanitizeValuesOrThrow(tf, values);
+    const T& t0, const T& tf) const {
+  DRAKE_THROW_UNLESS(tf >= t0);
+  context_->SetTime(t0);
+  ResetState();
 
-  // Unconditionally invalidates the cache. All integration steps that
-  // take the IVP forward in time up to tf are necessary to build a
-  // DenseOutput.
-  ResetCachedState(safe_values);
-
-  // Re-initialize integrator after cache invalidation.
+  // Unconditionally re-initialize integrator.
   integrator_->Initialize();
 
   // Starts dense integration to build a dense output.

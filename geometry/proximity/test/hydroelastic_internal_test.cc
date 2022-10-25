@@ -1,6 +1,7 @@
 #include "drake/geometry/proximity/hydroelastic_internal.h"
 
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <limits>
 
@@ -8,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "drake/common/find_resource.h"
+#include "drake/common/temp_directory.h"
 #include "drake/common/test_utilities/expect_no_throw.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/geometry/proximity/make_sphere_field.h"
@@ -343,7 +345,7 @@ GTEST_TEST(Hydroelastic, GeometriesPopulationAndQuery) {
 
   GeometryId soft_id = GeometryId::get_new_id();
   ProximityProperties soft_properties;
-  AddSoftHydroelasticProperties(1.0, 1e8, &soft_properties);
+  AddCompliantHydroelasticProperties(1.0, 1e8, &soft_properties);
 
   GeometryId bad_id = GeometryId::get_new_id();
   EXPECT_EQ(geometries.hydroelastic_type(rigid_id),
@@ -378,7 +380,7 @@ GTEST_TEST(Hydroelastic, RemoveGeometry) {
   // Add a soft geometry.
   const GeometryId soft_id = GeometryId::get_new_id();
   ProximityProperties soft_properties;
-  AddSoftHydroelasticProperties(1.0, 1e8, &soft_properties);
+  AddCompliantHydroelasticProperties(1.0, 1e8, &soft_properties);
   geometries.MaybeAddGeometry(Sphere(0.5), soft_id, soft_properties);
   ASSERT_EQ(geometries.hydroelastic_type(soft_id), HydroelasticType::kSoft);
 
@@ -441,10 +443,10 @@ TEST_F(HydroelasticRigidGeometryTest, HalfSpace) {
   EXPECT_TRUE(half_space->is_half_space());
 
   DRAKE_EXPECT_THROWS_MESSAGE(
-      half_space->mesh(), std::runtime_error,
+      half_space->mesh(),
       "RigidGeometry::mesh.* cannot be invoked .* half space");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      half_space->bvh(), std::runtime_error,
+      half_space->bvh(),
       "RigidGeometry::bvh.* cannot be invoked .* half space");
 }
 
@@ -602,8 +604,7 @@ TEST_F(HydroelasticRigidGeometryTest, Ellipsoid) {
 // origin along each axis) to confirm that the correct mesh got loaded. We also
 // confirm that the scale factor is included in the rigid representation.
 template <typename MeshType>
-void TestRigidMeshType() {
-  std::string file = FindResourceOrThrow("drake/geometry/test/quad_cube.obj");
+void TestRigidMeshTypeFromObj(const std::string& file) {
   // Empty props since its contents do not matter.
   ProximityProperties props;
 
@@ -637,15 +638,48 @@ void TestRigidMeshType() {
 // Confirm support for a rigid Mesh. Tests that a hydroelastic representation
 // is made.
 TEST_F(HydroelasticRigidGeometryTest, Mesh) {
-  SCOPED_TRACE("Rigid Mesh");
-  TestRigidMeshType<Mesh>();
+  const std::string file_lower_case =
+      FindResourceOrThrow("drake/geometry/test/quad_cube.obj");
+  {
+    SCOPED_TRACE("Rigid Mesh, lower-case obj extension");
+    TestRigidMeshTypeFromObj<Mesh>(file_lower_case);
+  }
+  {
+    SCOPED_TRACE("Rigid Mesh, upper-case OBJ extension");
+    const std::string file_upper_case = temp_directory() + "/quad_cube.OBJ";
+    std::filesystem::copy(file_lower_case, file_upper_case);
+    TestRigidMeshTypeFromObj<Mesh>(file_upper_case);
+  }
 }
 
 // Confirm support for a rigid Convex. Tests that a hydroelastic representation
 // is made.
 TEST_F(HydroelasticRigidGeometryTest, Convex) {
   SCOPED_TRACE("Rigid Convex");
-  TestRigidMeshType<Convex>();
+  std::string file = FindResourceOrThrow("drake/geometry/test/quad_cube.obj");
+  TestRigidMeshTypeFromObj<Convex>(file);
+}
+
+TEST_F(HydroelasticRigidGeometryTest, MeshFromVtk) {
+  const std::string file_lower_case =
+      FindResourceOrThrow("drake/geometry/test/non_convex_mesh.vtk");
+  const std::string file_upper_case = temp_directory() + "/non_convex_mesh.VTK";
+  std::filesystem::copy(file_lower_case, file_upper_case);
+  // Empty props since its contents do not matter.
+  const ProximityProperties props;
+  for (const std::string& file_name : {file_lower_case, file_upper_case}) {
+    SCOPED_TRACE(file_name);
+    std::optional<RigidGeometry> geometry =
+        MakeRigidRepresentation(Mesh(file_name), props);
+    ASSERT_NE(geometry, std::nullopt);
+
+    // We only check that the vtk file was read by verifying the number of
+    // vertices and triangles, which depend on the specific content of
+    // the vtk file.
+    const TriangleSurfaceMesh<double>& surface_mesh = geometry->mesh();
+    EXPECT_EQ(surface_mesh.num_vertices(), 5);
+    EXPECT_EQ(surface_mesh.num_triangles(), 6);
+  }
 }
 
 // Template magic to instantiate a particular kind of shape at compile time.
@@ -684,6 +718,12 @@ Ellipsoid make_default_shape<Ellipsoid>() {
 template <>
 HalfSpace make_default_shape<HalfSpace>() {
   return HalfSpace();
+}
+
+template <>
+Convex make_default_shape<Convex>() {
+  std::string file = FindResourceOrThrow("drake/geometry/test/octahedron.obj");
+  return Convex(file);
 }
 
 // Boilerplate for testing error conditions relating to properties. Its purpose
@@ -734,7 +774,7 @@ void TestPropertyErrors(
   // Error case: missing property value.
   {
     DRAKE_EXPECT_THROWS_MESSAGE(
-        maker(shape_spec, props), std::logic_error,
+        maker(shape_spec, props),
         fmt::format("Cannot create {} {}.+'{}'\\) property", compliance,
                     shape_name, property_name));
   }
@@ -745,7 +785,7 @@ void TestPropertyErrors(
     wrong_value.AddProperty(group_name, property_name, "10");
     // This error message comes from GeometryProperties::GetProperty().
     DRAKE_EXPECT_THROWS_MESSAGE(
-        maker(shape_spec, wrong_value), std::logic_error,
+        maker(shape_spec, wrong_value),
         fmt::format(".*The property \\('{}', '{}'\\) exists, but is of a "
                     "different type.+string'",
                     group_name, property_name));
@@ -756,7 +796,7 @@ void TestPropertyErrors(
     ProximityProperties negative_value(props);
     negative_value.AddProperty(group_name, property_name, *bad_value);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        maker(shape_spec, negative_value), std::logic_error,
+        maker(shape_spec, negative_value),
         fmt::format("Cannot create {} {}.+'{}'.+ positive", compliance,
                     shape_name, property_name));
   }
@@ -801,7 +841,7 @@ class HydroelasticSoftGeometryTest : public ::testing::Test {
   /* Creates a simple set of properties for generating soft geometry. */
   ProximityProperties soft_properties(double edge_length = 0.1) const {
     ProximityProperties soft_properties;
-    AddSoftHydroelasticProperties(edge_length, 1e8, &soft_properties);
+    AddCompliantHydroelasticProperties(edge_length, 1e8, &soft_properties);
     return soft_properties;
   }
 };
@@ -814,11 +854,7 @@ class HydroelasticSoftGeometryTest : public ::testing::Test {
 TEST_F(HydroelasticSoftGeometryTest, UnsupportedSoftShapes) {
   ProximityProperties props = soft_properties();
 
-  // Note: the file name doesn't have to be valid for this (and the Mesh) test.
-  const std::string obj = "drake/geometry/proximity/test/no_such_files.obj";
-  EXPECT_EQ(MakeSoftRepresentation(Convex(obj, 1.0), props), std::nullopt);
-
-  EXPECT_EQ(MakeSoftRepresentation(Mesh(obj, 1.0), props), std::nullopt);
+  EXPECT_EQ(MakeSoftRepresentation(MeshcatCone(2, 1, 1), props), std::nullopt);
 }
 
 TEST_F(HydroelasticSoftGeometryTest, HalfSpace) {
@@ -826,7 +862,7 @@ TEST_F(HydroelasticSoftGeometryTest, HalfSpace) {
 
   // Case: A half space without (hydroelastic, slab_thickness) throws.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      MakeSoftRepresentation(HalfSpace(), properties), std::logic_error,
+      MakeSoftRepresentation(HalfSpace(), properties),
       "Cannot create soft HalfSpace; missing the .*slab_thickness.* property");
 
   // Case: fully specified half space.
@@ -841,13 +877,13 @@ TEST_F(HydroelasticSoftGeometryTest, HalfSpace) {
       properties.GetProperty<double>(kHydroGroup, kElastic) / thickness);
 
   DRAKE_EXPECT_THROWS_MESSAGE(
-      half_space->mesh(), std::runtime_error,
+      half_space->mesh(),
       "SoftGeometry::mesh.* cannot be invoked .* half space");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      half_space->pressure_field(), std::runtime_error,
+      half_space->pressure_field(),
       "SoftGeometry::pressure.* cannot be invoked .* half space");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      half_space->bvh(), std::runtime_error,
+      half_space->bvh(),
       "SoftGeometry::bvh.* cannot be invoked .* half space");
 }
 
@@ -875,7 +911,7 @@ TEST_F(HydroelasticSoftGeometryTest, Sphere) {
   // meshes and slab_thickness() does.
   EXPECT_NO_THROW(sphere1->bvh());
   DRAKE_EXPECT_THROWS_MESSAGE(
-      sphere1->pressure_scale(), std::runtime_error,
+      sphere1->pressure_scale(),
       "SoftGeometry::pressure_scale.* cannot be invoked .* soft mesh");
 
   // Confirm that all vertices lie inside the sphere and that at least one lies
@@ -1115,13 +1151,58 @@ TEST_F(HydroelasticSoftGeometryTest, Ellipsoid) {
   }
 }
 
+// Test construction of a soft convex mesh.
+TEST_F(HydroelasticSoftGeometryTest, Convex) {
+  // Construct off of a known convex mesh.
+  std::string file = FindResourceOrThrow("drake/geometry/test/quad_cube.obj");
+  const Convex convex_spec(file);
+
+  ProximityProperties properties = soft_properties(0.16);
+  std::optional<SoftGeometry> convex =
+      MakeSoftRepresentation(convex_spec, properties);
+
+  // Smoke test the mesh and the pressure field. It relies on unit tests for
+  // the generators of the mesh and the pressure field.
+  const int expected_num_vertices = 9;
+  EXPECT_EQ(convex->mesh().num_vertices(), expected_num_vertices);
+  const double E =
+      properties.GetPropertyOrDefault(kHydroGroup, kElastic, 1e8);
+  for (int v = 0; v < convex->mesh().num_vertices(); ++v) {
+    const double pressure = convex->pressure_field().EvaluateAtVertex(v);
+    EXPECT_GE(pressure, 0);
+    EXPECT_LE(pressure, E);
+  }
+}
+
+// Test construction of a compliant (generally non-convex) tetrahedral mesh.
+TEST_F(HydroelasticSoftGeometryTest, Mesh) {
+  const Mesh mesh_specification(
+      FindResourceOrThrow("drake/geometry/test/non_convex_mesh.vtk"));
+
+  ProximityProperties properties = soft_properties();
+  std::optional<SoftGeometry> compliant_geometry =
+      MakeSoftRepresentation(mesh_specification, properties);
+
+  // Smoke test the mesh and the pressure field. It relies on unit tests for
+  // the generators of the mesh and the pressure field.
+  const int expected_num_vertices = 6;
+  EXPECT_EQ(compliant_geometry->mesh().num_vertices(), expected_num_vertices);
+  const double E = properties.GetPropertyOrDefault(kHydroGroup, kElastic, 1e8);
+  for (int v = 0; v < compliant_geometry->mesh().num_vertices(); ++v) {
+    const double pressure =
+        compliant_geometry->pressure_field().EvaluateAtVertex(v);
+    EXPECT_GE(pressure, 0);
+    EXPECT_LE(pressure, E);
+  }
+}
+
 // Test suite for testing the common failure conditions for generating soft
 // geometry. Specifically, they need to be tessellated into a tet mesh
-// and define a pressure field. This actively excludes Convex and Mesh
-// because soft Convex and soft Mesh are not currently supported for
-// hydroelastic contact. (See the `SoftErrorShapeTypes` declaration below.)
-// It should include every *other* supported soft shape type. For HalfSpace
-// and Box, they are included in the test suite but exempt from
+// and define a pressure field. This actively excludes Mesh because soft Mesh
+// is not currently supported for hydroelastic contact.
+// (See the `SoftErrorShapeTypes` declaration below.)
+// It should include every *other* supported soft shape type. For HalfSpace,
+// Box, and Convex they are included in the test suite but exempt from
 // BadResolutionHint because they do not depend on the resolution hint
 // parameter. Only HalfSpace is tested in BadSlabThickness.
 template <typename ShapeType>
@@ -1133,7 +1214,8 @@ TYPED_TEST_P(HydroelasticSoftGeometryErrorTests, BadResolutionHint) {
   using ShapeType = TypeParam;
   ShapeType shape_spec = make_default_shape<ShapeType>();
   if (ShapeName(shape_spec).name() != "HalfSpace" &&
-      ShapeName(shape_spec).name() != "Box") {
+      ShapeName(shape_spec).name() != "Box" &&
+      ShapeName(shape_spec).name() != "Convex") {
     TestPropertyErrors<ShapeType, double>(
         shape_spec, kHydroGroup, kRezHint, "soft",
         [](const ShapeType& s, const ProximityProperties& p) {
@@ -1177,7 +1259,8 @@ TYPED_TEST_P(HydroelasticSoftGeometryErrorTests, BadSlabThickness) {
 REGISTER_TYPED_TEST_SUITE_P(HydroelasticSoftGeometryErrorTests,
                             BadResolutionHint, BadElasticModulus,
                             BadSlabThickness);
-typedef ::testing::Types<Sphere, Box, Capsule, Cylinder, Ellipsoid, HalfSpace>
+typedef ::testing::Types<Sphere, Box, Capsule, Cylinder, Ellipsoid, HalfSpace,
+                         Convex>
     SoftErrorShapeTypes;
 INSTANTIATE_TYPED_TEST_SUITE_P(My, HydroelasticSoftGeometryErrorTests,
                                SoftErrorShapeTypes);

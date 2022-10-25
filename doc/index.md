@@ -22,28 +22,37 @@ purpose of the front page (HTML for layout, Markdown for content).
     <p class="drake-hero-intro">
       {{ page.description }}
     </p>
-    <a href="/installation.html" class="button">Install</a>
+    <div class="drake-hero-buttons">
+      <a href="/installation.html" class="button">Install</a>
+      <a href="#core" class="button grey">Learn More</a>
+    </div>
     <div class="hero-image">
       <img src="{{ site.custom.hero_image | relative_url }}">
     </div>
   </div>
 </section>
 
-<section class="core padding">
+<section id="core" class="core padding">
   <div class="contain">
     <h2>Core Library</h2>
     <div class="grid grid-3col">
       <div class="core-el">
         <h4>Modeling Dynamical<br> Systems</h4>
-        <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__systems.html" target="_blank">API</a> | <a class="button--text" href="https://mybinder.org/v2/gh/RobotLocomotion/drake/nightly-release?urlpath=/tree/tutorials/dynamical_systems.ipynb&" target="_blank">TUTORIAL</a>
+        <div class="core-el-buttons">
+          <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__systems.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fdynamical_systems.ipynb" target="_blank">TUTORIAL</a>
+        </div>
       </div>
       <div class="core-el">
         <h4>Solving Mathematical<br> Programs</h4>
-        <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__solvers.html" target="_blank">API</a> | <a class="button--text" href="https://mybinder.org/v2/gh/RobotLocomotion/drake/nightly-release?urlpath=/tree/tutorials/mathematical_program.ipynb" target="_blank">TUTORIAL</a>
+        <div class="core-el-buttons">
+          <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__solvers.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fmathematical_program.ipynb" target="_blank">TUTORIAL</a>
+        </div>
       </div>
       <div class="core-el">
         <h4>Multibody Kinematics<br> and Dynamics</h4>
-        <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__multibody.html" target="_blank">API</a>
+        <div class="core-el-buttons">
+          <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__multibody.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fauthoring_multibody_simulation.ipynb" target="_blank">TUTORIAL</a>
+        </div>
       </div>
     </div>
   </div>
@@ -100,38 +109,12 @@ bug fixes, features, and examples!
 <article markdown="1">
 ## Tutorials
 
-We have Python tutorials that can be previewed and executed as Jupyter
-notebooks online with no need for local installation. You can use Binder to
-preview and execute the notebooks (but startup time may be long), or you can
-use nbviewer to only preview the notebook (where startup time is fast):
+Drake offers Python-based tutorials using Jupyter notebooks. We recommend that
+you [view the tutorials online](https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Findex.ipynb).
 
-<a target="_doc" href="https://mybinder.org/v2/gh/RobotLocomotion/drake/nightly-release-binder?urlpath=/tree/tutorials">
-  <img src="https://mybinder.org/badge_logo.svg"/>
-</a>
-<a target="_doc" href="https://nbviewer.jupyter.org/github/RobotLocomotion/drake/blob/nightly-release/tutorials/">
-  <img src="https://img.shields.io/badge/view%20on-nbviewer-brightgreen.svg"/>
-</a>
+Alternatively, to run the tutorials locally via `pip`, refer to
+[drake/tutorials/README.md](https://github.com/RobotLocomotion/drake/blob/master/tutorials/README.md).
 
-If you are browsing on nbviewer, you may click on the Binder button at the
-top-right of the page.
-
-You may find more information about how to run these locally with Jupyter, the
-branch the tutorials use, how they are published to Binder, etc., in
-[drake/tutorials/README.md.](https://github.com/RobotLocomotion/drake/blob/master/tutorials/README.md)
-</article>
-
-
-<article markdown="1">
-## Citing Drake
-
-```
-@misc{drake,
- author = "Russ Tedrake and the Drake Development Team",
- title = "Drake: Model-based design and verification for robotics",
- year = 2019,
- url = "https://drake.mit.edu"
-}
-```
 </article>
 
 
@@ -151,6 +134,34 @@ might set up continuous integration.
 
 
 <article markdown="1">
+## Articles
+
+[Drake: Model-based design in the age of robotics and machine learning](https://medium.com/toyotaresearch/drake-model-based-design-in-the-age-of-robotics-and-machine-learning-59938c985515)
+
+[Rethinking Contact Simulation for Robot Manipulation](https://medium.com/toyotaresearch/rethinking-contact-simulation-for-robot-manipulation-434a56b5ec88)
+
+[MIT Underactuated Robotics: Algorithms for Walking, Running, Swimming, Flying, and Manipulation](https://underactuated.csail.mit.edu/)
+
+[MIT Robotic Manipulation: Perception, Planning, and Control](https://manipulation.csail.mit.edu/)
+
+</article>
+
+
+<article markdown="1">
+## Citing Drake
+
+```
+@misc{drake,
+ author = "Russ Tedrake and the Drake Development Team",
+ title = "Drake: Model-based design and verification for robotics",
+ year = 2019,
+ url = "https://drake.mit.edu"
+}
+```
+</article>
+
+
+<article markdown="1">
 ## Acknowledgements
 
 The Drake developers would like to acknowledge significant support from the
@@ -164,17 +175,15 @@ The Drake developers would like to acknowledge significant support from the
 
 
 <article markdown="1">
-## From Other Languages
+## Integrations
 
-### Python Bindings
+[Python](./python_bindings.html)
 
-<a href="/python_bindings.html">
-  <img src="/third_party/images/python-logo-generic.svg" width="150px"/>
-</a>
+[LCM](./doxygen_cxx/group__message__passing.html)
 
-### Others
+[ROS 2](https://github.com/RobotLocomotion/drake-ros)™ (unsupported)
 
-[Julia](./julia_bindings.html)
+[Julia](./julia_bindings.html) (unsupported)
 
 </article>
 

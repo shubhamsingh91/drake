@@ -33,6 +33,13 @@ namespace drake {
 namespace solvers {
 namespace {
 
+// Returns the (base) URL for Gurobi's online reference manual.
+std::string refman() {
+  return fmt::format(
+      "https://www.gurobi.com/documentation/{}.{}/refman",
+      GRB_VERSION_MAJOR, GRB_VERSION_MINOR);
+}
+
 // Information to be passed through a Gurobi C callback to
 // grant it information about its problem (the host
 // MathematicalProgram prog, and which decision variables
@@ -206,7 +213,7 @@ GurobiSolver::SolveStatusInfo GetGurobiSolveStatus(void* cbdata, int where) {
   GRBcbget(cbdata, where, GRB_CB_MIPNODE_OBJBND, &(solve_status.best_bound));
   GRBcbget(cbdata, where, GRB_CB_MIPNODE_SOLCNT,
            &(solve_status.feasible_solutions_count));
-  double explored_node_count_double;
+  double explored_node_count_double{};
   GRBcbget(cbdata, where, GRB_CB_MIPNODE_NODCNT, &explored_node_count_double);
   solve_status.explored_node_count = explored_node_count_double;
   return solve_status;
@@ -322,7 +329,7 @@ __attribute__((unused)) bool HasCorrectNumberOfVariables(
  * A*x == lb, false otherwise.
  * @return error as an integer. The full set of error values are
  * described here :
- * https://www.gurobi.com/documentation/9.0/refman/error_codes.html
+ * https://www.gurobi.com/documentation/9.5/refman/error_codes.html
  *
  * TODO(hongkai.dai): Use a sparse matrix A.
  */
@@ -332,15 +339,14 @@ int AddLinearConstraint(const MathematicalProgram& prog, GRBmodel* model,
                         const Eigen::MatrixBase<DerivedLB>& lb,
                         const Eigen::MatrixBase<DerivedUB>& ub,
                         const Eigen::Ref<const VectorXDecisionVariable>& vars,
-                        bool is_equality, double sparseness_threshold,
-                        int* num_gurobi_linear_constraints) {
+                        bool is_equality, int* num_gurobi_linear_constraints) {
   for (int i = 0; i < A.rows(); i++) {
     int nonzero_coeff_count = 0;
     std::vector<int> nonzero_var_index(A.cols(), 0);
     std::vector<double> nonzero_coeff(A.cols(), 0.0);
 
     for (int j = 0; j < A.cols(); j++) {
-      if (std::abs(A(i, j)) > sparseness_threshold) {
+      if (A(i, j) != 0) {
         nonzero_coeff[nonzero_coeff_count] = A(i, j);
         nonzero_var_index[nonzero_coeff_count++] =
             prog.FindDecisionVariableIndex(vars(j));
@@ -394,9 +400,6 @@ int AddLinearConstraint(const MathematicalProgram& prog, GRBmodel* model,
  * RotatedLorentzConeConstraint.
  * @param second_order_cone_constraints  A vector of Binding objects, containing
  * either Lorentz cone constraints, or rotated Lorentz cone constraints.
- * @param sparseness_threshold. If the absolute value of an entry in A, b
- * matrices inside (rotated) Lorentz cone constraint is smaller than
- * \p sparseness_threshold, that entry is ignored.
  * @param second_order_cone_new_variable_indices. The indices of variable z in
  * the Gurobi model.
  * @param model The Gurobi model.
@@ -407,7 +410,6 @@ template <typename C>
 int AddSecondOrderConeConstraints(
     const MathematicalProgram& prog,
     const std::vector<Binding<C>>& second_order_cone_constraints,
-    double sparseness_threshold,
     const std::vector<std::vector<int>>& second_order_cone_new_variable_indices,
     GRBmodel* model, int* num_gurobi_linear_constraints) {
   static_assert(
@@ -485,7 +487,7 @@ int AddSecondOrderConeConstraints(
 
     // Gurobi uses a matrix Q to differentiate Lorentz cone and rotated Lorentz
     // cone constraint.
-    // https://www.gurobi.com/documentation/9.0/refman/c_grbaddqconstr.html
+    // https://www.gurobi.com/documentation/9.5/refman/c_grbaddqconstr.html
     // For Lorentz cone constraint,
     // Q = [-1 0 0 ... 0]
     //     [ 0 1 0 ... 0]
@@ -549,7 +551,7 @@ int AddSecondOrderConeConstraints(
  * Add quadratic or linear costs to the optimization problem.
  */
 int AddCosts(GRBmodel* model, double* pconstant_cost,
-             const MathematicalProgram& prog, double sparseness_threshold) {
+             const MathematicalProgram& prog) {
   // Aggregates the quadratic costs and linear costs in the form
   // 0.5 * x' * Q_all * x + linear_term' * x.
   using std::abs;
@@ -578,13 +580,13 @@ int AddCosts(GRBmodel* model, double* pconstant_cost,
 
     for (int i = 0; i < Q.rows(); i++) {
       const double Qii = 0.5 * Q(i, i);
-      if (abs(Qii) > sparseness_threshold) {
+      if (Qii != 0) {
         Q_nonzero_coefs.push_back(Eigen::Triplet<double>(
             constraint_variable_index[i], constraint_variable_index[i], Qii));
       }
       for (int j = i + 1; j < Q.cols(); j++) {
         const double Qij = 0.5 * (Q(i, j) + Q(j, i));
-        if (abs(Qij) > sparseness_threshold) {
+        if (Qij != 0) {
           Q_nonzero_coefs.push_back(Eigen::Triplet<double>(
               constraint_variable_index[i], constraint_variable_index[j], Qij));
         }
@@ -592,7 +594,7 @@ int AddCosts(GRBmodel* model, double* pconstant_cost,
     }
 
     for (int i = 0; i < b.size(); i++) {
-      if (abs(b(i)) > sparseness_threshold) {
+      if (b(i) != 0) {
         b_nonzero_coefs.push_back(
             Eigen::Triplet<double>(constraint_variable_index[i], 0, b(i)));
       }
@@ -661,7 +663,7 @@ int AddCosts(GRBmodel* model, double* pconstant_cost,
 // TODO(#2274) Fix NOLINTNEXTLINE(runtime/references).
 int ProcessLinearConstraints(
     GRBmodel* model, const MathematicalProgram& prog,
-    double sparseness_threshold, int* num_gurobi_linear_constraints,
+    int* num_gurobi_linear_constraints,
     std::unordered_map<Binding<Constraint>, int>* constraint_dual_start_row) {
   for (const auto& binding : prog.linear_equality_constraints()) {
     const auto& constraint = binding.evaluator();
@@ -669,9 +671,9 @@ int ProcessLinearConstraints(
     constraint_dual_start_row->emplace(binding, *num_gurobi_linear_constraints);
 
     const int error = AddLinearConstraint(
-        prog, model, constraint->A(), constraint->lower_bound(),
+        prog, model, constraint->GetDenseA(), constraint->lower_bound(),
         constraint->upper_bound(), binding.variables(), true,
-        sparseness_threshold, num_gurobi_linear_constraints);
+        num_gurobi_linear_constraints);
     if (error) {
       return error;
     }
@@ -683,9 +685,9 @@ int ProcessLinearConstraints(
     constraint_dual_start_row->emplace(binding, *num_gurobi_linear_constraints);
 
     const int error = AddLinearConstraint(
-        prog, model, constraint->A(), constraint->lower_bound(),
+        prog, model, constraint->GetDenseA(), constraint->lower_bound(),
         constraint->upper_bound(), binding.variables(), false,
-        sparseness_threshold, num_gurobi_linear_constraints);
+        num_gurobi_linear_constraints);
     if (error) {
       return error;
     }
@@ -776,40 +778,76 @@ void SetOptionOrThrow(GRBenv* model_env, const std::string& option,
   static_assert(std::is_same_v<T, int> || std::is_same_v<T, double> ||
                     std::is_same_v<T, std::string>,
                 "Option values must be int, double, or string");
+
+  // Set the parameter as requested, returning immediately in case of success.
+  const char* actual_type;
   int error = 0;
   if constexpr (std::is_same_v<T, int>) {
+    actual_type = "integer";
     error = GRBsetintparam(model_env, option.c_str(), val);
   } else if constexpr (std::is_same_v<T, double>) {
+    actual_type = "floating-point";
     error = GRBsetdblparam(model_env, option.c_str(), val);
   } else if constexpr (std::is_same_v<T, std::string>) {
+    actual_type = "string";
     error = GRBsetstrparam(model_env, option.c_str(), val.c_str());
   }
-  if (error) {
-    const std::string gurobi_version =
-        fmt::format("{}.{}", GRB_VERSION_MAJOR, GRB_VERSION_MINOR);
-    if (error == GRB_ERROR_UNKNOWN_PARAMETER) {
-      throw std::runtime_error(fmt::format(
-          "GurobiSolver(): '{}' is an unknown parameter in Gurobi, check "
-          "https://www.gurobi.com/documentation/{}/refman/parameters.html for "
-          "allowable parameters",
-          option, gurobi_version));
-    } else if (error == GRB_ERROR_VALUE_OUT_OF_RANGE) {
-      throw std::runtime_error(fmt::format(
-          "GurobiSolver(): '{}' is outside the parameter {}'s valid range", val,
-          option));
-    }
-    // The error message for Setting a Gurobi option should be either
-    // GRB_ERROR_UNKNOWN_PARAMETER or GRB_ERROR_VALUE_OF_OF_RANGE. But just in
-    // case I missed something, I added this throw to capture any other possible
-    // error message. This is untested because I don't know how to trigger an
-    // unknown error.
-    throw std::runtime_error(
-        fmt::format("GurobiSolver(): error code {}, cannot set option '{}' to "
-                    "value '{}', check "
-                    "https://www.gurobi.com/documentation/{}/refman/"
-                    "parameters.html for all allowable options and values.",
-                    error, option, val, gurobi_version));
+  if (!error) {
+    return;
   }
+
+  // Report range errors (i.e., the parameter name is known, but `val` is bad).
+  if (error == GRB_ERROR_VALUE_OUT_OF_RANGE) {
+    throw std::runtime_error(fmt::format(
+        "GurobiSolver(): '{}' is outside the parameter {}'s valid range", val,
+        option));
+  }
+
+  // In case of "unknown", it could either be truly unknown or else just the
+  // wrong data type.
+  if (error == GRB_ERROR_UNKNOWN_PARAMETER) {
+    // For the expected param_type, we have:
+    //   1: INT param
+    //   2: DBL param
+    //   3: STR param
+    const int param_type = GRBgetparamtype(model_env, option.c_str());
+
+    // If the user provided an int for a double param, treat it as a double
+    // without any complaint. This is especially helpful for Python users.
+    if constexpr (std::is_same_v<T, int>) {
+      if (param_type == 2) {
+        SetOptionOrThrow<double>(model_env, option, val);
+        return;
+      }
+    }
+
+    // Otherwise, identify all other cases of type-mismatches.
+    const char* expected_type = nullptr;
+    switch (param_type) {
+      case 1: { expected_type = "integer"; break; }
+      case 2: { expected_type = "floating-point"; break; }
+      case 3: { expected_type = "string"; break; }
+    }
+    if (expected_type != nullptr) {
+      throw std::runtime_error(fmt::format(
+          "GurobiSolver(): parameter {} should be a {} not a {}",
+          option, expected_type, actual_type));
+    }
+
+    // Otherwise, it was truly unknown not just wrongly-typed.
+    throw std::runtime_error(fmt::format(
+        "GurobiSolver(): '{}' is an unknown parameter in Gurobi, check "
+        "{}/parameters.html for allowable parameters",
+        option, refman()));
+  }
+
+  // The error code should always be UNKNOWN_PARAMETER or VALUE_OUT_OF_RANGE,
+  // but just in case we'll handle other errors with a fallback. This is
+  // untested because it's thought to be unreachable in practice.
+  throw std::runtime_error(fmt::format(
+      "GurobiSolver(): error code {}, cannot set option '{}' to value '{}', "
+      "check {}/parameters.html for all allowable options and values.",
+      error, option, val, refman()));
 }
 }  // anonymous namespace
 
@@ -997,32 +1035,30 @@ void GurobiSolver::DoSolve(
   });
 
   int error = 0;
-  // TODO(naveenoid) : This needs access externally.
-  double sparseness_threshold = 1e-14;
   double constant_cost = 0;
   if (!error) {
-    error = AddCosts(model, &constant_cost, prog, sparseness_threshold);
+    error = AddCosts(model, &constant_cost, prog);
   }
 
   int num_gurobi_linear_constraints = 0;
   if (!error) {
-    error = ProcessLinearConstraints(model, prog, sparseness_threshold,
-                                     &num_gurobi_linear_constraints,
-                                     &constraint_dual_start_row);
+    error =
+        ProcessLinearConstraints(model, prog, &num_gurobi_linear_constraints,
+                                 &constraint_dual_start_row);
   }
 
   // Add Lorentz cone constraints.
   if (!error) {
-    error = AddSecondOrderConeConstraints(
-        prog, prog.lorentz_cone_constraints(), sparseness_threshold,
-        lorentz_cone_new_variable_indices, model,
-        &num_gurobi_linear_constraints);
+    error =
+        AddSecondOrderConeConstraints(prog, prog.lorentz_cone_constraints(),
+                                      lorentz_cone_new_variable_indices, model,
+                                      &num_gurobi_linear_constraints);
   }
 
   // Add rotated Lorentz cone constraints.
   if (!error) {
     error = AddSecondOrderConeConstraints(
-        prog, prog.rotated_lorentz_cone_constraints(), sparseness_threshold,
+        prog, prog.rotated_lorentz_cone_constraints(),
         rotated_lorentz_cone_new_variable_indices, model,
         &num_gurobi_linear_constraints);
   }
@@ -1142,12 +1178,10 @@ void GurobiSolver::DoSolve(
       if (error) {
         const std::string gurobi_version =
             fmt::format("{}.{}", GRB_VERSION_MAJOR, GRB_VERSION_MINOR);
-        throw std::runtime_error(
-            fmt::format("GurobiSolver(): setting GRBwrite to {}, this is not "
-                        "supported. Check "
-                        "https://www.gurobi.com/documentation/{}/refman/"
-                        "py_model_write.html for more details.",
-                        grb_write.value(), gurobi_version));
+        throw std::runtime_error(fmt::format(
+            "GurobiSolver(): setting GRBwrite to {}, this is not supported. "
+            "Check {}/py_model_write.html for more details.",
+            grb_write.value(), refman()));
       }
     }
   }
@@ -1171,7 +1205,7 @@ void GurobiSolver::DoSolve(
     if (optimstatus != GRB_OPTIMAL && optimstatus != GRB_SUBOPTIMAL) {
       switch (optimstatus) {
         case GRB_INF_OR_UNBD: {
-          solution_result = SolutionResult::kInfeasible_Or_Unbounded;
+          solution_result = SolutionResult::kInfeasibleOrUnbounded;
           break;
         }
         case GRB_UNBOUNDED: {

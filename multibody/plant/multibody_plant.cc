@@ -11,18 +11,21 @@
 #include "drake/common/drake_throw.h"
 #include "drake/common/text_logging.h"
 #include "drake/common/unused.h"
-#include "drake/geometry/frame_kinematics_vector.h"
 #include "drake/geometry/geometry_frame.h"
 #include "drake/geometry/geometry_instance.h"
 #include "drake/geometry/geometry_roles.h"
+#include "drake/geometry/kinematics_vector.h"
+#include "drake/geometry/proximity_properties.h"
 #include "drake/geometry/query_results/contact_surface.h"
 #include "drake/geometry/render/render_label.h"
 #include "drake/math/random_rotation.h"
 #include "drake/math/rotation_matrix.h"
 #include "drake/multibody/contact_solvers/sparse_linear_operator.h"
+#include "drake/multibody/hydroelastics/hydroelastic_engine.h"
 #include "drake/multibody/plant/discrete_contact_pair.h"
 #include "drake/multibody/plant/externally_applied_spatial_force.h"
 #include "drake/multibody/plant/hydroelastic_traction_calculator.h"
+#include "drake/multibody/plant/make_discrete_update_manager.h"
 #include "drake/multibody/tree/prismatic_joint.h"
 #include "drake/multibody/tree/revolute_joint.h"
 #include "drake/multibody/triangle_quadrature/gaussian_triangle_quadrature_rule.h"
@@ -148,13 +151,13 @@ struct JointLimitsPenaltyParametersEstimator {
     // Penalty parameters for the parent body (child fixed).
     const double parent_mass = joint.parent_body().index() == world_index() ?
                                std::numeric_limits<double>::infinity() :
-                               joint.parent_body().get_default_mass();
+                               joint.parent_body().default_mass();
     const auto parent_params = CalcCriticallyDampedHarmonicOscillatorParameters(
         numerical_time_scale, parent_mass);
     // Penalty parameters for the child body (parent fixed).
     const double child_mass = joint.child_body().index() == world_index() ?
                                std::numeric_limits<double>::infinity() :
-                               joint.child_body().get_default_mass();
+                               joint.child_body().default_mass();
     const auto child_params = CalcCriticallyDampedHarmonicOscillatorParameters(
         numerical_time_scale, child_mass);
 
@@ -198,7 +201,7 @@ struct JointLimitsPenaltyParametersEstimator {
           // spatial inertias unspecified (i.e. initialized to NaN). A user
           // might do this when only interested in performing kinematics
           // computations.
-          if (std::isnan(body->get_default_mass())) {
+          if (std::isnan(body->default_mass())) {
             return std::numeric_limits<double>::infinity();
           }
 
@@ -242,7 +245,8 @@ struct JointLimitsPenaltyParametersEstimator {
 namespace {
 
 // Hack to fully qualify frame names, pending resolution of #9128. Used by
-// geometry registration routines.
+// geometry registration routines. When this hack is removed, also undo the
+// de-hacking step within internal_geometry_names.cc.
 template <typename T>
 std::string GetScopedName(
     const MultibodyPlant<T>& plant,
@@ -358,8 +362,11 @@ template <typename T>
 MultibodyPlant<T>::MultibodyPlant(double time_step)
     : MultibodyPlant(nullptr, time_step) {
   // Cross-check that the Config default matches our header file default.
-  DRAKE_DEMAND(contact_model_ == ContactModel::kPoint);
-  DRAKE_DEMAND(MultibodyPlantConfig{}.contact_model == "point");
+  DRAKE_DEMAND(contact_model_ == ContactModel::kHydroelasticWithFallback);
+  DRAKE_DEMAND(MultibodyPlantConfig{}.contact_model ==
+               "hydroelastic_with_fallback");
+  DRAKE_DEMAND(contact_solver_enum_ == DiscreteContactSolver::kTamsi);
+  DRAKE_DEMAND(MultibodyPlantConfig{}.discrete_contact_solver == "tamsi");
 }
 
 template <typename T>
@@ -368,6 +375,8 @@ MultibodyPlant<T>::MultibodyPlant(
     : internal::MultibodyTreeSystem<T>(
           systems::SystemTypeTag<MultibodyPlant>{},
           std::move(tree_in), time_step > 0),
+      contact_surface_representation_(
+        GetDefaultContactSurfaceRepresentation(time_step)),
       time_step_(time_step) {
   DRAKE_THROW_UNLESS(time_step >= 0);
   // TODO(eric.cousineau): Combine all of these elements into one struct, make
@@ -378,6 +387,185 @@ MultibodyPlant<T>::MultibodyPlant(
   // Add the world body to the graph.
   multibody_graph_.AddBody(world_body().name(), world_body().model_instance());
   DeclareSceneGraphPorts();
+}
+
+template <typename T>
+template <typename U>
+MultibodyPlant<T>::MultibodyPlant(const MultibodyPlant<U>& other)
+    : internal::MultibodyTreeSystem<T>(
+          systems::SystemTypeTag<MultibodyPlant>{},
+          other.internal_tree().template CloneToScalar<T>(),
+          other.is_discrete()) {
+  DRAKE_THROW_UNLESS(other.is_finalized());
+
+  // Here we step through every member field one by one, in the exact order
+  // they are declared in the header, so that a reader could mindlessly compare
+  // this function to the private fields, and check that every single field got
+  // a mention.
+  // For each field, this function will either:
+  // (1) Copy the field directly.
+  // (2) Place a forward-reference comment like "We initialize
+  //     geometry_query_port_ during DeclareSceneGraphPorts, below."
+  // (3) Place a disclaimer comment why that field does not need to be copied
+  {
+    source_id_ = other.source_id_;
+    penalty_method_contact_parameters_ =
+        other.penalty_method_contact_parameters_;
+    penetration_allowance_ = other.penetration_allowance_;
+    // Copy over the friction model if it is initialized. Otherwise, a default
+    // value will be set in FinalizePlantOnly().
+    // Note that stiction_tolerance is the only real data field in
+    // `friction_model_`, so setting the stiction tolerance is equivalent to
+    // copying `friction_model_`.
+    if (other.friction_model_.stiction_tolerance() > 0) {
+      friction_model_.set_stiction_tolerance(
+          other.friction_model_.stiction_tolerance());
+    }
+    // joint_limit_parameters_ is set in SetUpJointLimitsParameters() in
+    // FinalizePlantOnly().
+    body_index_to_frame_id_ = other.body_index_to_frame_id_;
+    frame_id_to_body_index_ = other.frame_id_to_body_index_;
+    geometry_id_to_body_index_ = other.geometry_id_to_body_index_;
+    visual_geometries_ = other.visual_geometries_;
+    num_visual_geometries_ = other.num_visual_geometries_;
+    collision_geometries_ = other.collision_geometries_;
+    num_collision_geometries_ = other.num_collision_geometries_;
+    contact_model_ = other.contact_model_;
+    contact_solver_enum_ = other.contact_solver_enum_;
+    contact_surface_representation_ = other.contact_surface_representation_;
+    // geometry_query_port_ is set during DeclareSceneGraphPorts() below.
+    // geometry_pose_port_ is set during DeclareSceneGraphPorts() below.
+    // scene_graph_ is set to nullptr in FinalizePlantOnly() below.
+
+    // The following data member are set in DeclareStateCacheAndPorts()
+    // in FinalizePlantOnly():
+    //   -instance_actuation_ports_
+    //   -actuation_port_
+    //   -applied_generalized_force_input_port_
+    //   -applied_spatial_force_input_port_
+    //   -body_poses_port_
+    //   -body_spatial_velocities_port_
+    //   -body_spatial_acclerations_port_
+    //   -state_output_port_
+    //   -instance_state_output_ports_
+    //   -generalized_acceleration_output_port_
+    //   -instance_generalized_acceleration_output_ports_
+    //   -contact_results_port_
+    //   -reaction_forces_port_
+    //   -instance_generalized_contact_forces_output_ports_
+
+    // Partially copy multibody_graph_. The looped calls to RegisterJointInGraph
+    // below copy the second half.
+    // TODO(xuchenhan-tri) MultibodyGraph should offer a public function (or
+    // constructor) for scalar conversion, so that MbP can just delegate the
+    // copying to MbG, instead of leaking knowledge of what kind of data MbG
+    // holds into MbP's converting constructor here.
+    for (BodyIndex index(0); index < num_bodies(); ++index) {
+      const Body<T>& body = get_body(index);
+      multibody_graph_.AddBody(body.name(), body.model_instance());
+    }
+
+    time_step_ = other.time_step_;
+    // discrete_update_manager_ is copied below after FinalizePlantOnly().
+
+    // Copy over physical_models_.
+    // Note: The physical models must be cloned before `FinalizePlantOnly()` is
+    // called because `FinalizePlantOnly()` has to allocate system resources
+    // requested by physical models.
+    for (auto& model : other.physical_models_) {
+      auto cloned_model = model->template CloneToScalar<T>();
+      // TODO(xuchenhan-tri): Rework physical model and discrete update manager
+      //  to eliminate the requirement on the order that they are called with
+      //  respect to Finalize().
+
+      // AddPhysicalModel can't be called here because it's post-finalize. We
+      // have to manually disable scalars that the cloned physical model do not
+      // support.
+      RemoveUnsupportedScalars(*cloned_model);
+      physical_models_.emplace_back(std::move(cloned_model));
+    }
+
+    // Copy over coupler_constraints_specs_;
+    DRAKE_DEMAND(coupler_constraints_specs_.empty());
+    // symbolic::Expression doesn't support constraints. If the source is
+    // symbolic, the coupler constraints specs are necessarily empty. If the
+    // source has non-empty coupler constraints specs, then it necessarily has
+    // the compliant contact manager, which would preclude scalar conversion to
+    // symbolic. Thus we don't need to worry about the destination being
+    // symbolic either.
+    if constexpr (!std::is_same_v<T, symbolic::Expression> &&
+                  !std::is_same_v<U, symbolic::Expression>) {
+      for (const internal::CouplerConstraintSpecs<U>& spec :
+           other.coupler_constraints_specs_) {
+        coupler_constraints_specs_.push_back(spec);
+      }
+    } else {
+      DRAKE_DEMAND(other.coupler_constraints_specs_.empty());
+    }
+    // cache_indexes_ is set in DeclareCacheEntries() in
+    // DeclareStateCacheAndPorts() in FinalizePlantOnly().
+    X_WB_default_list_ = other.X_WB_default_list_;
+  }
+
+  DeclareSceneGraphPorts();
+
+  for (JointIndex index(0); index < num_joints(); ++index) {
+    RegisterJointInGraph(get_joint(index));
+  }
+
+  // MultibodyTree::CloneToScalar() already called MultibodyTree::Finalize()
+  // on the new MultibodyTree on U. Therefore we only Finalize the plant's
+  // internals (and not the MultibodyTree).
+  FinalizePlantOnly();
+
+  // Note: The discrete update manager needs to be copied *after* the plant is
+  // finalized.
+  if (other.discrete_update_manager_ != nullptr) {
+    SetDiscreteUpdateManager(
+        other.discrete_update_manager_->template CloneToScalar<T>());
+  }
+}
+
+template <typename T>
+ConstraintIndex MultibodyPlant<T>::AddCouplerConstraint(const Joint<T>& joint0,
+                                                        const Joint<T>& joint1,
+                                                        const T& gear_ratio,
+                                                        const T& offset) {
+  // N.B. The manager is setup at Finalize() and therefore we must require
+  // constraints to be added pre-finalize.
+  DRAKE_MBP_THROW_IF_FINALIZED();
+
+  if (!is_discrete()) {
+    throw std::runtime_error(
+        "Currently coupler constraints are only supported for discrete "
+        "MultibodyPlant models.");
+  }
+
+  // TAMSI does not support coupler constraints. For all other solvers, we let
+  // the discrete update manger to throw an exception at finalize time.
+  if (contact_solver_enum_ == DiscreteContactSolver::kTamsi) {
+    throw std::runtime_error(
+        "Currently this MultibodyPlant is set to use the TAMSI solver. TAMSI "
+        "does not support coupler constraints. Use "
+        "set_discrete_contact_solver() to set a different solver type.");
+  }
+
+  if (joint0.num_velocities() != 1 || joint1.num_velocities() != 1) {
+    const std::string message = fmt::format(
+        "Coupler constraints can only be defined on single-DOF joints. "
+        "However joint '{}' has {} DOFs and joint '{}' has {} "
+        "DOFs.",
+        joint0.name(), joint0.num_velocities(), joint1.name(),
+        joint1.num_velocities());
+    throw std::runtime_error(message);
+  }
+
+  const ConstraintIndex constraint_index(num_constraints());
+
+  coupler_constraints_specs_.push_back(internal::CouplerConstraintSpecs<T>{
+      joint0.index(), joint1.index(), gear_ratio, offset});
+
+  return constraint_index;
 }
 
 template <typename T>
@@ -420,15 +608,21 @@ void MultibodyPlant<T>::set_contact_model(ContactModel model) {
 }
 
 template <typename T>
-ContactModel MultibodyPlant<T>::get_contact_model() const {
-  return contact_model_;
+void MultibodyPlant<T>::set_discrete_contact_solver(
+    DiscreteContactSolver contact_solver) {
+  DRAKE_MBP_THROW_IF_FINALIZED();
+  contact_solver_enum_ = contact_solver;
 }
 
 template <typename T>
-void MultibodyPlant<T>::set_low_resolution_contact_surface(
-    bool use_low_resolution) {
-  DRAKE_MBP_THROW_IF_FINALIZED();
-  use_low_resolution_contact_surface_ = use_low_resolution;
+DiscreteContactSolver MultibodyPlant<T>::get_discrete_contact_solver()
+    const {
+  return contact_solver_enum_;
+}
+
+template <typename T>
+ContactModel MultibodyPlant<T>::get_contact_model() const {
+  return contact_model_;
 }
 
 template <typename T>
@@ -442,10 +636,12 @@ void MultibodyPlant<T>::SetFreeBodyRandomRotationDistributionToUniform(
 
 template <typename T>
 const WeldJoint<T>& MultibodyPlant<T>::WeldFrames(
-    const Frame<T>& A, const Frame<T>& B,
-    const math::RigidTransform<double>& X_AB) {
-  const std::string joint_name = A.name() + "_welds_to_" + B.name();
-  return AddJoint(std::make_unique<WeldJoint<T>>(joint_name, A, B, X_AB));
+    const Frame<T>& frame_on_parent_F, const Frame<T>& frame_on_child_M,
+    const math::RigidTransform<double>& X_FM) {
+  const std::string joint_name =
+      frame_on_parent_F.name() + "_welds_to_" + frame_on_child_M.name();
+  return AddJoint(std::make_unique<WeldJoint<T>>(joint_name, frame_on_parent_F,
+                                                 frame_on_child_M, X_FM));
 }
 
 template <typename T>
@@ -456,9 +652,8 @@ geometry::SourceId MultibodyPlant<T>::RegisterAsSourceForSceneGraph(
   // Save the GS pointer so that on later geometry registrations can use this
   // instance. This will be nullified at Finalize().
   scene_graph_ = scene_graph;
-  source_id_ = member_scene_graph().RegisterSource(this->get_name());
-  const geometry::FrameId world_frame_id =
-      member_scene_graph().world_frame_id();
+  source_id_ = scene_graph_->RegisterSource(this->get_name());
+  const geometry::FrameId world_frame_id = scene_graph_->world_frame_id();
   body_index_to_frame_id_[world_index()] = world_frame_id;
   frame_id_to_body_index_[world_frame_id] = world_index();
   // In case any bodies were added before registering scene graph, make sure the
@@ -504,7 +699,7 @@ geometry::GeometryId MultibodyPlant<T>::RegisterVisualGeometry(
   GeometryId id =
       RegisterGeometry(body, X_BG, shape,
                        GetScopedName(*this, body.model_instance(), name));
-  member_scene_graph().AssignRole(*source_id_, id, properties);
+  scene_graph_->AssignRole(*source_id_, id, properties);
 
   // TODO(SeanCurtis-TRI): Eliminate the automatic assignment of perception
   //  and illustration in favor of a protocol that allows definition.
@@ -524,12 +719,11 @@ geometry::GeometryId MultibodyPlant<T>::RegisterVisualGeometry(
       "renderer", "accepting",
       properties.GetProperty<std::set<std::string>>("renderer", "accepting"));
   }
-  member_scene_graph().AssignRole(*source_id_, id, perception_props);
+  scene_graph_->AssignRole(*source_id_, id, perception_props);
 
-  const int visual_index = geometry_id_to_visual_index_.size();
-  geometry_id_to_visual_index_[id] = visual_index;
-  DRAKE_ASSERT(num_bodies() == static_cast<int>(visual_geometries_.size()));
+  DRAKE_ASSERT(static_cast<int>(visual_geometries_.size()) == num_bodies());
   visual_geometries_[body.index()].push_back(id);
+  ++num_visual_geometries_;
   return id;
 }
 
@@ -549,26 +743,16 @@ geometry::GeometryId MultibodyPlant<T>::RegisterCollisionGeometry(
   DRAKE_THROW_UNLESS(properties.HasProperty(geometry::internal::kMaterialGroup,
                                             geometry::internal::kFriction));
 
-  const CoulombFriction<double> coulomb_friction =
-      properties.GetProperty<CoulombFriction<double>>(
-          geometry::internal::kMaterialGroup, geometry::internal::kFriction);
-
   // TODO(amcastro-tri): Consider doing this after finalize so that we can
   // register geometry that has a fixed path to world to the world body (i.e.,
   // as anchored geometry).
   GeometryId id = RegisterGeometry(
       body, X_BG, shape, GetScopedName(*this, body.model_instance(), name));
 
-  member_scene_graph().AssignRole(*source_id_, id, std::move(properties));
-  const int collision_index = geometry_id_to_collision_index_.size();
-  geometry_id_to_collision_index_[id] = collision_index;
-  DRAKE_ASSERT(
-      static_cast<int>(default_coulomb_friction_.size()) == collision_index);
-  // TODO(SeanCurtis-TRI): Stop storing coulomb friction in MBP and simply
-  //  acquire it from SceneGraph.
-  default_coulomb_friction_.push_back(coulomb_friction);
-  DRAKE_ASSERT(num_bodies() == static_cast<int>(collision_geometries_.size()));
+  scene_graph_->AssignRole(*source_id_, id, std::move(properties));
+  DRAKE_ASSERT(static_cast<int>(collision_geometries_.size()) == num_bodies());
   collision_geometries_[body.index()].push_back(id);
+  ++num_collision_geometries_;
   return id;
 }
 
@@ -619,6 +803,23 @@ std::vector<const Body<T>*> MultibodyPlant<T>::GetBodiesWeldedTo(
 }
 
 template <typename T>
+std::vector<BodyIndex> MultibodyPlant<T>::GetBodiesKinematicallyAffectedBy(
+    const std::vector<JointIndex>& joint_indexes) const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  for (const JointIndex& joint : joint_indexes) {
+    if (!joint.is_valid() || joint >= num_joints()) {
+      throw std::logic_error(fmt::format(
+          "{}: No joint with index {} has been registered.", __func__, joint));
+    }
+    if (get_joint(joint).num_velocities() == 0) {
+      throw std::logic_error(fmt::format(
+          "{}: joint with index {} is welded.", __func__, joint));
+    }
+  }
+  return internal_tree().GetBodiesKinematicallyAffectedBy(joint_indexes);
+}
+
+template <typename T>
 std::unordered_set<BodyIndex> MultibodyPlant<T>::GetFloatingBaseBodies() const {
   DRAKE_MBP_THROW_IF_NOT_FINALIZED();
   std::unordered_set<BodyIndex> floating_bodies;
@@ -641,7 +842,7 @@ geometry::GeometryId MultibodyPlant<T>::RegisterGeometry(
   // Register geometry in the body frame.
   std::unique_ptr<geometry::GeometryInstance> geometry_instance =
       std::make_unique<GeometryInstance>(X_BG, shape.Clone(), name);
-  GeometryId geometry_id = member_scene_graph().RegisterGeometry(
+  GeometryId geometry_id = scene_graph_->RegisterGeometry(
       source_id_.value(), body_index_to_frame_id_[body.index()],
       std::move(geometry_instance));
   geometry_id_to_body_index_[geometry_id] = body.index();
@@ -665,7 +866,7 @@ void MultibodyPlant<T>::RegisterRigidBodyWithSceneGraph(
   if (geometry_source_is_registered()) {
     // If not already done, register a frame for this body.
     if (!body_has_registered_frame(body)) {
-      FrameId frame_id = member_scene_graph().RegisterFrame(
+      FrameId frame_id = scene_graph_->RegisterFrame(
           source_id_.value(),
           GeometryFrame(
               GetScopedName(*this, body.model_instance(), body.name()),
@@ -751,10 +952,24 @@ void MultibodyPlant<T>::Finalize() {
   // After finalizing the base class, tree is read-only.
   internal::MultibodyTreeSystem<T>::Finalize();
   if (geometry_source_is_registered()) {
-    FilterAdjacentBodies();
+    ApplyDefaultCollisionFilters();
     ExcludeCollisionsWithVisualGeometry();
   }
   FinalizePlantOnly();
+
+  // Set discrete update manager. Currently, CompliantContactManager does not
+  // support T = symbolic::Expression.
+  // N.B. Unlike SAP, currently the TAMSI solver is incorporated directly into
+  // MultibodyPlant's source, rather than in CompliantContactManager. The plan
+  // is to move TAMSI, as well as the entirety of the discrete handling of
+  // contact, into CompliantContactManager.
+  if (is_discrete()) {
+    std::unique_ptr<internal::DiscreteUpdateManager<T>> manager =
+        internal::MakeDiscreteUpdateManager<T>(contact_solver_enum_);
+    if (manager) {
+      SetDiscreteUpdateManager(std::move(manager));
+    }
+  }
 }
 
 template<typename T>
@@ -870,72 +1085,88 @@ MatrixX<T> MultibodyPlant<T>::MakeActuationMatrix() const {
   return B;
 }
 
-template <typename T>
-struct MultibodyPlant<T>::SceneGraphStub {
-  struct StubSceneGraphInspector {
-    const geometry::ProximityProperties* GetProximityProperties(
-        GeometryId) const {
-      return nullptr;
-    }
-    const geometry::IllustrationProperties* GetIllustrationProperties(
-        GeometryId) const {
-      return nullptr;
-    }
-  };
+namespace {
 
-  struct StubCollisionFilterManager {
-    void Apply(const geometry::CollisionFilterDeclaration&) {
-      return;
-    }
-  };
-
-  static void Throw(const char* operation_name) {
-    throw std::logic_error(fmt::format(
-        "Cannot {} on a SceneGraph<symbolic::Expression>", operation_name));
-  }
-
-  static FrameId world_frame_id() {
-    return SceneGraph<double>::world_frame_id();
-  }
-
-#define DRAKE_STUB(Ret, Name)                   \
-  template <typename... Args>                   \
-  Ret Name(Args...) const { Throw(#Name); return Ret(); }
-
-  DRAKE_STUB(void, AssignRole)
-  DRAKE_STUB(FrameId, RegisterFrame)
-  DRAKE_STUB(GeometryId, RegisterGeometry)
-  DRAKE_STUB(SourceId, RegisterSource)
-  const StubSceneGraphInspector model_inspector() const {
-    Throw("model_inspector");
-    return StubSceneGraphInspector();
-  }
-  StubCollisionFilterManager collision_filter_manager() {
-    Throw("collision_filter_manager");
-    return StubCollisionFilterManager();
-  }
-
-#undef DRAKE_STUB
-};
-
-template <typename T>
-typename MultibodyPlant<T>::MemberSceneGraph&
-MultibodyPlant<T>::member_scene_graph() {
-  DRAKE_THROW_UNLESS(scene_graph_ != nullptr);
-  return *scene_graph_;
+void ThrowForDisconnectedGeometryPort(std::string_view explanation) {
+  throw std::logic_error(
+      std::string(explanation) +
+      "\n\nThe provided context doesn't show a connection for the plant's "
+      "query input port (see MultibodyPlant::get_geometry_query_input_port())"
+      ". See https://drake.mit.edu/troubleshooting.html"
+      "#mbp-unconnected-query-object-port for help.");
 }
 
-// Specialize this function so that we can use our Stub class; we cannot call
-// methods on SceneGraph<Expression> because they do not exist.
-template <>
-typename MultibodyPlant<symbolic::Expression>::MemberSceneGraph&
-MultibodyPlant<symbolic::Expression>::member_scene_graph() {
-  static never_destroyed<SceneGraphStub> stub_;
-  return stub_.access();
+}  // namespace
+
+template <typename T>
+const geometry::QueryObject<T>& MultibodyPlant<T>::EvalGeometryQueryInput(
+    const systems::Context<T>& context, std::string_view explanation) const {
+  this->ValidateContext(context);
+  if (!get_geometry_query_input_port().HasValue(context)) {
+    ThrowForDisconnectedGeometryPort(explanation);
+  }
+  return get_geometry_query_input_port()
+      .template Eval<geometry::QueryObject<T>>(context);
 }
 
 template <typename T>
-void MultibodyPlant<T>::FilterAdjacentBodies() {
+void MultibodyPlant<T>::ValidateGeometryInput(
+    const systems::Context<T>& context, std::string_view explanation) const {
+  if (!IsValidGeometryInput(context)) {
+    ThrowForDisconnectedGeometryPort(explanation);
+  }
+}
+
+template <typename T>
+void MultibodyPlant<T>::ValidateGeometryInput(
+    const systems::Context<T>& context,
+    const systems::OutputPort<T>& output_port) const {
+  if (!IsValidGeometryInput(context)) {
+    ThrowForDisconnectedGeometryPort(fmt::format(
+        "You've tried evaluating MultibodyPlant's '{}' output port.",
+        output_port.get_name()));
+  }
+}
+
+template <typename T>
+bool MultibodyPlant<T>::IsValidGeometryInput(
+    const systems::Context<T>& context) const {
+  return num_collision_geometries() == 0 ||
+         get_geometry_query_input_port().HasValue(context);
+}
+
+template <typename T>
+std::pair<T, T> MultibodyPlant<T>::GetPointContactParameters(
+    geometry::GeometryId id,
+    const geometry::SceneGraphInspector<T>& inspector) const {
+  const geometry::ProximityProperties* prop =
+      inspector.GetProximityProperties(id);
+  DRAKE_DEMAND(prop != nullptr);
+  return std::pair(prop->template GetPropertyOrDefault<T>(
+                       geometry::internal::kMaterialGroup,
+                       geometry::internal::kPointStiffness,
+                       penalty_method_contact_parameters_.geometry_stiffness),
+                   prop->template GetPropertyOrDefault<T>(
+                       geometry::internal::kMaterialGroup,
+                       geometry::internal::kHcDissipation,
+                       penalty_method_contact_parameters_.dissipation));
+}
+
+template <typename T>
+const CoulombFriction<double>& MultibodyPlant<T>::GetCoulombFriction(
+    geometry::GeometryId id,
+    const geometry::SceneGraphInspector<T>& inspector) const {
+  const geometry::ProximityProperties* prop =
+      inspector.GetProximityProperties(id);
+  DRAKE_DEMAND(prop != nullptr);
+  DRAKE_THROW_UNLESS(prop->HasProperty(geometry::internal::kMaterialGroup,
+                                       geometry::internal::kFriction));
+  return prop->GetProperty<CoulombFriction<double>>(
+      geometry::internal::kMaterialGroup, geometry::internal::kFriction);
+}
+
+template <typename T>
+void MultibodyPlant<T>::ApplyDefaultCollisionFilters() {
   DRAKE_DEMAND(geometry_source_is_registered());
   // Disallow collisions between adjacent bodies. Adjacency is implied by the
   // existence of a joint between bodies.
@@ -948,18 +1179,27 @@ void MultibodyPlant<T>::FilterAdjacentBodies() {
     std::optional<FrameId> parent_id = GetBodyFrameIdIfExists(parent.index());
 
     if (child_id && parent_id) {
-      member_scene_graph().collision_filter_manager().Apply(
+      scene_graph_->collision_filter_manager().Apply(
         CollisionFilterDeclaration().ExcludeBetween(
           geometry::GeometrySet(*child_id),
           geometry::GeometrySet(*parent_id)));
     }
   }
-  // We must explicitly exclude collisions between all geometries registered
-  // against the world.
-  // TODO(eric.cousineau): Do this in a better fashion (#11117).
-  auto g_world = CollectRegisteredGeometries(GetBodiesWeldedTo(world_body()));
-  member_scene_graph().collision_filter_manager().Apply(
-      CollisionFilterDeclaration().ExcludeWithin(g_world));
+  // We explicitly exclude collisions within welded subgraphs.
+  std::vector<std::set<BodyIndex>> subgraphs =
+      multibody_graph_.FindSubgraphsOfWeldedBodies();
+  for (const auto& subgraph : subgraphs) {
+    // Only operate on non-trivial weld subgraphs.
+    if (subgraph.size() <= 1) { continue; }
+    // Map body indices to pointers.
+    std::vector<const Body<T>*> subgraph_bodies;
+    for (BodyIndex body_index : subgraph) {
+      subgraph_bodies.push_back(&get_body(body_index));
+    }
+    auto geometries = CollectRegisteredGeometries(subgraph_bodies);
+    scene_graph_->collision_filter_manager().Apply(
+        CollisionFilterDeclaration().ExcludeWithin(geometries));
+  }
 }
 
 template <typename T>
@@ -974,7 +1214,7 @@ void MultibodyPlant<T>::ExcludeCollisionsWithVisualGeometry() {
     collision.Add(body_geometries);
   }
   // clang-format off
-  member_scene_graph().collision_filter_manager().Apply(
+  scene_graph_->collision_filter_manager().Apply(
       CollisionFilterDeclaration()
           .ExcludeWithin(visual)
           .ExcludeBetween(visual, collision));
@@ -991,11 +1231,11 @@ void MultibodyPlant<T>::ExcludeCollisionGeometriesWithCollisionFilterGroupPair(
   DRAKE_DEMAND(geometry_source_is_registered());
 
   if (collision_filter_group_a.first == collision_filter_group_b.first) {
-    member_scene_graph().collision_filter_manager().Apply(
+    scene_graph_->collision_filter_manager().Apply(
         CollisionFilterDeclaration().ExcludeWithin(
             collision_filter_group_a.second));
   } else {
-    member_scene_graph().collision_filter_manager().Apply(
+    scene_graph_->collision_filter_manager().Apply(
         CollisionFilterDeclaration().ExcludeBetween(
             collision_filter_group_a.second, collision_filter_group_b.second));
   }
@@ -1034,9 +1274,9 @@ void MultibodyPlant<T>::CalcNormalAndTangentContactJacobians(
     const GeometryId geometryA_id = point_pair.id_A;
     const GeometryId geometryB_id = point_pair.id_B;
 
-    BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryA_id);
+    const BodyIndex bodyA_index = FindBodyByGeometryId(geometryA_id);
+    const BodyIndex bodyB_index = FindBodyByGeometryId(geometryB_id);
     const Body<T>& bodyA = get_body(bodyA_index);
-    BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryB_id);
     const Body<T>& bodyB = get_body(bodyB_index);
 
     // Penetration depth > 0 if bodies interpenetrate.
@@ -1127,6 +1367,22 @@ void MultibodyPlant<T>::CalcContactJacobiansCache(
 }
 
 template <typename T>
+BodyIndex MultibodyPlant<T>::FindBodyByGeometryId(
+    GeometryId geometry_id) const {
+  if (!geometry_id.is_valid()) {
+    throw std::logic_error(
+        "MultibodyPlant received contact results for a null GeometryId");
+  }
+  const auto iter = geometry_id_to_body_index_.find(geometry_id);
+  if (iter != geometry_id_to_body_index_.end()) {
+    return iter->second;
+  }
+  throw std::logic_error(fmt::format(
+      "MultibodyPlant received contact results for GeometryId {}, but that"
+      " ID is not known to this plant", geometry_id));
+}
+
+template <typename T>
 void MultibodyPlant<T>::SetDiscreteUpdateManager(
     std::unique_ptr<internal::DiscreteUpdateManager<T>> manager) {
   // N.B. This requirement is really more important on the side of the
@@ -1134,6 +1390,7 @@ void MultibodyPlant<T>::SetDiscreteUpdateManager(
   // least to build the contact problem. However, here we play safe and demand
   // finalization right here.
   DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_DEMAND(is_discrete());
   DRAKE_DEMAND(manager != nullptr);
   manager->SetOwningMultibodyPlant(this);
   discrete_update_manager_ = std::move(manager);
@@ -1143,6 +1400,8 @@ void MultibodyPlant<T>::SetDiscreteUpdateManager(
 template <typename T>
 void MultibodyPlant<T>::AddPhysicalModel(
     std::unique_ptr<internal::PhysicalModel<T>> model) {
+  // TODO(xuchenhan-tri): Guard against the same type of model being registered
+  //  more than once.
   DRAKE_MBP_THROW_IF_FINALIZED();
   DRAKE_DEMAND(model != nullptr);
   auto& added_model = physical_models_.emplace_back(std::move(model));
@@ -1166,6 +1425,63 @@ void MultibodyPlant<T>::set_penetration_allowance(
 }
 
 template <typename T>
+void MultibodyPlant<T>::SetDefaultPositions(
+    const Eigen::Ref<const Eigen::VectorXd>& q) {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(q.size() == num_positions());
+  for (int i = 0; i < num_joints(); ++i) {
+    Joint<T>& joint = get_mutable_joint(JointIndex(i));
+    joint.set_default_positions(
+        q.segment(joint.position_start(), joint.num_positions()));
+  }
+  for (BodyIndex i : GetFloatingBaseBodies()) {
+    const Body<T>& body = get_body(i);
+    RigidTransform<double> X_WB;
+    const int pos = body.floating_positions_start();
+    if (body.has_quaternion_dofs()) {
+      X_WB = RigidTransform<double>(
+          Eigen::Quaternion<double>(q[pos], q[pos + 1], q[pos + 2], q[pos + 3]),
+          q.segment(pos + 4, 3));
+    } else {
+      X_WB = RigidTransform<double>(
+          math::RollPitchYaw<double>(q.segment(pos, 3)), q.segment(pos + 3, 3));
+    }
+    SetDefaultFreeBodyPose(body, X_WB);
+  }
+}
+
+template <typename T>
+void MultibodyPlant<T>::SetDefaultPositions(ModelInstanceIndex model_instance,
+                    const Eigen::Ref<const Eigen::VectorXd>& q_instance) {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  DRAKE_THROW_UNLESS(q_instance.size() == num_positions(model_instance));
+  VectorX<T> q_T(num_positions());
+  internal_tree().SetPositionsInArray(model_instance, q_instance.cast<T>(),
+                                      &q_T);
+  Eigen::VectorXd q = ExtractDoubleOrThrow(q_T);
+  for (JointIndex i : GetJointIndices(model_instance)) {
+    Joint<T>& joint = get_mutable_joint(i);
+    joint.set_default_positions(
+        q.segment(joint.position_start(), joint.num_positions()));
+  }
+  for (BodyIndex i : GetBodyIndices(model_instance)) {
+    const Body<T>& body = get_body(i);
+    if (!body.is_floating()) continue;
+    RigidTransform<double> X_WB;
+    const int pos = body.floating_positions_start();
+    if (body.has_quaternion_dofs()) {
+      X_WB = RigidTransform<double>(
+          Eigen::Quaternion<double>(q[pos], q[pos + 1], q[pos + 2], q[pos + 3]),
+          q.segment(pos + 4, 3));
+    } else {
+      X_WB = RigidTransform<double>(
+          math::RollPitchYaw<double>(q.segment(pos, 3)), q.segment(pos + 3, 3));
+    }
+    SetDefaultFreeBodyPose(body, X_WB);
+  }
+}
+
+template <typename T>
 void MultibodyPlant<T>::EstimatePointContactParameters(
     double penetration_allowance) {
   // Default to Earth's gravity for this estimation.
@@ -1186,7 +1502,7 @@ void MultibodyPlant<T>::EstimatePointContactParameters(
   double mass = 0.0;
   for (BodyIndex body_index(0); body_index < num_bodies(); ++body_index) {
     const Body<T>& body = get_body(body_index);
-    mass = std::max(mass, body.get_default_mass());
+    mass = std::max(mass, body.default_mass());
   }
 
   // For now, we use the model of a critically damped spring mass oscillator
@@ -1253,30 +1569,11 @@ void MultibodyPlant<T>::CalcPointPairPenetrations(
     std::vector<PenetrationAsPointPair<T>>* output) const {
   this->ValidateContext(context);
   if (num_collision_geometries() > 0) {
-    const auto& query_object = EvalGeometryQueryInput(context);
+    const auto& query_object = EvalGeometryQueryInput(context, __func__);
     *output = query_object.ComputePointPairPenetration();
   } else {
     output->clear();
   }
-}
-
-// Specialize this function so that symbolic::Expression throws an error.
-template <>
-void MultibodyPlant<symbolic::Expression>::CalcPointPairPenetrations(
-    const systems::Context<symbolic::Expression>&,
-    std::vector<PenetrationAsPointPair<symbolic::Expression>>*) const {
-  throw std::logic_error(
-      "This method doesn't support T = symbolic::Expression.");
-}
-
-template <>
-std::vector<CoulombFriction<double>>
-MultibodyPlant<symbolic::Expression>::CalcCombinedFrictionCoefficients(
-    const drake::systems::Context<symbolic::Expression>&,
-    const std::vector<internal::DiscreteContactPair<symbolic::Expression>>&)
-    const {
-  throw std::logic_error(
-      "This method doesn't support T = symbolic::Expression.");
 }
 
 template<typename T>
@@ -1292,7 +1589,7 @@ MultibodyPlant<T>::CalcCombinedFrictionCoefficients(
     return combined_frictions;
   }
 
-  const auto& query_object = EvalGeometryQueryInput(context);
+  const auto& query_object = EvalGeometryQueryInput(context, __func__);
   const geometry::SceneGraphInspector<T>& inspector = query_object.inspector();
 
   for (const auto& pair : contact_pairs) {
@@ -1315,6 +1612,10 @@ void MultibodyPlant<T>::CopyContactResultsOutput(
     const systems::Context<T>& context,
     ContactResults<T>* contact_results) const {
   this->ValidateContext(context);
+
+  // Guard against failure to acquire the geometry input deep in the call graph.
+  ValidateGeometryInput(context, get_contact_results_output_port());
+
   DRAKE_DEMAND(contact_results != nullptr);
   *contact_results = EvalContactResults(context);
 }
@@ -1326,11 +1627,12 @@ void MultibodyPlant<T>::CalcContactResultsContinuous(
   this->ValidateContext(context);
   DRAKE_DEMAND(contact_results != nullptr);
   contact_results->Clear();
+  contact_results->set_plant(this);
   if (num_collision_geometries() == 0) return;
 
   switch (contact_model_) {
     case ContactModel::kPoint:
-      CalcContactResultsContinuousPointPair(context, contact_results);
+      AppendContactResultsContinuousPointPair(context, contact_results);
       break;
 
     case ContactModel::kHydroelastic:
@@ -1339,7 +1641,7 @@ void MultibodyPlant<T>::CalcContactResultsContinuous(
 
     case ContactModel::kHydroelasticWithFallback:
       // Simply merge the contributions of each contact representation.
-      CalcContactResultsContinuousPointPair(context, contact_results);
+      AppendContactResultsContinuousPointPair(context, contact_results);
       AppendContactResultsContinuousHydroelastic(context, contact_results);
       break;
   }
@@ -1359,6 +1661,8 @@ void MultibodyPlant<T>::AppendContactResultsContinuousHydroelastic(
     const systems::Context<T>& context,
     ContactResults<T>* contact_results) const {
   this->ValidateContext(context);
+  DRAKE_DEMAND(contact_results != nullptr);
+  DRAKE_DEMAND(contact_results->plant() == this);
   const internal::HydroelasticContactInfoAndBodySpatialForces<T>&
       contact_info_and_spatial_body_forces =
           EvalHydroelasticContactForces(context);
@@ -1371,10 +1675,12 @@ void MultibodyPlant<T>::AppendContactResultsContinuousHydroelastic(
 }
 
 template <typename T>
-void MultibodyPlant<T>::CalcContactResultsContinuousPointPair(
+void MultibodyPlant<T>::AppendContactResultsContinuousPointPair(
     const systems::Context<T>& context,
     ContactResults<T>* contact_results) const {
   this->ValidateContext(context);
+  DRAKE_DEMAND(contact_results != nullptr);
+  DRAKE_DEMAND(contact_results->plant() == this);
 
   const std::vector<PenetrationAsPointPair<T>>& point_pairs =
       EvalPointPairPenetrations(context);
@@ -1385,17 +1691,16 @@ void MultibodyPlant<T>::CalcContactResultsContinuousPointPair(
       EvalVelocityKinematics(context);
 
   const geometry::QueryObject<T>& query_object =
-      EvalGeometryQueryInput(context);
+      EvalGeometryQueryInput(context, __func__);
   const geometry::SceneGraphInspector<T>& inspector = query_object.inspector();
 
-  contact_results->Clear();
   for (size_t icontact = 0; icontact < point_pairs.size(); ++icontact) {
     const auto& pair = point_pairs[icontact];
     const GeometryId geometryA_id = pair.id_A;
     const GeometryId geometryB_id = pair.id_B;
 
-    BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryA_id);
-    BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryB_id);
+    const BodyIndex bodyA_index = FindBodyByGeometryId(geometryA_id);
+    const BodyIndex bodyB_index = FindBodyByGeometryId(geometryB_id);
 
     internal::BodyNodeIndex bodyA_node_index =
         get_body(bodyA_index).node_index();
@@ -1490,11 +1795,12 @@ void MultibodyPlant<T>::CalcContactResultsDiscrete(
     ContactResults<T>* contact_results) const {
   DRAKE_DEMAND(contact_results != nullptr);
   contact_results->Clear();
+  contact_results->set_plant(this);
   if (num_collision_geometries() == 0) return;
 
   switch (contact_model_) {
     case ContactModel::kPoint:
-      CalcContactResultsDiscretePointPair(context, contact_results);
+      AppendContactResultsDiscretePointPair(context, contact_results);
       break;
 
     case ContactModel::kHydroelastic:
@@ -1505,7 +1811,7 @@ void MultibodyPlant<T>::CalcContactResultsDiscrete(
 
     case ContactModel::kHydroelasticWithFallback:
       // Simply merge the contributions of each contact representation.
-      CalcContactResultsDiscretePointPair(context, contact_results);
+      AppendContactResultsDiscretePointPair(context, contact_results);
 
       // N.B. We are simply computing the hydro force as function of the state,
       // not the actual discrete approximation used by the contact solver.
@@ -1515,11 +1821,12 @@ void MultibodyPlant<T>::CalcContactResultsDiscrete(
 }
 
 template <typename T>
-void MultibodyPlant<T>::CalcContactResultsDiscretePointPair(
+void MultibodyPlant<T>::AppendContactResultsDiscretePointPair(
     const systems::Context<T>& context,
     ContactResults<T>* contact_results) const {
   this->ValidateContext(context);
   DRAKE_DEMAND(contact_results != nullptr);
+  DRAKE_DEMAND(contact_results->plant() == this);
   if (num_collision_geometries() == 0) return;
 
   const std::vector<PenetrationAsPointPair<T>>& point_pairs =
@@ -1542,14 +1849,13 @@ void MultibodyPlant<T>::CalcContactResultsDiscretePointPair(
   DRAKE_DEMAND(vn.size() >= num_contacts);
   DRAKE_DEMAND(vt.size() >= 2 * num_contacts);
 
-  contact_results->Clear();
   for (size_t icontact = 0; icontact < point_pairs.size(); ++icontact) {
     const auto& pair = point_pairs[icontact];
     const GeometryId geometryA_id = pair.id_A;
     const GeometryId geometryB_id = pair.id_B;
 
-    const BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryA_id);
-    const BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryB_id);
+    const BodyIndex bodyA_index = FindBodyByGeometryId(geometryA_id);
+    const BodyIndex bodyB_index = FindBodyByGeometryId(geometryB_id);
 
     const Vector3<T> p_WC = 0.5 * (pair.p_WCa + pair.p_WCb);
 
@@ -1618,8 +1924,8 @@ void MultibodyPlant<T>::CalcAndAddContactForcesByPenaltyMethod(
     const GeometryId geometryA_id = pair.id_A;
     const GeometryId geometryB_id = pair.id_B;
 
-    const BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryA_id);
-    const BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryB_id);
+    const BodyIndex bodyA_index = FindBodyByGeometryId(geometryA_id);
+    const BodyIndex bodyB_index = FindBodyByGeometryId(geometryB_id);
 
     internal::BodyNodeIndex bodyA_node_index =
         get_body(bodyA_index).node_index();
@@ -1692,7 +1998,7 @@ void MultibodyPlant<T>::CalcHydroelasticContactForces(
   internal::HydroelasticTractionCalculator<T> traction_calculator(
       friction_model_.stiction_tolerance());
 
-  const auto& query_object = EvalGeometryQueryInput(context);
+  const auto& query_object = EvalGeometryQueryInput(context, __func__);
   const geometry::SceneGraphInspector<T>& inspector = query_object.inspector();
 
   for (const ContactSurface<T>& surface : all_surfaces) {
@@ -1725,8 +2031,8 @@ void MultibodyPlant<T>::CalcHydroelasticContactForces(
 
     // Get the bodies that the two geometries are affixed to. We'll call these
     // A and B.
-    const BodyIndex bodyA_index = geometry_id_to_body_index_.at(geometryM_id);
-    const BodyIndex bodyB_index = geometry_id_to_body_index_.at(geometryN_id);
+    const BodyIndex bodyA_index = FindBodyByGeometryId(geometryM_id);
+    const BodyIndex bodyB_index = FindBodyByGeometryId(geometryN_id);
     const Body<T>& bodyA = get_body(bodyA_index);
     const Body<T>& bodyB = get_body(bodyB_index);
 
@@ -1741,7 +2047,8 @@ void MultibodyPlant<T>::CalcHydroelasticContactForces(
         X_WA, X_WB, V_WA, V_WB, &surface);
 
     // Combined Hunt & Crossley dissipation.
-    const double dissipation = hydroelastics_engine_.CalcCombinedDissipation(
+    const hydroelastics::internal::HydroelasticEngine<T> hydroelastics_engine;
+    const double dissipation = hydroelastics_engine.CalcCombinedDissipation(
         geometryM_id, geometryN_id, inspector);
 
     // Integrate the hydroelastic traction field over the contact surface.
@@ -1786,8 +2093,13 @@ void MultibodyPlant<T>::AddAppliedExternalGeneralizedForces(
   const InputPort<T>& applied_generalized_force_input =
       this->get_input_port(applied_generalized_force_input_port_);
   if (applied_generalized_force_input.HasValue(context)) {
-    forces->mutable_generalized_forces() +=
+    const VectorX<T>& applied_generalized_force =
         applied_generalized_force_input.Eval(context);
+    if (applied_generalized_force.hasNaN()) {
+      throw std::runtime_error(
+          "Detected NaN in applied generalized force input port.");
+    }
+    forces->mutable_generalized_forces() += applied_generalized_force;
   }
 }
 
@@ -1806,8 +2118,21 @@ void MultibodyPlant<T>::AddAppliedExternalSpatialForces(
   if (!applied_input)
     return;
 
+  // Helper to throw a useful message if the input contains NaN.
+  auto throw_if_contains_nan = [this](const ExternallyAppliedSpatialForce<T>&
+                                          external_spatial_force) {
+    const SpatialForce<T>& spatial_force = external_spatial_force.F_Bq_W;
+    if (external_spatial_force.p_BoBq_B.hasNaN() ||
+        spatial_force.rotational().hasNaN() ||
+        spatial_force.translational().hasNaN()) {
+      throw std::runtime_error(fmt::format(
+          "Spatial force applied on body {} contains NaN.",
+          internal_tree().get_body(external_spatial_force.body_index).name()));
+    }
+  };
   // Loop over all forces.
   for (const auto& force_structure : *applied_input) {
+    throw_if_contains_nan(force_structure);
     const BodyIndex body_index = force_structure.body_index;
     const Body<T>& body = get_body(body_index);
     const auto body_node_index = body.node_index();
@@ -1897,28 +2222,63 @@ template<typename T>
 VectorX<T> MultibodyPlant<T>::AssembleActuationInput(
     const systems::Context<T>& context) const {
   this->ValidateContext(context);
-  // Assemble the vector from the model instance input ports.
-  VectorX<T> actuation_input(num_actuated_dofs());
-  int u_offset = 0;
-  for (ModelInstanceIndex model_instance_index(0);
-       model_instance_index < num_model_instances(); ++model_instance_index) {
-    // Ignore the port if the model instance has no actuated DoFs.
-    const int instance_num_dofs = num_actuated_dofs(model_instance_index);
-    if (instance_num_dofs == 0) continue;
 
-    const auto& input_port = this->get_input_port(
-        instance_actuation_ports_[model_instance_index]);
-    if (!input_port.HasValue(context)) {
+  // Assemble the vector from the model instance input ports.
+  // TODO(sherm1) Heap allocation here. Get rid of it.
+  VectorX<T> actuation_input(num_actuated_dofs());
+
+  const auto& actuation_port = this->get_input_port(actuation_port_);
+  const ModelInstanceIndex first_non_world_index(1);
+  if (actuation_port.HasValue(context)) {
+    // The port for all instances and the actuation ports for individual
+    // instances should not be connected at the same time.
+    for (ModelInstanceIndex model_instance_index(first_non_world_index);
+         model_instance_index < num_model_instances(); ++model_instance_index) {
+      const auto& per_instance_actuation_port =
+          this->get_input_port(instance_actuation_ports_[model_instance_index]);
+      if (per_instance_actuation_port.HasValue(context)) {
+        throw std::logic_error(fmt::format(
+            "Actuation input port for model instance {} and the "
+            "actuation port for all instances are both connected. At most "
+            "one of these ports should be connected.",
+            GetModelInstanceName(model_instance_index)));
+      }
+    }
+    // TODO(xuchenhan-tri): It'd be nice to avoid the copy here.
+    actuation_input = actuation_port.Eval(context);
+    if (actuation_input.hasNaN()) {
+      throw std::runtime_error(
+          "Detected NaN in the actuation input port for all instances.");
+    }
+    DRAKE_ASSERT(actuation_input.size() == num_actuated_dofs());
+  } else {
+    int u_offset = 0;
+    for (ModelInstanceIndex model_instance_index(first_non_world_index);
+         model_instance_index < num_model_instances(); ++model_instance_index) {
+      // Ignore the port if the model instance has no actuated DoFs.
+      const int instance_num_dofs = num_actuated_dofs(model_instance_index);
+      if (instance_num_dofs == 0) continue;
+
+      const auto& input_port =
+          this->get_input_port(instance_actuation_ports_[model_instance_index]);
+      if (!input_port.HasValue(context)) {
         throw std::logic_error(fmt::format("Actuation input port for model "
             "instance {} must be connected.",
             GetModelInstanceName(model_instance_index)));
-    }
+      }
+      const auto& u_instance = input_port.Eval(context);
 
-    const auto& u_instance = input_port.Eval(context);
-    actuation_input.segment(u_offset, instance_num_dofs) = u_instance;
-    u_offset += instance_num_dofs;
+      if (u_instance.hasNaN()) {
+        throw std::runtime_error(
+            fmt::format("Actuation input port for model "
+                        "instance {} contains NaN.",
+                        GetModelInstanceName(model_instance_index)));
+      }
+      actuation_input.segment(u_offset, instance_num_dofs) = u_instance;
+      u_offset += instance_num_dofs;
+    }
+    DRAKE_ASSERT(u_offset == num_actuated_dofs());
   }
-  DRAKE_ASSERT(u_offset == num_actuated_dofs());
   return actuation_input;
 }
 
@@ -1985,13 +2345,10 @@ void MultibodyPlant<T>::CalcContactSurfaces(
   this->ValidateContext(context);
   DRAKE_DEMAND(contact_surfaces != nullptr);
 
-  const auto& query_object = EvalGeometryQueryInput(context);
+  const auto& query_object = EvalGeometryQueryInput(context, __func__);
 
-  if (is_discrete() && use_low_resolution_contact_surface_) {
-    *contact_surfaces = query_object.ComputePolygonalContactSurfaces();
-  } else {
-    *contact_surfaces = query_object.ComputeContactSurfaces();
-  }
+  *contact_surfaces = query_object.ComputeContactSurfaces(
+      get_contact_surface_representation());
 }
 
 template <>
@@ -2010,17 +2367,13 @@ void MultibodyPlant<T>::CalcHydroelasticWithFallback(
   DRAKE_DEMAND(data != nullptr);
 
   if (num_collision_geometries() > 0) {
-    const auto &query_object = EvalGeometryQueryInput(context);
+    const auto &query_object = EvalGeometryQueryInput(context, __func__);
     data->contact_surfaces.clear();
     data->point_pairs.clear();
 
-    if (is_discrete() && use_low_resolution_contact_surface_) {
-      query_object.ComputePolygonalContactSurfacesWithFallback(
-          &data->contact_surfaces, &data->point_pairs);
-    } else {
-      query_object.ComputeContactSurfacesWithFallback(&data->contact_surfaces,
-                                                      &data->point_pairs);
-    }
+    query_object.ComputeContactSurfacesWithFallback(
+        get_contact_surface_representation(), &data->contact_surfaces,
+        &data->point_pairs);
   }
 }
 
@@ -2035,6 +2388,8 @@ void MultibodyPlant<symbolic::Expression>::CalcHydroelasticWithFallback(
                   NiceTypeName::Get<symbolic::Expression>()));
 }
 
+// TODO(16106): This code will go into:
+// CompliantContactManager<T>::AppendDiscreteContactPairsForHydroelasticContact.
 template <typename T>
 void MultibodyPlant<T>::CalcDiscreteContactPairs(
     const systems::Context<T>& context,
@@ -2046,14 +2401,11 @@ void MultibodyPlant<T>::CalcDiscreteContactPairs(
 
   if (num_collision_geometries() == 0) return;
 
-  // N.B. For discrete hydro we use a first order quadrature rule.
-  // Higher order quadratures are possible, however using a lower order
-  // quadrature leads to a smaller number of discrete pairs and therefore a
-  // smaller number of constraints in the discrete contact problem.
-  const GaussianTriangleQuadratureRule quadrature(1 /* order */);
-  const std::vector<Vector2<double>>& xi = quadrature.quadrature_points();
-  const std::vector<double>& wq = quadrature.weights();
-  const int num_quad_points = wq.size();
+  // N.B. For discrete hydro we use a first order quadrature rule. As such,
+  // the per-face quadrature point is the face's centroid and the weight is 1.
+  // This is compatible with a mesh that is triangle or polygon. If we attempted
+  // higher order quadrature, polygons would have to be decomposed into smaller
+  // n-gons which can receive an appropriate set of quadrature points.
 
   // Only numeric values are supported. We detect that T is a Drake numeric type
   // using scalar_predicate::is_bool. That is true for numeric types and false
@@ -2080,15 +2432,14 @@ void MultibodyPlant<T>::CalcDiscreteContactPairs(
       const std::vector<geometry::ContactSurface<T>>& surfaces =
           EvalContactSurfaces(context);
       for (const auto& s : surfaces) {
-        const geometry::TriangleSurfaceMesh<T>& mesh = s.mesh_W();
-        num_quadrature_pairs += num_quad_points * mesh.num_triangles();
+        num_quadrature_pairs += s.num_faces();
       }
     }
 
     const int num_contact_pairs = num_point_pairs + num_quadrature_pairs;
     contact_pairs.reserve(num_contact_pairs);
 
-    const auto& query_object = EvalGeometryQueryInput(context);
+    const auto& query_object = EvalGeometryQueryInput(context, __func__);
     const geometry::SceneGraphInspector<T>& inspector =
         query_object.inspector();
 
@@ -2118,117 +2469,110 @@ void MultibodyPlant<T>::CalcDiscreteContactPairs(
       const std::vector<geometry::ContactSurface<T>>& surfaces =
           EvalContactSurfaces(context);
       for (const auto& s : surfaces) {
-        const geometry::TriangleSurfaceMesh<T>& mesh_W = s.mesh_W();
+        const bool M_is_compliant = s.HasGradE_M();
+        const bool N_is_compliant = s.HasGradE_N();
+        DRAKE_DEMAND(M_is_compliant || N_is_compliant);
 
         // Combined Hunt & Crossley dissipation.
-        const T dissipation = hydroelastics_engine_.CalcCombinedDissipation(
+        const hydroelastics::internal::HydroelasticEngine<T>
+            hydroelastics_engine;
+        const T dissipation = hydroelastics_engine.CalcCombinedDissipation(
             s.id_M(), s.id_N(), inspector);
 
-        for (int face = 0; face < mesh_W.num_triangles(); ++face) {
-          const T& Ae = mesh_W.area(face);  // Face element area.
+        for (int face = 0; face < s.num_faces(); ++face) {
+          const T& Ae = s.area(face);  // Face element area.
 
           // We found out that the hydroelastic query might report
-          // infinitesimally small triangles (consider for instance an initial
+          // infinitesimally small faces (consider for instance an initial
           // condition that perfectly places an object at zero distance from the
           // ground.) While the area of zero sized triangles is not a problem by
           // itself, the badly computed normal on these triangles leads to
           // problems when computing the contact Jacobians (since we need to
           // obtain an orthonormal basis based on that normal.)
           // We therefore ignore infinitesimally small triangles. The tolerance
-          // below is somehow arbitrary and could possibly be tightened.
+          // below is somewhat arbitrary and could possibly be tightened.
           if (Ae > 1.0e-14) {
-            // N.B Assuming rigid-soft contact, and thus only a single pressure
-            // gradient is considered to be valid. We first verify this indeed
-            // is the case by checking that only one side has gradient
-            // information (the volumetric side).
-            const bool M_is_soft = s.HasGradE_M();
-            const bool N_is_soft = s.HasGradE_N();
-            DRAKE_DEMAND(M_is_soft ^ N_is_soft);
-
-            // Pressure gradient always points into the soft geometry by
-            // construction.
-            const Vector3<T>& grad_pres_W = M_is_soft
-                                                ? s.EvaluateGradE_M_W(face)
-                                                : s.EvaluateGradE_N_W(face);
-
             // From ContactSurface's documentation: The normal of each face is
             // guaranteed to point "out of" N and "into" M.
-            const Vector3<T>& nhat_W = mesh_W.face_normal(face);
-            for (int qp = 0; qp < num_quad_points; ++qp) {
-              const Vector3<T> barycentric(xi[qp](0), xi[qp](1),
-                                           1.0 - xi[qp](0) - xi[qp](1));
-              // Pressure at the quadrature point.
-              const T p0 = s.e_MN().Evaluate(face, barycentric);
+            const Vector3<T>& nhat_W = s.face_normal(face);
 
-              // Force contribution by this quadrature point.
-              const T fn0 = wq[qp] * Ae * p0;
+            // One dimensional pressure gradient (in Pa/m). Unlike
+            // [Masterjohn 2022], for convenience we define both pressure
+            // gradients to be positive in the direction "into" the bodies.
+            // Therefore, we use the minus sign for gN. [Masterjohn 2022]
+            // Velocity Level Approximation of Pressure Field Contact Patches.
+            const T gM = M_is_compliant
+                             ? s.EvaluateGradE_M_W(face).dot(nhat_W)
+                             : T(std::numeric_limits<double>::infinity());
+            const T gN = N_is_compliant
+                             ? -s.EvaluateGradE_N_W(face).dot(nhat_W)
+                             : T(std::numeric_limits<double>::infinity());
 
-              // Since the normal always points into M, regardless of which body
-              // is soft, we must take into account the change of sign when body
-              // N is soft and M is rigid.
-              const T sign = M_is_soft ? 1.0 : -1.0;
-
-              // In order to provide some intuition, and though not entirely
-              // complete, here we document the first order idea that leads to
-              // the discrete hydroelastic approximation used below. In
-              // hydroelastics, each quadrature point contributes to the total
-              // "elastic" force along the normal direction as:
-              //   f₀ₚ = ωₚ Aₑ pₚ
-              // where subindex p denotes a quantity evaluated at quadrature
-              // point P and subindex e identifies the e-th contact surface
-              // element in which the quadrature is being evaluated.
-              // Notice f₀ only includes the "elastic" contribution. Dissipation
-              // is dealt with by a separate multiplicative factor. Given the
-              // local stiffness for the normal forces contribution, our
-              // discrete TAMSI solver implicitly handles the dissipative Hunt &
-              // Crossley forces.
-              // In point contact, stiffness is related to changes in the normal
-              // force with changes in the penetration distance. In that spirit,
-              // the approximation used here is to define the discrete
-              // hydroelastics stiffness as the directional derivative of the
-              // scalar force f₀ₚ along the normal direction n̂:
-              //   k := ∂f₀ₚ/∂n̂ ≈ ωₚ⋅Aₑ⋅∇pₚ⋅n̂ₚ
-              // that is, the variation of the normal force experiences if the
-              // quadrature point is pushed inwards in the direction of the
-              // normal. Notice that this expression approximates the element
-              // area and normal as constant. Keeping normals and Jacobians
-              // is a very common approximation in first order methods. Keeping
-              // the area constant here is a higher order approximation for
-              // inner triangles given that shrinkage of a triangle is related
-              // the growth of a neighboring triangle (i.e. the contact surface
-              // does not stretch nor shrink). For triangles close to the
-              // boundary of the contact surface, this is only a first order
-              // approximation.
-              const T k = sign * wq[qp] * Ae * grad_pres_W.dot(nhat_W);
-
-              // N.B. The normal is guaranteed to point into M. However, when M
-              // is soft, the gradient is not guaranteed to be in the direction
-              // of the normal. The geometry code that determines which
-              // triangles to keep in the contact surface may keep triangles for
-              // which the pressure gradient times normal is negative (see
-              // IsFaceNormalInNormalDirection() in contact_surface_utility.cc).
-              // Therefore there are cases for which the definition above of k
-              // might lead to negative values. We observed that this condition
-              // happens sparsely at some of the boundary triangles of the
-              // contact surface, while the positive values in inner triangles
-              // dominates the overall compliance. In practice we did not
-              // observe this to cause stability issues. Since a negative value
-              // of k is correct, we decided to keep these contributions.
-
-              // Position of quadrature point Q in the world frame (since mesh_W
-              // is measured and expressed in W).
-              const Vector3<T> p_WQ =
-                  mesh_W.CalcCartesianFromBarycentric(face, barycentric);
-
-              // N.B. Today 01/25/2021, Only TAMSI supports discrete
-              // hydroelastics and uses the discrete force fn0 instead of the
-              // distance function phi0. phi0 is only used in experimental
-              // ContactSolver(s). Therefore we set phi0 to NaN since it is not
-              // used by TAMSI.
-              const T nan_phi0 = std::numeric_limits<double>::quiet_NaN();
-              contact_pairs.push_back({s.id_M(), s.id_N(), p_WQ, nhat_W,
-                                       nan_phi0, fn0, k, dissipation});
+            constexpr double kGradientEpsilon = 1.0e-14;
+            if (gM < kGradientEpsilon || gN < kGradientEpsilon) {
+              // Mathematically g = gN*gM/(gN+gM) and therefore g = 0 when
+              // either gradient on one of the bodies is zero. A zero gradient
+              // means there is no contact constraint, and therefore we
+              // ignore it to avoid numerical problems in the discrete solver.
+              continue;
             }
+
+            // Effective hydroelastic pressure gradient g result of
+            // compliant-compliant interaction, see [Masterjohn 2022].
+            // The expression below is mathematically equivalent to g =
+            // gN*gM/(gN+gM) but it has the advantage of also being valid if
+            // one of the gradients is infinity.
+            const T g = 1.0 / (1.0 / gM + 1.0 / gN);
+
+            // Position of quadrature point Q in the world frame (since mesh_W
+            // is measured and expressed in W).
+            const Vector3<T>& p_WQ = s.centroid(face);
+            // For a triangle, its centroid has the fixed barycentric
+            // coordinates independent of the shape of the triangle. Using
+            // barycentric coordinates to evaluate field value could be
+            // faster than using Cartesian coordiantes, especially if the
+            // TriangleSurfaceMeshFieldLinear<> does not store gradients and
+            // has to solve linear equations to convert Cartesian to
+            // barycentric coordinates.
+            const Vector3<T> tri_centroid_barycentric(1 / 3., 1 / 3., 1 / 3.);
+            // Pressure at the quadrature point.
+            const T p0 = s.is_triangle()
+                             ? s.tri_e_MN().Evaluate(
+                                   face, tri_centroid_barycentric)
+                             : s.poly_e_MN().EvaluateCartesian(face, p_WQ);
+
+            // Force contribution by this quadrature point.
+            const T fn0 = Ae * p0;
+
+            // Effective compliance in the normal direction for the given
+            // discrete patch, refer to [Masterjohn 2022] for details.
+            // [Masterjohn 2022] Masterjohn J., Guoy D., Shepherd J. and
+            // Castro A., 2022. Velocity Level Approximation of Pressure Field
+            // Contact Patches. Available at https://arxiv.org/abs/2110.04157.
+            const T k = Ae * g;
+
+            // N.B. The normal is guaranteed to point into M. However, when M
+            // is soft, the gradient is not guaranteed to be in the direction
+            // of the normal. The geometry code that determines which
+            // triangles to keep in the contact surface may keep triangles for
+            // which the pressure gradient times normal is negative (see
+            // IsFaceNormalInNormalDirection() in contact_surface_utility.cc).
+            // Therefore there are cases for which the definition above of k
+            // might lead to negative values. We observed that this condition
+            // happens sparsely at some of the boundary triangles of the
+            // contact surface, while the positive values in inner triangles
+            // dominates the overall compliance. In practice we did not
+            // observe this to cause stability issues. Since a negative value
+            // of k is correct, we decided to keep these contributions.
+
+            // N.B. Today 01/25/2021, Only TAMSI supports discrete
+            // hydroelastics and uses the discrete force fn0 instead of the
+            // distance function phi0. phi0 is only used in experimental
+            // ContactSolver(s). Therefore we set phi0 to NaN since it is not
+            // used by TAMSI.
+            const T nan_phi0 = std::numeric_limits<double>::quiet_NaN();
+            contact_pairs.push_back({s.id_M(), s.id_N(), p_WQ, nhat_W, nan_phi0,
+                                     fn0, k, dissipation});
           }
         }
       }
@@ -2356,34 +2700,26 @@ void MultibodyPlant<T>::CalcContactSolverResults(
   contact_solvers::internal::ContactSolverResults<T> results_unlocked;
   results_unlocked.Resize(indices.size(), num_contacts);
 
-  if (contact_solver_ != nullptr) {
-    CallContactSolver(contact_solver_.get(), context0.get_time(), v0_unlocked,
-                      M0_unlocked, minus_tau_unlocked, phi0, Jc_unlocked,
-                      stiffness, damping, mu, &results_unlocked);
-  } else {
-    systems::CacheEntryValue& value =
-        this->get_cache_entry(cache_indexes_.contact_solver_scratch)
-        .get_mutable_cache_entry_value(context0);
-    auto& tamsi_solver =
-        value.GetMutableValueOrThrow<TamsiSolver<T>>();
-    if (tamsi_solver.get_solver_parameters().stiction_tolerance !=
-        friction_model_.stiction_tolerance()) {
-      // Set the stiction tolerance according to the values set by users with
-      // set_stiction_tolerance().
-      TamsiSolverParameters solver_parameters;
-      solver_parameters.stiction_tolerance =
-          friction_model_.stiction_tolerance();
-      tamsi_solver.set_solver_parameters(solver_parameters);
-    }
-
-    // TAMSI is initialized with num_velocities(). Resize the internal solver
-    // workspace if needed.
-    tamsi_solver.ResizeIfNeeded(indices.size());
-
-    CallTamsiSolver(&tamsi_solver, context0.get_time(), v0_unlocked,
-                    M0_unlocked, minus_tau_unlocked, fn0, Jn_unlocked,
-                    Jt_unlocked, stiffness, damping, mu, &results_unlocked);
+  systems::CacheEntryValue& value =
+      this->get_cache_entry(cache_indexes_.contact_solver_scratch)
+          .get_mutable_cache_entry_value(context0);
+  auto& tamsi_solver = value.GetMutableValueOrThrow<TamsiSolver<T>>();
+  if (tamsi_solver.get_solver_parameters().stiction_tolerance !=
+      friction_model_.stiction_tolerance()) {
+    // Set the stiction tolerance according to the values set by users with
+    // set_stiction_tolerance().
+    TamsiSolverParameters solver_parameters;
+    solver_parameters.stiction_tolerance = friction_model_.stiction_tolerance();
+    tamsi_solver.set_solver_parameters(solver_parameters);
   }
+
+  // TAMSI is initialized with num_velocities(). Resize the internal solver
+  // workspace if needed.
+  tamsi_solver.ResizeIfNeeded(indices.size());
+
+  CallTamsiSolver(&tamsi_solver, context0.get_time(), v0_unlocked, M0_unlocked,
+                  minus_tau_unlocked, fn0, Jn_unlocked, Jt_unlocked, stiffness,
+                  damping, mu, &results_unlocked);
 
   // Joint locking: expand reduced outputs.
   results->v_next = ExpandRows(results_unlocked.v_next,
@@ -2406,37 +2742,32 @@ void MultibodyPlant<T>::CalcJointLockingIndices(
   auto& indices = *unlocked_velocity_indices;
   indices.resize(num_velocities());
 
-  int velocity_cursor = 0;
   int unlocked_cursor = 0;
   for (JointIndex joint_index(0); joint_index < num_joints(); ++joint_index) {
     const Joint<T>& joint = get_joint(joint_index);
-    if (joint.is_locked(context)) {
-      velocity_cursor += joint.num_velocities();
-    } else {
+    if (!joint.is_locked(context)) {
       for (int k = 0; k < joint.num_velocities(); ++k) {
-        indices[unlocked_cursor++] = velocity_cursor++;
+        indices[unlocked_cursor++] = joint.velocity_start() + k;
       }
     }
   }
 
   for (BodyIndex body_index(1); body_index < num_bodies(); ++body_index) {
     const Body<T>& body = get_body(body_index);
-    if (!body.is_floating()) {
-      continue;
-    }
-    if (body.is_locked(context)) {
-      velocity_cursor += 6;
-    } else {
+    if (body.is_floating() && !body.is_locked(context)) {
       for (int k = 0; k < 6; ++k) {
-        indices[unlocked_cursor++] = velocity_cursor++;
+        indices[unlocked_cursor++] =
+            body.floating_velocities_start() - num_positions() + k;
       }
     }
   }
-  DRAKE_ASSERT(velocity_cursor == num_velocities());
   DRAKE_ASSERT(unlocked_cursor <= num_velocities());
 
   // Use size to indicate exactly how many velocities are unlocked.
   indices.resize(unlocked_cursor);
+  // Sort the unlocked indices to keep the original DOF ordering established by
+  // the plant stable.
+  std::sort(indices.begin(), indices.end());
   DemandIndicesValid(indices, num_velocities());
   DRAKE_DEMAND(static_cast<int>(indices.size()) == unlocked_cursor);
 }
@@ -2477,7 +2808,7 @@ void MultibodyPlant<T>::CallTamsiSolver(
   if (info != TamsiSolverResult::kSuccess) {
     const std::string msg = fmt::format(
         "MultibodyPlant's discrete update solver failed to converge at "
-        "simulation time = {:7.3g} with discrete update period = {:7.3g}. "
+        "simulation time = {} with discrete update period = {}. "
         "This usually means that the plant's discrete update period is too "
         "large to resolve the system's dynamics for the given simulation "
         "conditions. This is often the case during abrupt collisions or during "
@@ -2488,7 +2819,7 @@ void MultibodyPlant<T>::CallTamsiSolver(
         "solutions include:\n"
         "  1. reduce the discrete update period set at construction,\n"
         "  2. decrease the high gains in your controller whenever possible,\n"
-        "  3. switch to a continuous model (discrete update period is zero), "
+        "  3. switch to a continuous model (discrete update period is zero),\n"
         "     though this might affect the simulation run time.",
         time0, this->time_step());
     throw std::runtime_error(msg);
@@ -2504,99 +2835,6 @@ void MultibodyPlant<T>::CallTamsiSolver(
   results->vn = tamsi_solver->get_normal_velocities();
   results->vt = tamsi_solver->get_tangential_velocities();
   results->tau_contact = tamsi_solver->get_generalized_contact_forces();
-}
-
-template <>
-void MultibodyPlant<symbolic::Expression>::CallContactSolver(
-    contact_solvers::internal::ContactSolver<symbolic::Expression>*,
-    const symbolic::Expression&, const VectorX<symbolic::Expression>&,
-    const MatrixX<symbolic::Expression>&, const VectorX<symbolic::Expression>&,
-    const VectorX<symbolic::Expression>&, const MatrixX<symbolic::Expression>&,
-    const VectorX<symbolic::Expression>&, const VectorX<symbolic::Expression>&,
-    const VectorX<symbolic::Expression>&,
-    contact_solvers::internal::ContactSolverResults<symbolic::Expression>*)
-    const {
-  throw std::logic_error(
-      "This method doesn't support T = symbolic::Expression.");
-}
-
-template <typename T>
-void MultibodyPlant<T>::CallContactSolver(
-    contact_solvers::internal::ContactSolver<T>* contact_solver,
-    const T& time0, const VectorX<T>& v0, const MatrixX<T>& M0,
-    const VectorX<T>& minus_tau, const VectorX<T>& phi0, const MatrixX<T>& Jc,
-    const VectorX<T>& stiffness, const VectorX<T>& damping,
-    const VectorX<T>& mu,
-    contact_solvers::internal::ContactSolverResults<T>* results) const {
-  // Tolerance larger than machine epsilon by an arbitrary factor. Just large
-  // enough so that entries close to machine epsilon, due to round-off errors,
-  // still get pruned.
-  const double kPruneTolerance = 20 * std::numeric_limits<double>::epsilon();
-  // TODO(amcastro-tri): Here MultibodyPlant should provide an actual O(n)
-  // operator per #12210.
-  const Eigen::SparseMatrix<T> Jc_sparse = Jc.sparseView(kPruneTolerance);
-  const contact_solvers::internal::SparseLinearOperator<T> Jc_op("Jc",
-                                                                 &Jc_sparse);
-
-  class MassMatrixInverseOperator
-      : public contact_solvers::internal::LinearOperator<T> {
-   public:
-    MassMatrixInverseOperator(const std::string& name, const MatrixX<T>* M)
-        : contact_solvers::internal::LinearOperator<T>(name), M_ldlt_{*M} {
-      DRAKE_DEMAND(M != nullptr);
-      nv_ = M->rows();
-      // TODO(sherm1) Eliminate heap allocation.
-      tmp_.resize(nv_);
-    }
-    ~MassMatrixInverseOperator() = default;
-
-    int rows() const { return nv_; }
-    int cols() const { return nv_; }
-
-   private:
-    void DoMultiply(const Eigen::Ref<const Eigen::SparseVector<T>>& x,
-                    Eigen::SparseVector<T>* y) const final {
-      tmp_ = VectorX<T>(x);
-      *y = M_ldlt_.Solve(tmp_).sparseView();
-    }
-    void DoMultiply(const Eigen::Ref<const VectorX<T>>& x,
-                    VectorX<T>* y) const final {
-      *y = M_ldlt_.Solve(x);
-    }
-    int nv_;
-    mutable VectorX<T> tmp_;  // temporary workspace.
-    math::LinearSolver<Eigen::LDLT, MatrixX<T>> M_ldlt_;
-  };
-  MassMatrixInverseOperator Minv_op("Minv", &M0);
-
-  // Perform the "predictor" step, in the absence of contact forces. See
-  // ContactSolver's class documentation for details.
-  // TODO(amcastro-tri): here the predictor step could be implicit in tau so
-  // that for instance we'd be able do deal with force elements implicitly.
-  const int nv = num_velocities();
-  VectorX<T> v_star(nv);  // TODO(sherm1) Eliminate heap allocation.
-  Minv_op.Multiply(minus_tau, &v_star);  // v_star = -M⁻¹⋅τ
-  v_star *= -time_step();                // v_star = dt⋅M⁻¹⋅τ
-  v_star += v0;                          // v_star = v₀ + dt⋅M⁻¹⋅τ
-
-  contact_solvers::internal::SystemDynamicsData<T> dynamics_data(&Minv_op,
-                                                                 &v_star);
-  contact_solvers::internal::PointContactData<T> contact_data(
-      &phi0, &Jc_op, &stiffness, &damping, &mu);
-  const contact_solvers::internal::ContactSolverStatus info =
-      contact_solver->SolveWithGuess(time_step(), dynamics_data, contact_data,
-                                    v0, &*results);
-
-  if (info != contact_solvers::internal::ContactSolverStatus::kSuccess) {
-    const std::string msg =
-        fmt::format("MultibodyPlant's contact solver of type '" +
-                        NiceTypeName::Get(*contact_solver_) +
-                        "' failed to converge at "
-                        "simulation time = {:7.3g} with discrete update "
-                        "period = {:7.3g}.",
-                    time0, time_step());
-    throw std::runtime_error(msg);
-  }
 }
 
 template <typename T>
@@ -2652,6 +2890,18 @@ void MultibodyPlant<T>::CalcSpatialContactForcesContinuous(
   std::fill(F_BBo_W_array->begin(), F_BBo_W_array->end(),
             SpatialForce<T>::Zero());
 
+  CalcAndAddSpatialContactForcesContinuous(context, F_BBo_W_array);
+}
+
+template <typename T>
+void MultibodyPlant<T>::CalcAndAddSpatialContactForcesContinuous(
+      const drake::systems::Context<T>& context,
+      std::vector<SpatialForce<T>>* F_BBo_W_array) const {
+  this->ValidateContext(context);
+  DRAKE_DEMAND(F_BBo_W_array != nullptr);
+  DRAKE_DEMAND(static_cast<int>(F_BBo_W_array->size()) == num_bodies());
+  DRAKE_DEMAND(!is_discrete());
+
   // Early exit if there are no contact forces.
   if (num_collision_geometries() == 0) return;
 
@@ -2697,6 +2947,8 @@ void MultibodyPlant<T>::CalcNonContactForces(
   DRAKE_DEMAND(forces != nullptr);
   DRAKE_DEMAND(forces->CheckHasRightSizeForModel(*this));
 
+  const ScopeExit guard = ThrowIfNonContactForceInProgress(context);
+
   // Compute forces applied through force elements. Note that this resets
   // forces to empty so must come first.
   CalcForceElementsContribution(context, forces);
@@ -2714,11 +2966,50 @@ void MultibodyPlant<T>::CalcNonContactForces(
     }
   }
 }
+template <typename T>
+ScopeExit MultibodyPlant<T>::ThrowIfNonContactForceInProgress(
+    const systems::Context<T>& context) const {
+  // To overcame issue #12786, we use this additional cache entry
+  // to detect algebraic loops.
+  systems::CacheEntryValue& value =
+      this->get_cache_entry(
+              cache_indexes_.non_contact_forces_evaluation_in_progress)
+          .get_mutable_cache_entry_value(context);
+  bool& evaluation_in_progress = value.GetMutableValueOrThrow<bool>();
+  if (evaluation_in_progress) {
+    const char* error_message =
+        "Algebraic loop detected. This situation is caused when connecting "
+        "the input of your MultibodyPlant to the output of a feedback system "
+        "which is an algebraic function of a feedthrough output of the "
+        "plant. Ways to remedy this: 1. Revisit the model for your feedback "
+        "system. Consider if its output can be written in terms of other "
+        "inputs. 2. Break the algebraic loop by adding state to the "
+        "controller, typically to 'remember' a previous input. 3. Break the "
+        "algebraic loop by adding a zero-order hold system between the "
+        "output of the plant and your feedback system. This effectively "
+        "delays the input signal to the controller.";
+    throw std::runtime_error(error_message);
+  }
+  // Mark the start of the computation. If within an algebraic
+  // loop, pulling from the plant's input ports during the
+  // computation will trigger the recursive evaluation of this
+  // method and the exception above will be thrown.
+  evaluation_in_progress = true;
+  // If the exception above is triggered, we will leave this method and the
+  // computation will no longer be "in progress". We use a scoped guard so
+  // that we have a chance to mark it as such when we leave this scope.
+  return ScopeExit(
+      [&evaluation_in_progress]() { evaluation_in_progress = false; });
+}
 
 template <typename T>
 void MultibodyPlant<T>::AddInForcesContinuous(
     const systems::Context<T>& context, MultibodyForces<T>* forces) const {
   this->ValidateContext(context);
+
+  // Guard against failure to acquire the geometry input deep in the call graph.
+  ValidateGeometryInput(
+      context, "You've tried evaluating time derivatives or their residuals.");
 
   // Forces from MultibodyTree elements are handled in MultibodyTreeSystem;
   // we need only handle MultibodyPlant-specific forces here.
@@ -2740,6 +3031,10 @@ void MultibodyPlant<T>::DoCalcForwardDynamicsDiscrete(
   this->ValidateContext(context0);
   DRAKE_DEMAND(ac != nullptr);
   DRAKE_DEMAND(is_discrete());
+
+  // Guard against failure to acquire the geometry input deep in the call graph.
+  ValidateGeometryInput(
+      context0, "You've tried evaluating discrete forward dynamics.");
 
   // TODO(amcastro-tri): remove the entirety of the code we are bypassing here.
   // This requires one of our custom managers to become the default
@@ -2835,8 +3130,9 @@ void MultibodyPlant<T>::DeclareStateCacheAndPorts() {
                 instance_num_dofs)
             .get_index();
   }
-
-  if (num_actuated_instances == 1) actuated_instance_ = last_actuated_instance;
+  actuation_port_ =
+      this->DeclareVectorInputPort("actuation", num_actuated_dofs())
+          .get_index();
 
   // Declare the generalized force input port.
   applied_generalized_force_input_port_ =
@@ -2955,6 +3251,12 @@ void MultibodyPlant<T>::DeclareStateCacheAndPorts() {
       auto calc = [this, model_instance_index](
                       const systems::Context<T>& context,
                       systems::BasicVector<T>* result) {
+        // Guard against failure to acquire the geometry input deep in the call
+        // graph.
+        ValidateGeometryInput(
+            context,
+            get_generalized_contact_forces_output_port(model_instance_index));
+
         const contact_solvers::internal::ContactSolverResults<T>&
             solver_results = EvalContactSolverResults(context);
         this->CopyGeneralizedContactForcesOut(solver_results,
@@ -2974,6 +3276,12 @@ void MultibodyPlant<T>::DeclareStateCacheAndPorts() {
       auto calc = [this, model_instance_index](
                       const systems::Context<T>& context,
                       systems::BasicVector<T>* result) {
+        // Guard against failure to acquire the geometry input deep in the call
+        // graph.
+        ValidateGeometryInput(
+            context,
+            get_generalized_contact_forces_output_port(model_instance_index));
+
         result->SetFromVector(GetVelocitiesFromArray(
             model_instance_index,
             EvalGeneralizedContactForcesContinuous(context)));
@@ -3005,6 +3313,17 @@ void MultibodyPlant<T>::DeclareStateCacheAndPorts() {
                                   &MultibodyPlant<T>::CopyContactResultsOutput,
                                   {contact_results_cache_entry.ticket()})
                               .get_index();
+
+  // See ThrowIfNonContactForceInProgress().
+  const auto& non_contact_forces_evaluation_in_progress =
+      this->DeclareCacheEntry(
+          "Evaluation of non-contact forces and accelerations is in progress.",
+          // N.B. This flag is set to true only when the computation is in
+          // progress. Therefore its default value is `false`.
+          systems::ValueProducer(false, &systems::ValueProducer::NoopCalc),
+          {systems::System<T>::nothing_ticket()});
+  cache_indexes_.non_contact_forces_evaluation_in_progress =
+      non_contact_forces_evaluation_in_progress.cache_index();
 
   // Let external model managers declare their state, cache and ports in
   // `this` MultibodyPlant.
@@ -3221,15 +3540,6 @@ void MultibodyPlant<T>::CopyGeneralizedContactForcesOut(
 
 template <typename T>
 const systems::InputPort<T>&
-MultibodyPlant<T>::get_actuation_input_port() const {
-  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
-  DRAKE_THROW_UNLESS(num_actuators() > 0);
-  DRAKE_THROW_UNLESS(actuated_instance_.is_valid());
-  return get_actuation_input_port(actuated_instance_);
-}
-
-template <typename T>
-const systems::InputPort<T>&
 MultibodyPlant<T>::get_applied_generalized_force_input_port() const {
   DRAKE_MBP_THROW_IF_NOT_FINALIZED();
   return this->get_input_port(applied_generalized_force_input_port_);
@@ -3244,6 +3554,13 @@ MultibodyPlant<T>::get_actuation_input_port(
   DRAKE_THROW_UNLESS(model_instance < num_model_instances());
   return systems::System<T>::get_input_port(
       instance_actuation_ports_.at(model_instance));
+}
+
+template <typename T>
+const systems::InputPort<T>& MultibodyPlant<T>::get_actuation_input_port()
+    const {
+  DRAKE_MBP_THROW_IF_NOT_FINALIZED();
+  return systems::System<T>::get_input_port(actuation_port_);
 }
 
 template <typename T>
@@ -3312,20 +3629,10 @@ MultibodyPlant<T>::get_reaction_forces_output_port() const {
   return this->get_output_port(reaction_forces_port_);
 }
 
-namespace {
-// A dummy, placeholder type.
-struct SymbolicGeometryValue {};
-// An alias for QueryObject<T>, except when T = Expression.
-template <typename T>
-using ModelQueryObject = typename std::conditional_t<
-    std::is_same_v<T, symbolic::Expression>,
-    SymbolicGeometryValue, geometry::QueryObject<T>>;
-}  // namespace
-
 template <typename T>
 void MultibodyPlant<T>::DeclareSceneGraphPorts() {
   geometry_query_port_ = this->DeclareAbstractInputPort(
-      "geometry_query", Value<ModelQueryObject<T>>{}).get_index();
+      "geometry_query", Value<geometry::QueryObject<T>>{}).get_index();
   geometry_pose_port_ = this->DeclareAbstractOutputPort(
       "geometry_pose", &MultibodyPlant<T>::CalcFramePoseOutput,
       {this->configuration_ticket()}).get_index();
@@ -3418,6 +3725,9 @@ void MultibodyPlant<T>::CalcReactionForces(
   DRAKE_DEMAND(F_CJc_Jc_array != nullptr);
   DRAKE_DEMAND(static_cast<int>(F_CJc_Jc_array->size()) == num_joints());
 
+  // Guard against failure to acquire the geometry input deep in the call graph.
+  ValidateGeometryInput(context, get_reaction_forces_output_port());
+
   const VectorX<T>& vdot = this->EvalForwardDynamics(context).get_vdot();
 
   // TODO(sherm1) EvalForwardDynamics() should record the forces it used
@@ -3428,9 +3738,15 @@ void MultibodyPlant<T>::CalcReactionForces(
   auto& Fapplied_Bo_W_array = applied_forces.mutable_body_forces();
   auto& tau_applied = applied_forces.mutable_generalized_forces();
 
-  // TODO(sherm1) This doesn't include hydroelastic contact forces
-  //              in continuous mode (#13888).
-  CalcAndAddContactForcesByPenaltyMethod(context, &Fapplied_Bo_W_array);
+  // Add in forces due to contact.
+  // Only add in hydroelastic contact forces for continuous mode for now as
+  // the forces computed by CalcHydroelasticContactForces() are wrong in
+  // discrete mode. See (#13888).
+  if (!is_discrete()) {
+    CalcAndAddSpatialContactForcesContinuous(context, &Fapplied_Bo_W_array);
+  } else {
+    CalcAndAddContactForcesByPenaltyMethod(context, &Fapplied_Bo_W_array);
+  }
 
   // Compute reaction forces at each mobilizer.
   std::vector<SpatialAcceleration<T>> A_WB_vector(num_bodies());
@@ -3640,7 +3956,7 @@ AddMultibodyPlantSceneGraphResult<T> AddMultibodyPlantSceneGraph(
                                      std::move(scene_graph));
 }
 
-DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS((
+DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS((
     /* Use static_cast to disambiguate the two different overloads. */
     static_cast<AddMultibodyPlantSceneGraphResult<T>(*)(
         systems::DiagramBuilder<T>*, double,

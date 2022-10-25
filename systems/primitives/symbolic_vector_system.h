@@ -9,7 +9,7 @@
 #include <fmt/format.h>
 
 #include "drake/common/eigen_types.h"
-#include "drake/common/symbolic.h"
+#include "drake/common/symbolic/expression.h"
 #include "drake/systems/framework/leaf_system.h"
 
 namespace drake {
@@ -34,6 +34,17 @@ namespace systems {
 ///
 /// Note: This will not be as performant as writing your own LeafSystem.
 /// It is meant primarily for rapid prototyping.
+///
+/// @system
+/// name: SymbolicVectorSystem
+/// input_ports:
+/// - <span style="color:gray">u0</span>
+/// output_ports:
+/// - <span style="color:gray">y0</span>
+/// @endsystem
+///
+/// Either port `u0` or port `y0` may be absent, depending on the values
+/// supplied at construction.
 ///
 /// @tparam_default_scalar
 template <typename T>

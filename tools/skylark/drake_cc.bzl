@@ -21,10 +21,23 @@ CXX_FLAGS = [
 # below).
 CLANG_FLAGS = CXX_FLAGS + [
     "-Werror=absolute-value",
+    "-Werror=c99-designator",
     "-Werror=inconsistent-missing-override",
+    "-Werror=final-dtor-non-final-class",
+    "-Werror=literal-conversion",
     "-Werror=non-virtual-dtor",
+    "-Werror=range-loop-analysis",
     "-Werror=return-stack-address",
     "-Werror=sign-compare",
+    # This was turned on via "-Wc99-designator", but is not an an error.
+    # Our conventions permit using this language extension even in C++17 mode.
+    "-Wno-c++20-designator",
+    # As a kind of portability hint, by default Clang will warn about the use
+    # of C++20 features when compiling in -std=c++17 mode (i.e., the warning
+    # flag "-Wc++-20-extensions" is enabled by default). For Drake, we are
+    # content to use any C++20 extensions that pass our CI, so the warning is
+    # always a false positive. We'll turn it off via the "-Wno..." syntax.
+    "-Wno-c++20-extensions",
 ]
 
 # The CLANG_VERSION_SPECIFIC_FLAGS will be enabled for all C++ rules in the
@@ -32,11 +45,6 @@ CLANG_FLAGS = CXX_FLAGS + [
 # version (excluding the Apple LLVM compiler, see
 # APPLECLANG_VERSION_SPECIFIC_FLAGS below).
 CLANG_VERSION_SPECIFIC_FLAGS = {
-    10: [
-        # TODO(jamiesnape): Fix these warnings and remove this suppression when
-        # Clang 10 is a supported compiler on Ubuntu.
-        "-Wno-range-loop-analysis",
-    ],
 }
 
 # The APPLECLANG_FLAGS will be enabled for all C++ rules in the project when
@@ -47,7 +55,6 @@ APPLECLANG_FLAGS = CLANG_FLAGS
 # the project when building with an Apple LLVM compiler of the specified major
 # version.
 APPLECLANG_VERSION_SPECIFIC_FLAGS = {
-    12: CLANG_VERSION_SPECIFIC_FLAGS[10],
 }
 
 # The GCC_FLAGS will be enabled for all C++ rules in the project when
@@ -110,6 +117,13 @@ def _dsym_command(name):
         "//conditions:default": (
             "touch $@"
         ),
+    })
+
+def _dsym_srcs(name):
+    """Returns the input for making a .dSYM on macOS, or a no-op on Linux."""
+    return select({
+        "//tools/cc_toolchain:apple_debug": [":" + name],
+        "//conditions:default": [],
     })
 
 def _check_library_deps_blacklist(name, deps):
@@ -313,45 +327,151 @@ def drake_transitive_installed_hdrs_filegroup(
         **kwargs
     )
 
+def _cc_linkonly_library_impl(ctx):
+    deps_cc_infos = cc_common.merge_cc_infos(
+        cc_infos = [dep[CcInfo] for dep in ctx.attr.deps],
+    )
+    return [
+        DefaultInfo(
+            runfiles = ctx.runfiles(
+                collect_data = True,
+                collect_default = True,
+            ),
+        ),
+        CcInfo(
+            compilation_context = None,
+            linking_context = deps_cc_infos.linking_context,
+        ),
+    ]
+
+cc_linkonly_library = rule(
+    implementation = _cc_linkonly_library_impl,
+    doc = """
+Links the given dependencies but discards the entire compilation context,
+i.e., include paths and preprocessor definitions.
+""",
+    attrs = {
+        "deps": attr.label_list(providers = [CcInfo]),
+    },
+    fragments = ["cpp"],
+)
+
 def _raw_drake_cc_library(
         name,
-        hdrs = [],
-        srcs = [],  # Cannot list any headers here.
-        deps = [],
-        declare_installed_headers = 0,
-        install_hdrs_exclude = [],
-        **kwargs):
+        srcs = None,  # Cannot list any headers here.
+        hdrs = None,
+        strip_include_prefix = None,
+        include_prefix = None,
+        copts = None,
+        defines = None,
+        data = None,
+        interface_deps = None,
+        implementation_deps = None,
+        linkstatic = None,
+        linkopts = None,
+        alwayslink = None,
+        tags = None,
+        testonly = None,
+        visibility = None,
+        declare_installed_headers = None,
+        install_hdrs_exclude = None,
+        deprecation = None):
     """Creates a rule to declare a C++ library.  Uses Drake's include_prefix
     and checks the deps blacklist.  If declare_installed_headers is true, also
     adds a drake_installed_headers() target.  (This should be set if and only
     if the caller is drake_cc_library.)
     """
-    _check_library_deps_blacklist(name, deps)
+    _check_library_deps_blacklist(name, interface_deps)
+    _check_library_deps_blacklist(name, implementation_deps)
     _, private_hdrs = _prune_private_hdrs(srcs)
     if private_hdrs:
         fail("private_hdrs = " + private_hdrs)
 
     # Require include paths like "drake/foo/bar.h", not "foo/bar.h".
-    strip_include_prefix = kwargs.pop("strip_include_prefix", "") or "/"
-    include_prefix = kwargs.pop("include_prefix", "") or "drake"
+    if strip_include_prefix == None:
+        strip_include_prefix = "/"
+    if include_prefix == None:
+        include_prefix = "drake"
 
-    native.cc_library(
-        name = name,
-        hdrs = hdrs,
-        srcs = srcs,
-        deps = deps,
-        strip_include_prefix = strip_include_prefix,
-        include_prefix = include_prefix,
-        **kwargs
-    )
+    # Add the installed header tracking, unless we've opted-out.
     if declare_installed_headers:
         drake_installed_headers(
             name = name + ".installed_headers",
             hdrs = hdrs,
             hdrs_exclude = install_hdrs_exclude,
-            deps = installed_headers_for_drake_deps(deps),
+            deps = installed_headers_for_drake_deps(interface_deps),
             tags = ["nolint"],
             visibility = ["//visibility:public"],
+        )
+
+    # If we're using implementation_deps, then the result of compiling our srcs
+    # needs to use an intermediate label name. The actual `name` label will be
+    # used for the "implementation sandwich", below.
+    # TODO(jwnimmer-tri) Once https://github.com/bazelbuild/bazel/issues/12350
+    # is fixed and Bazel offers interface_deps natively, then we can switch to
+    # that implementation instead of making our own sandwich.
+    compiled_name = name
+    compiled_visibility = visibility
+    compiled_deprecation = deprecation
+    if implementation_deps:
+        if not linkstatic:
+            fail("implementation_deps are only supported for static libraries")
+        compiled_name = "_{}_compiled_cc_impl".format(name)
+        compiled_visibility = ["//visibility:private"]
+    native.cc_library(
+        name = compiled_name,
+        srcs = srcs,
+        hdrs = hdrs,
+        strip_include_prefix = strip_include_prefix,
+        include_prefix = include_prefix,
+        copts = copts,
+        defines = defines,
+        data = data,
+        deps = interface_deps + implementation_deps,
+        linkstatic = linkstatic,
+        linkopts = linkopts,
+        alwayslink = alwayslink,
+        tags = tags,
+        testonly = testonly,
+        visibility = compiled_visibility,
+        deprecation = compiled_deprecation,
+    )
+
+    # If we're using implementation_deps, then make me an "implementation
+    # sandwich".  Create one library with our headers, one library with only
+    # our static archive, and then squash them together to the final result.
+    if implementation_deps:
+        headers_name = "_{}_headers_cc_impl".format(name)
+        native.cc_library(
+            name = headers_name,
+            hdrs = hdrs,
+            strip_include_prefix = strip_include_prefix,
+            include_prefix = include_prefix,
+            defines = defines,
+            deps = interface_deps,  # N.B. No implementation_deps!
+            linkstatic = 1,
+            tags = tags,
+            testonly = testonly,
+            visibility = ["//visibility:private"],
+        )
+        archive_name = "_{}_archive_cc_impl".format(name)
+        cc_linkonly_library(
+            name = archive_name,
+            deps = [":" + compiled_name],
+            visibility = ["//visibility:private"],
+            tags = tags,
+        )
+        native.cc_library(
+            name = name,
+            deps = [
+                ":" + headers_name,
+                ":" + archive_name,
+            ],
+            linkstatic = 1,
+            tags = tags,
+            testonly = testonly,
+            visibility = visibility,
+            deprecation = deprecation,
         )
 
 def _maybe_add_pruned_private_hdrs_dep(
@@ -361,7 +481,7 @@ def _maybe_add_pruned_private_hdrs_dep(
         **kwargs):
     """Given some srcs, prunes any header files into a separate cc_library, and
     appends that new library to deps, returning new_srcs (sans headers) and
-    new_deps.  The separate cc_library is private with linkstatic = 1.
+    add_deps.  The separate cc_library is private with linkstatic = 1.
 
     We use this helper in all drake_cc_{library,binary,test) because when we
     want to fiddle with include paths, we *must* have all header files listed
@@ -369,7 +489,7 @@ def _maybe_add_pruned_private_hdrs_dep(
     """
     new_srcs, private_hdrs = _prune_private_hdrs(srcs)
     if private_hdrs:
-        name = "_" + base_name + "_private_headers_impl"
+        name = "_" + base_name + "_private_headers_cc_impl"
         kwargs.pop("linkshared", "")
         kwargs.pop("linkstatic", "")
         kwargs.pop("visibility", "")
@@ -377,25 +497,28 @@ def _maybe_add_pruned_private_hdrs_dep(
             name = name,
             hdrs = private_hdrs,
             srcs = [],
-            deps = deps,
+            interface_deps = deps,
+            implementation_deps = [],
             linkstatic = 1,
             visibility = ["//visibility:private"],
             **kwargs
         )
-        new_deps = deps + [":" + name]
+        add_deps = [":" + name]
     else:
-        new_deps = deps
-    return new_srcs, new_deps
+        add_deps = []
+    return new_srcs, add_deps
 
 def drake_cc_library(
         name,
         hdrs = [],
         srcs = [],
+        interface_deps = None,
         deps = [],
         copts = [],
         clang_copts = [],
         gcc_copts = [],
         linkstatic = 1,
+        internal = False,
         declare_installed_headers = 1,
         install_hdrs_exclude = [],
         **kwargs):
@@ -405,12 +528,68 @@ def drake_cc_library(
     on all platforms, and to avoid mysterious dyld errors on OS X. This default
     could be revisited if binary size becomes a concern.
 
-    The deps= of a drake_cc_library must either be another drake_cc_library, or
-    be named like "@something//etc..." (i.e., come from the workspace, not part
-    of Drake).  In other words, all of Drake's C++ libraries must be declared
-    using the drake_cc_library macro.
+    The dependencies of a cc_library can be classified as "interface deps" or
+    "implementation deps". Files that are #include'd by headers are "interface
+    deps"; files that are #include'd by srcs are "implementation deps".
+
+    Dependencies listed as "implementation deps" will be linked into your
+    program, but their header files will only be available to the srcs files
+    here. Downstream users of this library will not have access to the
+    implementation deps's header files, nor will any preprocessor definitions
+    for the implementation deps propagate past this firewall.
+
+    For backwards compatibility, when the `interface_deps=` argument is None,
+    we treat `deps=` as the list of "interface deps", with no "implementation
+    deps". This means that simply listing out everything as `deps=` will build
+    successfully, even if only the cc file needed it.
+
+    When `interface_deps=` is non-None, then it describes the "interface deps"
+    and the `deps=` argument is interpreted as the "implementation deps".
+
+    The dependencies of a drake_cc_library must be another drake_cc_library, or
+    else be named like "@something//etc..." (i.e., come from the workspace, not
+    part of Drake).  In other words, all of Drake's C++ libraries must be
+    declared using the drake_cc_library macro.
+
+    Setting `internal = True` is convenient sugar to flag code that is never
+    used by Drake's installed headers. This is especially helpful when the
+    header_lint tool is complaining about third-party dependency pollution.
+    Flagging a library as `internal = True` means that the library is internal
+    from the point of view of the the build system, which is an even stronger
+    promise that merely placing code inside `namespace internal {}`.
+    Code that is build-system internal should always be namespace-internal,
+    but not all namespace-internal code is build-system internal. For example,
+    drake/common/diagnostic_policy.h is namespace-internal, but cannot be
+    build-internal because other Drake headers (multibody/parsing/parser.h)
+    refer to the diagnostic policy header, for use by their private fields.
+    Libraries marked with `internal = True` should generally be listed only as
+    deps of _other_ libraries marked as internal, or as "implementation deps"
+    (see paragraphs above) of non-internal libraries.
     """
     new_copts = _platform_copts(copts, gcc_copts, clang_copts)
+    if interface_deps != None:
+        implementation_deps = (deps or [])
+    else:
+        interface_deps = deps
+        implementation_deps = []
+    new_tags = kwargs.pop("tags", None) or []
+    if internal:
+        if install_hdrs_exclude != []:
+            fail("When using internal = True, hdrs are automatically excluded")
+        if kwargs.get("testonly", False):
+            fail("Using internal = True is already implied under testonly = 1")
+        if len(kwargs.get("visibility") or []) == 0:
+            fail("When using internal = True, you must set visiblity. " +
+                 "In most cases, visibility = [\"//visibility:private\"] " +
+                 "or visibility = [\"//:__subpackages__\"] are suitable.")
+        for item in kwargs["visibility"]:
+            if item == "//visibility:public":
+                fail("When using internal = True, visiblity can't be public")
+        install_hdrs_exclude = hdrs
+        new_tags = new_tags + [
+            "exclude_from_libdrake",
+            "exclude_from_package",
+        ]
 
     # We install private_hdrs by default, because Bazel's visibility denotes
     # whether headers can be *directly* included when using cc_library; it does
@@ -418,23 +597,26 @@ def drake_cc_library(
     # For example, common/symbolic.h is the only public-visibility header for
     # its cc_library, but we also need to install all of its child headers that
     # it includes, such as common/symbolic_expression.h.
-    new_srcs, new_deps = _maybe_add_pruned_private_hdrs_dep(
+    new_srcs, add_deps = _maybe_add_pruned_private_hdrs_dep(
         base_name = name,
         srcs = srcs,
-        deps = deps,
+        deps = interface_deps + implementation_deps,
         copts = new_copts,
         declare_installed_headers = declare_installed_headers,
+        tags = new_tags,
         **kwargs
     )
     _raw_drake_cc_library(
         name = name,
         hdrs = hdrs,
         srcs = new_srcs,
-        deps = new_deps,
+        interface_deps = interface_deps + add_deps,
+        implementation_deps = implementation_deps,
         copts = new_copts,
         linkstatic = linkstatic,
         declare_installed_headers = declare_installed_headers,
         install_hdrs_exclude = install_hdrs_exclude,
+        tags = new_tags,
         **kwargs
     )
 
@@ -512,6 +694,10 @@ def drake_cc_binary(
     By default, we prefer to link static libraries whenever they are available.
     This default could be revisited if binary size becomes a concern.
 
+    Note that drake_cc_binary does not draw any distinction between "interface
+    deps" vs "implementation deps". There is no "interface", because this is a
+    binary, not a library.
+
     If you wish to create a smoke-test demonstrating that your binary runs
     without crashing, supply add_test_rule=1. Note that if you wish to do
     this, you should consider suppressing that urge, and instead writing real
@@ -519,7 +705,7 @@ def drake_cc_binary(
     defaults using test_rule_args=["-f", "--bar=42"] or test_rule_size="baz".
     """
     new_copts = _platform_copts(copts, gcc_copts, clang_copts)
-    new_srcs, new_deps = _maybe_add_pruned_private_hdrs_dep(
+    new_srcs, add_deps = _maybe_add_pruned_private_hdrs_dep(
         base_name = name,
         srcs = srcs,
         deps = deps,
@@ -532,7 +718,7 @@ def drake_cc_binary(
         name = name,
         srcs = new_srcs,
         data = data,
-        deps = new_deps,
+        deps = deps + add_deps,
         copts = new_copts,
         testonly = testonly,
         linkshared = linkshared,
@@ -545,7 +731,7 @@ def drake_cc_binary(
     tags = kwargs.pop("tags", [])
     native.genrule(
         name = name + "_dsym",
-        srcs = [":" + name],
+        srcs = _dsym_srcs(name),
         outs = [name + ".dSYM"],
         output_to_bindir = 1,
         testonly = testonly,
@@ -562,7 +748,7 @@ def drake_cc_binary(
             name = name + "_test",
             srcs = new_srcs,
             data = data + test_rule_data,
-            deps = new_deps,
+            deps = deps + add_deps,
             copts = copts,
             gcc_copts = gcc_copts,
             size = test_rule_size,
@@ -598,7 +784,7 @@ def drake_cc_test(
         srcs = ["test/%s.cc" % name]
     kwargs["testonly"] = 1
     new_copts = _platform_copts(copts, gcc_copts, clang_copts, cc_test = 1)
-    new_srcs, new_deps = _maybe_add_pruned_private_hdrs_dep(
+    new_srcs, add_deps = _maybe_add_pruned_private_hdrs_dep(
         base_name = name,
         srcs = srcs,
         deps = deps,
@@ -611,7 +797,7 @@ def drake_cc_test(
         srcs = new_srcs,
         args = args,
         tags = tags,
-        deps = new_deps,
+        deps = deps + add_deps,
         copts = new_copts,
         **kwargs
     )
@@ -619,7 +805,7 @@ def drake_cc_test(
     # Also generate the OS X debug symbol file for this test.
     native.genrule(
         name = name + "_dsym",
-        srcs = [":" + name],
+        srcs = _dsym_srcs(name),
         outs = [name + ".dSYM"],
         output_to_bindir = 1,
         testonly = kwargs["testonly"],

@@ -52,16 +52,16 @@ TYPED_TEST_SUITE(ScalarViewDenseOutputTest, ExtensionTypes);
 TYPED_TEST(ScalarViewDenseOutputTest, ExtensionConsistency) {
   // Verifies that passing a null base dense output results in an error.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      ScalarViewDenseOutput<TypeParam> dense_output(
+      ScalarViewDenseOutput<TypeParam>(
           std::unique_ptr<HermitianDenseOutput<TypeParam>>(),
           this->kValidElementIndex),
-      std::runtime_error, ".*dense output.*is null.*");
+      ".*dense output.*is null.*");
 
   // Verifies that views to invalid elements result in an error.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      ScalarViewDenseOutput<TypeParam> dense_output(
+      ScalarViewDenseOutput<TypeParam>(
           this->CreateDummyDenseOutput(), this->kInvalidElementIndex),
-      std::runtime_error, ".*out of.*dense output.*range.*");
+      ".*out of.*dense output.*range.*");
 
   // Instantiates scalar continuous extension properly.
   ScalarViewDenseOutput<TypeParam> dense_output(
@@ -83,7 +83,6 @@ TYPED_TEST(ScalarViewDenseOutputTest, ExtensionConsistency) {
   // Checks evaluation preconditions.
   DRAKE_EXPECT_THROWS_MESSAGE(
       dense_output.Evaluate(this->kInvalidTime),
-      std::runtime_error,
       ".*[Tt]ime.*out of.*dense output.*domain.*");
 
   // Compares evaluations for consistency.

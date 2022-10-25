@@ -11,8 +11,7 @@ def rules_pkg_repository(
     github_archive(
         name = name,
         repository = "bazelbuild/rules_pkg",  # License: Apache-2.0
-        extra_strip_prefix = "pkg",
-        commit = "0.5.1",
-        sha256 = "0d2e97f71161e8af97cb2fffe321017293127f6ea8b497cb27b2b8a711e64174",  # noqa
+        commit = "0.7.1",
+        sha256 = "d258fb6965cf3d7ebdbe146ec7e28b605f0644cb880101604e166e35d4ca62bc",  # noqa
         mirrors = mirrors,
     )

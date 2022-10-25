@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <memory>
+#include <string>
 
 #include "drake/common/default_scalars.h"
 #include "drake/common/drake_assert.h"
@@ -48,9 +49,17 @@ class PrismaticMobilizer final : public MobilizerImpl<T, 1, 1> {
                      const Vector3<double>& axis_F) :
       MobilizerBase(inboard_frame_F, outboard_frame_M), axis_F_(axis_F) {
     double kEpsilon = std::sqrt(std::numeric_limits<double>::epsilon());
-    DRAKE_THROW_UNLESS(!axis_F.isZero(kEpsilon));
+    DRAKE_DEMAND(!axis_F.isZero(kEpsilon));
     axis_F_.normalize();
   }
+
+  // Overloads to define the suffix names for the position and velocity
+  // elements.
+  std::string position_suffix(int position_index_in_mobilizer) const final;
+  std::string velocity_suffix(int velocity_index_in_mobilizer) const final;
+
+  bool can_rotate() const final    { return false; }
+  bool can_translate() const final { return true; }
 
   // @retval axis_F The translation axis as a unit vector expressed in the
   // inboard frame F.

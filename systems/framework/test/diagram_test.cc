@@ -28,6 +28,7 @@ using Eigen::Vector2d;
 using Eigen::Vector3d;
 using Eigen::Vector4d;
 using Eigen::VectorXd;
+using drake::systems::analysis_test::StatelessSystem;
 
 namespace drake {
 namespace systems {
@@ -477,7 +478,7 @@ class ExampleDiagram : public Diagram<double> {
     adder1_->set_name("adder1");
     adder2_ = builder.AddSystem<Adder<double>>(2 /* inputs */, size);
     adder2_->set_name("adder2");
-    stateless_ = builder.AddSystem<analysis_test::StatelessSystem<double>>(
+    stateless_ = builder.AddSystem<StatelessSystem<double>>(
         1.0 /* trigger time */,
         WitnessFunctionDirection::kCrossesZero);
     stateless_->set_name("stateless");
@@ -525,7 +526,7 @@ class ExampleDiagram : public Diagram<double> {
   Integrator<double>* integrator0() { return integrator0_; }
   Integrator<double>* integrator1() { return integrator1_; }
   Sink<double>* sink() { return sink_; }
-  analysis_test::StatelessSystem<double>* stateless() { return stateless_; }
+  StatelessSystem<double>* stateless() { return stateless_; }
   KitchenSinkStateAndParameters<double>* kitchen_sink() {
     return kitchen_sink_;
   }
@@ -534,7 +535,7 @@ class ExampleDiagram : public Diagram<double> {
   Adder<double>* adder0_ = nullptr;
   Adder<double>* adder1_ = nullptr;
   Adder<double>* adder2_ = nullptr;
-  analysis_test::StatelessSystem<double>* stateless_ = nullptr;
+  StatelessSystem<double>* stateless_ = nullptr;
 
   Integrator<double>* integrator0_ = nullptr;
   Integrator<double>* integrator1_ = nullptr;
@@ -791,6 +792,34 @@ TEST_F(DiagramTest, Path) {
             diagram_->GetSystemPathname());
 }
 
+// Tests the special cases in ValidateContext() that recognize if the context
+// or system is the root.
+TEST_F(DiagramTest, ValidateContext) {
+  // Root diagram given root context.
+  DRAKE_EXPECT_NO_THROW(diagram_->ValidateContext(*context_));
+
+  // Internal system given root diagram's context.
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      adder0()->ValidateContext(*context_),
+      ".*was passed the root Diagram's Context.+GetMyContextFromRoot"
+      "[^]*troubleshooting.html.+");
+
+  // Root diagram given context for internal system.
+  const auto& adder_context = adder0()->GetMyContextFromRoot(*context_);
+  DRAKE_EXPECT_THROWS_MESSAGE(diagram_->ValidateContext(adder_context),
+                              ".*root Diagram was passed a subcontext"
+                              "[^]*troubleshooting.html.+");
+
+  // And for the sake of completeness, one leaf system's context passed to
+  // another leaf system.
+  const auto& integrator0_context =
+      integrator0()->GetMyContextFromRoot(*context_);
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      integrator1()->ValidateContext(integrator0_context),
+      "A function call on .+ system named '.+' was passed the Context of a "
+      "system named '.+'[^]*troubleshooting.html.+");
+}
+
 TEST_F(DiagramTest, Graphviz) {
   const std::string id = std::to_string(
       reinterpret_cast<int64_t>(diagram_.get()));
@@ -924,7 +953,6 @@ TEST_F(DiagramTest, ContinuousStateBelongsWithSystem) {
   auto other_context = other_diagram.AllocateContext();
   DRAKE_EXPECT_THROWS_MESSAGE(
       other_diagram.CalcTimeDerivatives(*other_context, derivatives.get()),
-      std::logic_error,
       ".*::ContinuousState<double> was not created for.*::ExampleDiagram.*");
 }
 
@@ -947,11 +975,25 @@ TEST_F(DiagramTest, AllocateInputs) {
 TEST_F(DiagramTest, GetSubsystemByName) {
   const System<double>& stateless = diagram_->GetSubsystemByName("stateless");
   EXPECT_NE(
-      dynamic_cast<const analysis_test::StatelessSystem<double>*>(&stateless),
+      dynamic_cast<const StatelessSystem<double>*>(&stateless),
       nullptr);
 
   DRAKE_EXPECT_THROWS_MESSAGE(
-      diagram_->GetSubsystemByName("not_a_subsystem"), std::logic_error,
+      diagram_->GetSubsystemByName("not_a_subsystem"),
+      "System .* does not have a subsystem named not_a_subsystem");
+}
+
+TEST_F(DiagramTest, GetDowncastSubsystemByName) {
+  const StatelessSystem<double>& stateless =
+      diagram_->GetDowncastSubsystemByName<StatelessSystem>("stateless");
+  EXPECT_EQ(stateless.get_name(), "stateless");
+
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      diagram_->GetDowncastSubsystemByName<EmptySystem>("stateless"),
+      ".*cast.*StatelessSystem.*EmptySystem.*");
+
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      diagram_->GetDowncastSubsystemByName<StatelessSystem>("not_a_subsystem"),
       "System .* does not have a subsystem named not_a_subsystem");
 }
 
@@ -1079,7 +1121,9 @@ TEST_F(DiagramTest, ToAutoDiffXd) {
   const bool use_double_only = true;
   auto diagram_with_double_only = std::make_unique<ExampleDiagram>(
       kSize, use_abstract, use_double_only);
-  EXPECT_THROW(diagram_with_double_only->ToAutoDiffXd(), std::exception);
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      diagram_with_double_only->ToAutoDiffXd(),
+      ".*ExampleDiagram.*AutoDiffXd.*DoubleOnlySystem.*");
 }
 
 /// Tests that a diagram can be transmogrified to symbolic.
@@ -2700,13 +2744,12 @@ TEST_F(NestedDiagramContextTest, GetSubsystemContext) {
       diagram0_->GetMyMutableContextFromRoot(&*big_context_);
   // This should fail because this context is not a root context.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      integrator1_->GetMyContextFromRoot(diagram0_context), std::logic_error,
+      integrator1_->GetMyContextFromRoot(diagram0_context),
       ".*context must be a root context.*");
 
   // Should fail because integrator3 is not in diagram0.
   DRAKE_EXPECT_THROWS_MESSAGE(
       diagram0_->GetSubsystemContext(*integrator3_, diagram0_context),
-      std::logic_error,
       ".*Integrator.*int3.*not contained in.*Diagram.*diagram0.*");
 
   // Modify through the sub-Diagram context, then read back from root.
@@ -2960,16 +3003,16 @@ GTEST_TEST(MutateSubcontextTest, DiagramRecalculatesOnSubcontextChange) {
   DRAKE_EXPECT_NO_THROW(diagram_context->SetAccuracy(1e-6));
 
   // Time & accuracy changes NOT allowed at child (leaf) level.
-  DRAKE_EXPECT_THROWS_MESSAGE(context0.SetTime(3.), std::logic_error,
+  DRAKE_EXPECT_THROWS_MESSAGE(context0.SetTime(3.),
                               ".*SetTime.*Time change allowed only.*root.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      context0.SetTimeAndContinuousState(4., new_x0), std::logic_error,
+      context0.SetTimeAndContinuousState(4., new_x0),
       ".*SetTimeAndContinuousState.*Time change allowed only.*root.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      context0.SetTimeStateAndParametersFrom(context1), std::logic_error,
+      context0.SetTimeStateAndParametersFrom(context1),
       ".*SetTimeStateAndParametersFrom.*Time change allowed only.*root.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      context0.SetAccuracy(1e-7), std::logic_error,
+      context0.SetAccuracy(1e-7),
       ".*SetAccuracy.*Accuracy change allowed only.*root.*");
 }
 

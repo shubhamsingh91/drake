@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <ostream>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -19,6 +21,8 @@ enum class EllipsoidsSeparationProblem {
   kProblem2,
   kProblem3
 };
+
+std::ostream& operator<<(std::ostream& os, EllipsoidsSeparationProblem value);
 
 std::vector<EllipsoidsSeparationProblem> GetEllipsoidsSeparationProblems();
 
@@ -45,8 +49,10 @@ class TestEllipsoidsSeparation
  public:
   TestEllipsoidsSeparation();
 
-  void SolveAndCheckSolution(const SolverInterface& solver,
-                             double tol = 1E-8);
+  void SolveAndCheckSolution(
+      const SolverInterface& solver,
+      const std::optional<SolverOptions>& solver_options = std::nullopt,
+      double tol = 1E-8);
 
  private:
   Eigen::VectorXd x1_;
@@ -59,6 +65,8 @@ class TestEllipsoidsSeparation
 };
 
 enum class QPasSOCPProblem { kProblem0, kProblem1 };
+
+std::ostream& operator<<(std::ostream& os, QPasSOCPProblem value);
 
 std::vector<QPasSOCPProblem> GetQPasSOCPProblems();
 
@@ -126,14 +134,17 @@ class TestQPasSOCP : public ::testing::TestWithParam<QPasSOCPProblem> {
 /// becomes
 /// an SOCP, with both Lorentz cone and rotated Lorentz cone constraints
 enum class FindSpringEquilibriumProblem { kProblem0 };
+std::ostream& operator<<(std::ostream& os, FindSpringEquilibriumProblem value);
 std::vector<FindSpringEquilibriumProblem> GetFindSpringEquilibriumProblems();
 class TestFindSpringEquilibrium
     : public ::testing::TestWithParam<FindSpringEquilibriumProblem> {
  public:
   TestFindSpringEquilibrium();
 
-  void SolveAndCheckSolution(const SolverInterface& solver,
-                             double tol = 2E-3);
+  void SolveAndCheckSolution(
+      const SolverInterface& solver,
+      const std::optional<SolverOptions>& solver_options = std::nullopt,
+      double tol = 2E-3);
 
  private:
   Eigen::VectorXd weight_;
@@ -171,6 +182,7 @@ class MaximizeGeometricMeanTrivialProblem1 {
  private:
   std::unique_ptr<MathematicalProgram> prog_;
   symbolic::Variable x_;
+  std::unique_ptr<Binding<LinearCost>> cost_;
 };
 
 /**
@@ -197,6 +209,7 @@ class MaximizeGeometricMeanTrivialProblem2 {
  private:
   std::unique_ptr<MathematicalProgram> prog_;
   symbolic::Variable x_;
+  std::unique_ptr<Binding<LinearCost>> cost_;
 };
 
 /**
@@ -234,6 +247,7 @@ class SmallestEllipsoidCoveringProblem {
   std::unique_ptr<MathematicalProgram> prog_;
   VectorX<symbolic::Variable> a_;
   Eigen::MatrixXd p_;
+  std::unique_ptr<Binding<LinearCost>> cost_;
 };
 
 class SmallestEllipsoidCoveringProblem1
@@ -249,7 +263,8 @@ class SmallestEllipsoidCoveringProblem1
 };
 
 void SolveAndCheckSmallestEllipsoidCoveringProblems(
-    const SolverInterface& solver, double tol);
+    const SolverInterface& solver,
+    const std::optional<SolverOptions>& solver_options, double tol);
 
 /**
  * Computes the minimal distance to a point from a sphere.

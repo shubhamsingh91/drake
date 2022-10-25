@@ -4,9 +4,10 @@
 #include <gflags/gflags.h>
 
 #include "drake/common/drake_assert.h"
-#include "drake/examples/multibody/rolling_sphere/make_rolling_sphere_plant.h"
+#include "drake/examples/multibody/rolling_sphere/populate_ball_plant.h"
 #include "drake/geometry/drake_visualizer.h"
 #include "drake/geometry/geometry_instance.h"
+#include "drake/geometry/proximity_properties.h"
 #include "drake/geometry/scene_graph.h"
 #include "drake/lcm/drake_lcm.h"
 #include "drake/math/random_rotation.h"
@@ -24,6 +25,10 @@ DEFINE_double(simulation_time, 2.0,
 // Contact model parameters.
 DEFINE_string(contact_model, "point",
               "Contact model. Options are: 'point', 'hydroelastic', 'hybrid'.");
+DEFINE_string(hydro_rep, "tri",
+              "Contact-surface representation for hydroelastics. "
+              "Options are: 'tri' for triangles, 'poly' for polygons. "
+              "Default is 'tri'. It has no effect on point contact.");
 DEFINE_double(hydroelastic_modulus, 5.0e4,
               "For hydroelastic (and hybrid) contact, "
               "hydroelastic modulus, [Pa].");
@@ -33,18 +38,19 @@ DEFINE_double(dissipation, 5.0,
 DEFINE_double(friction_coefficient, 0.3, "friction coefficient.");
 DEFINE_bool(rigid_ball, false,
             "If true, the ball is given a rigid hydroelastic representation "
-            "(instead of the default soft value). Make sure you have the right "
-            "contact model to support this representation.");
-DEFINE_bool(soft_ground, false,
-            "If true, the ground is given a soft hydroelastic representation "
-            "(instead of the default rigid value). Make sure you have the "
-            "right contact model to support this representation.");
+            "(instead of being compliant by the default). Make sure "
+            "you have the right contact model to support this representation.");
+DEFINE_bool(
+    compliant_ground, false,
+    "If true, the ground is given a compliant hydroelastic representation "
+    "(instead of the default rigid value). Make sure you have the "
+    "right contact model to support this representation.");
 DEFINE_bool(add_wall, false,
-            "If true, adds a wall with soft hydroelastic representation in the "
-            "path of the default ball trajectory. This will cause the "
-            "simulation to throw when the soft ball hits the wall with the "
-            "'hydroelastic' model; use the 'hybrid' or 'point' contact model "
-            "to simulate beyond this contact.");
+            "If true, adds a wall with compliant hydroelastic representation "
+            "in the path of the default ball trajectory. This will cause the "
+            "simulation to throw when the compliant ball hits the wall with "
+            "the 'hydroelastic' model; use the 'hybrid' or 'point' contact"
+            " model to simulate beyond this contact.");
 DEFINE_double(
     mbp_dt, 0.0,
     "The fixed time step period (in seconds) of discrete updates for the "
@@ -92,16 +98,16 @@ using drake::geometry::SceneGraph;
 using drake::geometry::SourceId;
 using drake::lcm::DrakeLcm;
 using drake::math::RigidTransformd;
+using drake::multibody::AddMultibodyPlantSceneGraph;
 using drake::multibody::ContactModel;
 using drake::multibody::CoulombFriction;
-using drake::multibody::MultibodyPlant;
 using drake::multibody::SpatialVelocity;
 
 int do_main() {
   systems::DiagramBuilder<double> builder;
 
-  SceneGraph<double>& scene_graph = *builder.AddSystem<SceneGraph>();
-  scene_graph.set_name("scene_graph");
+  auto [plant, scene_graph] =
+      AddMultibodyPlantSceneGraph(&builder, FLAGS_mbp_dt);
 
   // Plant's parameters.
   const double radius = 0.05;   // m
@@ -112,10 +118,9 @@ int do_main() {
       FLAGS_friction_coefficient /* static friction */,
       FLAGS_friction_coefficient /* dynamic friction */);
 
-  MultibodyPlant<double>& plant = *builder.AddSystem(MakeBouncingBallPlant(
-      FLAGS_mbp_dt, radius, mass, FLAGS_hydroelastic_modulus, FLAGS_dissipation,
-      coulomb_friction, -g * Vector3d::UnitZ(), FLAGS_rigid_ball,
-      FLAGS_soft_ground, &scene_graph));
+  PopulateBallPlant(radius, mass, FLAGS_hydroelastic_modulus, FLAGS_dissipation,
+                    coulomb_friction, -g * Vector3d::UnitZ(), FLAGS_rigid_ball,
+                    FLAGS_compliant_ground, &plant);
 
   if (FLAGS_add_wall) {
     geometry::Box wall{0.2, 4, 0.4};
@@ -124,7 +129,7 @@ int do_main() {
     geometry::AddContactMaterial({} /* dissipation */, {} /* point stiffness */,
                                  CoulombFriction<double>(),
                                  &prox_prop);
-    geometry::AddSoftHydroelasticProperties(0.1, 1e8, &prox_prop);
+    geometry::AddCompliantHydroelasticProperties(0.1, 1e8, &prox_prop);
     plant.RegisterCollisionGeometry(plant.world_body(), X_WB, wall,
                                     "wall_collision", std::move(prox_prop));
 
@@ -132,6 +137,17 @@ int do_main() {
     illus_prop.AddProperty("phong", "diffuse", Vector4d(0.7, 0.5, 0.4, 0.5));
     plant.RegisterVisualGeometry(plant.world_body(), X_WB, wall, "wall_visual",
                                  std::move(illus_prop));
+  }
+
+  if (FLAGS_hydro_rep == "tri") {
+    plant.set_contact_surface_representation(
+        geometry::HydroelasticContactRepresentation::kTriangle);
+  } else if (FLAGS_hydro_rep == "poly") {
+    plant.set_contact_surface_representation(
+        geometry::HydroelasticContactRepresentation::kPolygon);
+  } else {
+    throw std::runtime_error("Invalid choice of contact-surface representation "
+                             "for hydroelastics '" + FLAGS_hydro_rep + "'.");
   }
 
   // Set contact model and parameters.
@@ -154,16 +170,6 @@ int do_main() {
 
   DRAKE_DEMAND(plant.num_velocities() == 6);
   DRAKE_DEMAND(plant.num_positions() == 7);
-
-  // Sanity check on the availability of the optional source id before using it.
-  DRAKE_DEMAND(plant.get_source_id().has_value());
-
-  builder.Connect(scene_graph.get_query_output_port(),
-                  plant.get_geometry_query_input_port());
-
-  builder.Connect(
-      plant.get_geometry_poses_output_port(),
-      scene_graph.get_source_pose_port(plant.get_source_id().value()));
 
   if (FLAGS_visualize) {
     geometry::DrakeVisualizerParams params;
@@ -196,7 +202,7 @@ int do_main() {
       &plant_context, plant.GetBodyByName("Ball"), V_WB);
 
   auto simulator =
-      systems::MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
+      MakeSimulatorFromGflags(*diagram, std::move(diagram_context));
 
   using clock = std::chrono::steady_clock;
   const clock::time_point start = clock::now();

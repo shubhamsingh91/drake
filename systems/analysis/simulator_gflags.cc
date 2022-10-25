@@ -60,6 +60,7 @@ DEFINE_bool(simulator_use_error_control,
 
 namespace drake {
 namespace systems {
+namespace internal {
 
 template <typename T>
 IntegratorBase<T>& ResetIntegratorFromGflags(Simulator<T>* simulator) {
@@ -100,9 +101,8 @@ std::unique_ptr<Simulator<T>> MakeSimulatorFromGflags(
     FLAGS_simulator_target_realtime_rate,
     FLAGS_simulator_publish_every_time_step
   };
-  ApplySimulatorConfig(simulator.get(), config);
+  ApplySimulatorConfig(config, simulator.get());
 
-  simulator->Initialize();
   return simulator;
 }
 
@@ -110,5 +110,7 @@ DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS((
       &ResetIntegratorFromGflags<T>,
       &MakeSimulatorFromGflags<T>
 ))
+
+}  // namespace internal
 }  // namespace systems
 }  // namespace drake

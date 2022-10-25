@@ -3,11 +3,9 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <typeindex>
 
 #include "drake/common/drake_assert.h"
 #include "drake/common/drake_copyable.h"
-#include "drake/common/drake_deprecated.h"
 #include "drake/common/eigen_types.h"
 #include "drake/math/rigid_transform.h"
 
@@ -35,7 +33,7 @@ struct ShapeTag{};
    - it is cloneable, and
    - it can be "reified" (see ShapeReifier).
 
-  When you add a new subclass of Shape, you must:
+  When you add a new subclass of Shape to Drake, you must:
 
   1. add a virtual function ImplementGeometry() for the new shape in
      ShapeReifier that invokes the ThrowUnsupportedGeometry method, and add to
@@ -48,6 +46,10 @@ struct ShapeTag{};
 
   Otherwise, you might get a runtime error. We do not have an automatic way to
   enforce them at compile time.
+
+ Note that the Shape class hierarchy is closed to third-party extensions. All
+ Shape classes must be defined within Drake directly (and in this h/cc file
+ pair in particular).
  */
 class Shape {
  public:
@@ -127,6 +129,10 @@ class Cylinder final : public Shape {
    */
   Cylinder(double radius, double length);
 
+  /** Constructs a cylinder with a vector of measures: radius and length.
+   @throws std::exception if the measures are not strictly positive. */
+  explicit Cylinder(const Vector2<double>& measures);
+
   double radius() const { return radius_; }
   double length() const { return length_; }
 
@@ -148,6 +154,11 @@ class Box final : public Shape {
    @throws std::exception if `width`, `depth` or `height` are not strictly
    positive. */
   Box(double width, double depth, double height);
+
+  /** Constructs a box with a vector of measures: width, depth, and height --
+   the box's dimensions along the canonical x-, y-, and z-axes, respectively.
+   @throws std::exception if the measures are not strictly positive. */
+  explicit Box(const Vector3<double>& measures);
 
   /** Constructs a cube with the given `edge_size` for its width, depth, and
    height. */
@@ -185,6 +196,10 @@ class Capsule final : public Shape {
    */
   Capsule(double radius, double length);
 
+  /** Constructs a capsule with a vector of measures: radius and length.
+   @throws std::exception if the measures are not strictly positive. */
+  explicit Capsule(const Vector2<double>& measures);
+
   double radius() const { return radius_; }
   double length() const { return length_; }
 
@@ -198,6 +213,7 @@ class Capsule final : public Shape {
  equation for the ellipsoid is:
 
           x²/a² + y²/b² + z²/c² = 1,
+
  where a,b,c are the lengths of the principal semi-axes of the ellipsoid.
  The bounding box of the ellipsoid is [-a,a]x[-b,b]x[-c,c].
 */
@@ -206,10 +222,17 @@ class Ellipsoid final : public Shape {
   DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(Ellipsoid)
 
   /** Constructs an ellipsoid with the given lengths of its principal
-   semi-axes.
+   semi-axes, with a, b, and c measured along the x-, y-, and z- axes of the
+   canonical frame, respectively.
    @throws std::exception if `a`, `b`, or `c` are not strictly positive.
    */
   Ellipsoid(double a, double b, double c);
+
+  /** Constructs an ellipsoid with a vector of measures: the lengths of its
+   principal semi-axes, with a, b, and c measured along the x-, y-, and z- axes
+   of the canonical frame, respectively.
+   @throws std::exception if the measures are not strictly positive. */
+  explicit Ellipsoid(const Vector3<double>& measures);
 
   double a() const { return radii_(0); }
   double b() const { return radii_(1); }
@@ -277,7 +300,7 @@ class Mesh final : public Shape {
  private:
   // NOTE: Cannot be const to support default copy/move semantics.
   std::string filename_;
-  double scale_;
+  double scale_{};
 };
 
 /** Definition of a *convex* surface mesh.
@@ -315,7 +338,7 @@ class Convex final : public Shape {
 
  private:
   std::string filename_;
-  double scale_;
+  double scale_{};
 };
 
 // TODO(russt): Rename this to `Cone` if/when it is supported by more of the
@@ -326,8 +349,8 @@ class Convex final : public Shape {
 
       sqrt(x²/a² + y²/b²) ≤ z;  z ∈ [0, height],
 
- where `a` and `b` are the lengths of the principle semi-axes of the horizontal
- section at `z=1`.
+ where `a` and `b` are the lengths of the principal semi-axes of the horizontal
+ section at `z=height()`.
 
  This shape is currently only supported by Meshcat. It will not appear in any
  renderings, proximity queries, or other visualizers.
@@ -341,14 +364,19 @@ class MeshcatCone final : public Shape {
    */
   explicit MeshcatCone(double height, double a = 1.0, double b = 1.0);
 
+  /** Constructs a cone with a vector of measures: height and principal
+   semi-axes.
+   @throws std::exception if the measures are not strictly positive. */
+  explicit MeshcatCone(const Vector3<double>& measures);
+
   double height() const { return height_; }
   double a() const { return a_; }
   double b() const { return b_; }
 
  private:
-  double height_;
-  double a_;
-  double b_;
+  double height_{};
+  double a_{};
+  double b_{};
 };
 
 /** The interface for converting shape descriptions to real shapes. Any entity
@@ -402,7 +430,7 @@ class MeshcatCone final : public Shape {
  implementations require.  */
 class ShapeReifier {
  public:
-  virtual ~ShapeReifier() = default;
+  virtual ~ShapeReifier();
 
   virtual void ImplementGeometry(const Sphere& sphere, void* user_data);
   virtual void ImplementGeometry(const Cylinder& cylinder, void* user_data);
@@ -424,23 +452,6 @@ class ShapeReifier {
   virtual void ThrowUnsupportedGeometry(const std::string& shape_name);
 };
 
-template <typename S>
-Shape::Shape(ShapeTag<S>) {
-  static_assert(std::is_base_of_v<Shape, S>,
-                "Concrete shapes *must* be derived from the Shape class");
-  cloner_ = [](const Shape& shape_arg) {
-    DRAKE_DEMAND(typeid(shape_arg) == typeid(S));
-    const S& derived_shape = static_cast<const S&>(shape_arg);
-    return std::unique_ptr<Shape>(new S(derived_shape));
-  };
-  reifier_ = [](const Shape& shape_arg, ShapeReifier* reifier,
-                void* user_data) {
-    DRAKE_DEMAND(typeid(shape_arg) == typeid(S));
-    const S& derived_shape = static_cast<const S&>(shape_arg);
-    reifier->ImplementGeometry(derived_shape, user_data);
-  };
-}
-
 // TODO(SeanCurtis-TRI): Merge this into shape_to_string.h so that there's a
 //  single utility for getting a string from a shape.
 /** Class that reports the name of the type of shape being reified (e.g.,
@@ -451,42 +462,24 @@ class ShapeName final : public ShapeReifier {
 
   /** Constructs a %ShapeName from the given `shape` such that `string()`
    already contains the string representation of `shape`.  */
-  explicit ShapeName(const Shape& shape) {
-    shape.Reify(this);
-  }
+  explicit ShapeName(const Shape& shape);
+
+  ~ShapeName() final;
 
   /** @name  Implementation of ShapeReifier interface  */
   //@{
 
   using ShapeReifier::ImplementGeometry;
 
-  void ImplementGeometry(const Sphere&, void*) final {
-    string_ = "Sphere";
-  }
-  void ImplementGeometry(const Cylinder&, void*) final {
-    string_ = "Cylinder";
-  }
-  void ImplementGeometry(const HalfSpace&, void*) final {
-    string_ = "HalfSpace";
-  }
-  void ImplementGeometry(const Box&, void*) final {
-    string_ = "Box";
-  }
-  void ImplementGeometry(const Capsule&, void*) final {
-    string_ = "Capsule";
-  }
-  void ImplementGeometry(const Ellipsoid&, void*) final {
-    string_ = "Ellipsoid";
-  }
-  void ImplementGeometry(const Mesh&, void*) final {
-    string_ = "Mesh";
-  }
-  void ImplementGeometry(const Convex&, void*) final {
-    string_ = "Convex";
-  }
-  void ImplementGeometry(const MeshcatCone&, void*) final {
-    string_ = "MeshcatCone";
-  }
+  void ImplementGeometry(const Sphere&, void*) final;
+  void ImplementGeometry(const Cylinder&, void*) final;
+  void ImplementGeometry(const HalfSpace&, void*) final;
+  void ImplementGeometry(const Box&, void*) final;
+  void ImplementGeometry(const Capsule&, void*) final;
+  void ImplementGeometry(const Ellipsoid&, void*) final;
+  void ImplementGeometry(const Mesh&, void*) final;
+  void ImplementGeometry(const Convex&, void*) final;
+  void ImplementGeometry(const MeshcatCone&, void*) final;
 
   //@}
 
@@ -500,6 +493,12 @@ class ShapeName final : public ShapeReifier {
 
 /** @relates ShapeName */
 std::ostream& operator<<(std::ostream& out, const ShapeName& name);
+
+/** Calculates the volume (in meters^3) for the Shape.
+ @throws std::exception if the derived type hasn't overloaded this
+  implementation (yet).
+*/
+double CalcVolume(const Shape& shape);
 
 }  // namespace geometry
 }  // namespace drake

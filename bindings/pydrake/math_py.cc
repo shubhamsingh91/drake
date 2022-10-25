@@ -15,10 +15,13 @@
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/bindings/pydrake/symbolic_types_pybind.h"
+#include "drake/common/drake_deprecated.h"
 #include "drake/math/barycentric.h"
 #include "drake/math/bspline_basis.h"
+#include "drake/math/compute_numerical_gradient.h"
 #include "drake/math/continuous_algebraic_riccati_equation.h"
 #include "drake/math/continuous_lyapunov_equation.h"
+#include "drake/math/cross_product.h"
 #include "drake/math/discrete_algebraic_riccati_equation.h"
 #include "drake/math/discrete_lyapunov_equation.h"
 #include "drake/math/matrix_util.h"
@@ -44,6 +47,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
   // NOLINTNEXTLINE(build/namespaces): Emulate placement in namespace.
   using namespace drake::math;
   constexpr auto& doc = pydrake_doc.drake.math;
+
+  // N.B. Some classes define `__repr__` in `_math_extra.py`.
 
   {
     using Class = RigidTransform<T>;
@@ -102,11 +107,13 @@ void DoScalarDependentDefinitions(py::module m, T) {
         .def("SetIdentity", &Class::SetIdentity, cls_doc.SetIdentity.doc)
         .def("IsExactlyIdentity", &Class::IsExactlyIdentity,
             cls_doc.IsExactlyIdentity.doc)
-        .def("IsIdentityToEpsilon", &Class::IsIdentityToEpsilon,
-            py::arg("translation_tolerance"), cls_doc.IsIdentityToEpsilon.doc)
+        .def("IsNearlyIdentity", &Class::IsNearlyIdentity,
+            py::arg("translation_tolerance"), cls_doc.IsNearlyIdentity.doc)
         .def("IsNearlyEqualTo", &Class::IsNearlyEqualTo, py::arg("other"),
             py::arg("tolerance"), cls_doc.IsNearlyEqualTo.doc)
         .def("inverse", &Class::inverse, cls_doc.inverse.doc)
+        .def("InvertAndCompose", &Class::InvertAndCompose, py::arg("other"),
+            cls_doc.InvertAndCompose.doc)
         .def(
             "multiply",
             [](const Class* self, const Class& other) { return *self * other; },
@@ -117,6 +124,12 @@ void DoScalarDependentDefinitions(py::module m, T) {
               return *self * p_BoQ_B;
             },
             py::arg("p_BoQ_B"), cls_doc.operator_mul.doc_1args_p_BoQ_B)
+        .def(
+            "multiply",
+            [](const Class* self, const Vector4<T>& vec_B) {
+              return *self * vec_B;
+            },
+            py::arg("vec_B"), cls_doc.operator_mul.doc_1args_vec_B)
         .def(
             "multiply",
             [](const Class* self, const Matrix3X<T>& p_BoQ_B) {
@@ -168,6 +181,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
         .def_static("Identity", &Class::Identity, cls_doc.Identity.doc)
         .def("set", &Class::set, py::arg("R"), cls_doc.set.doc)
         .def("inverse", &Class::inverse, cls_doc.inverse.doc)
+        .def("InvertAndCompose", &Class::InvertAndCompose, py::arg("other"),
+            cls_doc.InvertAndCompose.doc)
         .def("transpose", &Class::transpose, cls_doc.transpose.doc)
         .def("matrix", &Class::matrix, cls_doc.matrix.doc)
         .def("row", &Class::row, py::arg("index"), cls_doc.row.doc)
@@ -190,9 +205,10 @@ void DoScalarDependentDefinitions(py::module m, T) {
             cls_doc.IsValid.doc_0args)
         .def("IsExactlyIdentity", &Class::IsExactlyIdentity,
             cls_doc.IsExactlyIdentity.doc)
-        .def("IsIdentityToInternalTolerance",
-            &Class::IsIdentityToInternalTolerance,
-            cls_doc.IsIdentityToInternalTolerance.doc)
+        .def("IsNearlyIdentity", &Class::IsNearlyIdentity,
+            py::arg("tolerance") =
+                Class::get_internal_tolerance_for_orthonormality(),
+            cls_doc.IsNearlyIdentity.doc)
         // Does not return the quality_factor
         .def_static(
             "ProjectToRotationMatrix",
@@ -306,13 +322,36 @@ void DoScalarDependentDefinitions(py::module m, T) {
                 &Class::ComputeActiveBasisFunctionIndices),
             py::arg("parameter_value"),
             cls_doc.ComputeActiveBasisFunctionIndices.doc_1args_parameter_value)
+        .def(
+            "EvaluateCurve",
+            [](Class* self, const std::vector<VectorX<T>>& control_points,
+                const T& parameter_value) {
+              return self->EvaluateCurve(control_points, parameter_value);
+            },
+            py::arg("control_points"), py::arg("parameter_value"),
+            cls_doc.EvaluateCurve.doc)
         .def("EvaluateBasisFunctionI", &Class::EvaluateBasisFunctionI,
             py::arg("i"), py::arg("parameter_value"),
-            cls_doc.EvaluateBasisFunctionI.doc);
+            cls_doc.EvaluateBasisFunctionI.doc)
+        .def(py::pickle(
+            [](const Class& self) {
+              return std::make_pair(self.order(), self.knots());
+            },
+            [](std::pair<int, std::vector<T>> args) {
+              return Class(std::get<0>(args), std::get<1>(args));
+            }));
   }
 
   m.def("wrap_to", &wrap_to<T, T>, py::arg("value"), py::arg("low"),
       py::arg("high"), doc.wrap_to.doc);
+
+  // Cross product
+  m.def(
+      "VectorToSkewSymmetric",
+      [](const Eigen::Ref<const Vector3<T>>& p) {
+        return VectorToSkewSymmetric(p);
+      },
+      py::arg("p"), doc.VectorToSkewSymmetric.doc);
 }
 
 void DoScalarIndependentDefinitions(py::module m) {
@@ -408,7 +447,16 @@ void DoScalarIndependentDefinitions(py::module m) {
             return IsPositiveDefinite(matrix, tolerance);
           },
           py::arg("matrix"), py::arg("tolerance") = 0.0,
-          doc.IsPositiveDefinite.doc);
+          doc.IsPositiveDefinite.doc)
+      .def(
+          "ToSymmetricMatrixFromLowerTriangularColumns",
+          [](const Eigen::Ref<const Eigen::VectorXd>&
+                  lower_triangular_columns) {
+            return ToSymmetricMatrixFromLowerTriangularColumns(
+                lower_triangular_columns);
+          },
+          py::arg("lower_triangular_columns"),
+          doc.ToSymmetricMatrixFromLowerTriangularColumns.doc_dynamic_size);
 
   // Quadratic Form.
   m  // BR
@@ -487,6 +535,42 @@ void DoScalarIndependentDefinitions(py::module m) {
       .def("inv", [](const Eigen::MatrixXd& X) -> Eigen::MatrixXd {
         return X.inverse();
       });
+
+  {
+    using Class = NumericalGradientMethod;
+    constexpr auto& cls_doc = doc.NumericalGradientMethod;
+    py::enum_<Class>(m, "NumericalGradientMethod", cls_doc.doc)
+        .value("kForward", Class::kForward, cls_doc.kForward.doc)
+        .value("kBackward", Class::kBackward, cls_doc.kBackward.doc)
+        .value("kCentral", Class::kCentral, cls_doc.kCentral.doc);
+  }
+
+  {
+    using Class = NumericalGradientOption;
+    constexpr auto& cls_doc = doc.NumericalGradientOption;
+    py::class_<Class>(m, "NumericalGradientOption", cls_doc.doc)
+        .def(py::init<NumericalGradientMethod, double>(), py::arg("method"),
+            py::arg("function_accuracy") = 1E-15, cls_doc.ctor.doc)
+        .def("NumericalGradientMethod", &Class::method, cls_doc.method.doc)
+        .def("perturbation_size", &Class::perturbation_size,
+            cls_doc.perturbation_size.doc);
+  }
+
+  m.def(
+      "ComputeNumericalGradient",
+      [](std::function<Eigen::VectorXd(const Eigen::VectorXd&)> calc_func,
+          const Eigen::VectorXd& x, const NumericalGradientOption& option) {
+        std::function<void(const Eigen::VectorXd&, Eigen::VectorXd*)>
+            calc_func_no_return =
+                [&calc_func](const Eigen::VectorXd& x_val, Eigen::VectorXd* y) {
+                  *y = calc_func(x_val);
+                };
+        return ComputeNumericalGradient(calc_func_no_return, x, option);
+      },
+      py::arg("calc_func"), py::arg("x"),
+      py::arg("option") =
+          NumericalGradientOption(NumericalGradientMethod::kForward),
+      doc.ComputeNumericalGradient.doc);
 
   // See TODO in corresponding header file - these should be removed soon!
   pydrake::internal::BindAutoDiffMathOverloads(&m);

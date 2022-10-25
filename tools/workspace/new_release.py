@@ -1,7 +1,7 @@
 """Reports on which of Drake's external dependencies can be updated to a more
 recent version.  This is intended for use by Drake maintainers (only).
 
-This program is only supported on Ubuntu Bionic 18.04.
+This program is only supported on Ubuntu Focal 20.04.
 
 To query GitHub APIs, you'll need to authenticate yourself first.  There are
 two ways to do this:
@@ -54,19 +54,25 @@ from drake.tools.workspace.metadata import read_repository_metadata
 # We'll skip these repositories when making suggestions.
 _IGNORED_REPOSITORIES = [
     # We don't know how to check non-default branches yet.
-    "clang_cindex_python3",
+    "clang_cindex_python3_internal",
     "pybind11",
 ]
 
 # For these repositories, we only look at tags, not releases.  For the dict
 # value, use a blank value to match the latest tag or a regex to only select
-# tags that share the match with the tag currently in use.  (This can be used
-# to pin to a given major or major.minor release series.)
+# tags that share the match with the tag currently in use; the parentheses
+# group in the regex denotes the portion of the tag to lock as invariant.
+# (This can be used to pin to a given major or major.minor release series.)
 _OVERLOOK_RELEASE_REPOSITORIES = {
-    "github3_py": r"^(\d+.)",
-    "intel_realsense_ros": r"^(\d+\.\d+\.)",
+    "github3_py_internal": r"^(\d+.)",
+    "gz_math_internal": "^(gz)",
+    "gz_utils_internal": "^(gz)",
+    "intel_realsense_ros_internal": r"^(\d+\.\d+\.)",
+    "petsc": r"^(v)",
     "pycodestyle": "",
-    "ros_xacro": r"^(\d+\.\d+\.)",
+    "qhull_internal": r"^(2)",
+    "ros_xacro_internal": r"^(\d+\.\d+\.)",
+    "sdformat_internal": "",
 }
 
 
@@ -95,9 +101,29 @@ def _smells_like_a_git_commit(revision):
     return len(revision) == 40
 
 
+def _is_prerelease(commit, workspace):
+    """Returns true iff commit seems to be a pre-release
+    """
+    development_stages = ["alpha", "beta", "rc", "pre"]
+    prerelease = any(stage in commit for stage in development_stages)
+    if prerelease:
+        print("Skipping prerelease {} for {}".format(commit, workspace))
+    return prerelease
+
+
+def _latest_tag(gh_repo, workspace):
+    for tag in gh_repo.tags():
+        if _is_prerelease(tag.name, workspace):
+            continue
+        return tag.name
+    print("Could not find any matching tags for {}".format(workspace))
+    return None
+
+
 def _handle_github(workspace_name, gh, data):
     time.sleep(0.2)  # Don't make github angry.
     old_commit = data["commit"]
+    new_commit = None
     owner, repo_name = data["repository"].split("/")
     gh_repo = gh.repository(owner, repo_name)
 
@@ -109,7 +135,7 @@ def _handle_github(workspace_name, gh, data):
     # Sometimes prefer checking only tags, not releases.
     tags_pattern = _OVERLOOK_RELEASE_REPOSITORIES.get(workspace_name)
     if tags_pattern == "":
-        new_commit = next(gh_repo.tags()).name
+        new_commit = _latest_tag(gh_repo, workspace_name)
         return old_commit, new_commit
 
     # Sometimes limit candidate tags to those matching a regex.
@@ -122,6 +148,8 @@ def _handle_github(workspace_name, gh, data):
             if match:
                 (new_hit,) = match.groups()
                 if old_hit == new_hit:
+                    if _is_prerelease(tag.name, workspace_name):
+                        continue
                     new_commit = tag.name
                     break
         return old_commit, new_commit
@@ -130,8 +158,10 @@ def _handle_github(workspace_name, gh, data):
     # latest tag.
     try:
         new_commit = gh_repo.latest_release().tag_name
+        if _is_prerelease(new_commit, workspace_name):
+            new_commit = _latest_tag(gh_repo, workspace_name)
     except github3.exceptions.NotFoundError:
-        new_commit = next(gh_repo.tags()).name
+        new_commit = _latest_tag(gh_repo, workspace_name)
     return old_commit, new_commit
 
 
@@ -189,6 +219,8 @@ def _do_upgrade(temp_dir, gh, workspace_name, metadata):
     old_commit, new_commit = _handle_github(workspace_name, gh, data)
     if old_commit == new_commit:
         raise RuntimeError(f"No upgrade needed for {workspace_name}")
+    elif new_commit is None:
+        raise RuntimeError(f"Cannot auto-upgrade {workspace_name}")
     print("Upgrading {} from {} to {}".format(
         workspace_name, old_commit, new_commit))
 

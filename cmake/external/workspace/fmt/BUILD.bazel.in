@@ -1,0 +1,31 @@
+# -*- python -*-
+
+load("@drake//tools/install:install.bzl", "install")
+load(
+    "@drake//:cmake/external/workspace/conversion.bzl",
+    "split_cmake_list",
+)
+
+_DEFINES = split_cmake_list(
+    "$<TARGET_PROPERTY:fmt::fmt,INTERFACE_COMPILE_DEFINITIONS>",
+)
+
+cc_library(
+    name = "fmt",
+    srcs = glob(
+        ["lib/**"],
+        allow_empty = False,
+    ),
+    hdrs = glob(
+        ["include/**"],
+        allow_empty = False,
+    ),
+    defines = _DEFINES,
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
+
+install(
+    name = "install",
+    visibility = ["//visibility:public"],
+)

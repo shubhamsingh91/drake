@@ -256,7 +256,7 @@ class TestGeometryCore(unittest.TestCase):
         mut.AddRigidHydroelasticProperties(
             resolution_hint=res_hint, properties=props)
         self.assertTrue(props.HasProperty("hydroelastic", "compliance_type"))
-        self.assertFalse(mut_testing.PropertiesIndicateSoftHydro(props))
+        self.assertFalse(mut_testing.PropertiesIndicateCompliantHydro(props))
         self.assertTrue(props.HasProperty("hydroelastic", "resolution_hint"))
         self.assertEqual(props.GetProperty("hydroelastic", "resolution_hint"),
                          res_hint)
@@ -264,15 +264,15 @@ class TestGeometryCore(unittest.TestCase):
         props = mut.ProximityProperties()
         mut.AddRigidHydroelasticProperties(properties=props)
         self.assertTrue(props.HasProperty("hydroelastic", "compliance_type"))
-        self.assertFalse(mut_testing.PropertiesIndicateSoftHydro(props))
+        self.assertFalse(mut_testing.PropertiesIndicateCompliantHydro(props))
         self.assertFalse(props.HasProperty("hydroelastic", "resolution_hint"))
 
         props = mut.ProximityProperties()
         res_hint = 0.275
-        mut.AddSoftHydroelasticProperties(
+        mut.AddCompliantHydroelasticProperties(
             resolution_hint=res_hint, hydroelastic_modulus=E, properties=props)
         self.assertTrue(props.HasProperty("hydroelastic", "compliance_type"))
-        self.assertTrue(mut_testing.PropertiesIndicateSoftHydro(props))
+        self.assertTrue(mut_testing.PropertiesIndicateCompliantHydro(props))
         self.assertTrue(props.HasProperty("hydroelastic", "resolution_hint"))
         self.assertEqual(props.GetProperty("hydroelastic", "resolution_hint"),
                          res_hint)
@@ -283,11 +283,11 @@ class TestGeometryCore(unittest.TestCase):
 
         props = mut.ProximityProperties()
         slab_thickness = 0.275
-        mut.AddSoftHydroelasticPropertiesForHalfSpace(
+        mut.AddCompliantHydroelasticPropertiesForHalfSpace(
             slab_thickness=slab_thickness, hydroelastic_modulus=E,
             properties=props)
         self.assertTrue(props.HasProperty("hydroelastic", "compliance_type"))
-        self.assertTrue(mut_testing.PropertiesIndicateSoftHydro(props))
+        self.assertTrue(mut_testing.PropertiesIndicateCompliantHydro(props))
         self.assertTrue(props.HasProperty("hydroelastic", "slab_thickness"))
         self.assertEqual(props.GetProperty("hydroelastic", "slab_thickness"),
                          slab_thickness)
@@ -297,6 +297,8 @@ class TestGeometryCore(unittest.TestCase):
                                            "hydroelastic_modulus"), E)
 
     def test_rgba_api(self):
+        default_white = mut.Rgba()
+        self.assertEqual(default_white, mut.Rgba(1, 1, 1, 1))
         r, g, b, a = 0.75, 0.5, 0.25, 1.
         color = mut.Rgba(r=r, g=g, b=b)
         self.assertEqual(color.r(), r)
@@ -346,6 +348,7 @@ class TestGeometryCore(unittest.TestCase):
         # order in shape_specification.h
         box = mut.Box(width=1.0, depth=2.0, height=3.0)
         assert_shape_api(box)
+        box = mut.Box(measures=(1.0, 2.0, 3.0))
         self.assertEqual(box.width(), 1.0)
         self.assertEqual(box.depth(), 2.0)
         self.assertEqual(box.height(), 3.0)
@@ -353,9 +356,11 @@ class TestGeometryCore(unittest.TestCase):
             self, box,
             lambda shape: [shape.width(), shape.depth(), shape.height()])
         numpy_compare.assert_float_equal(box.size(), np.array([1.0, 2.0, 3.0]))
+        self.assertAlmostEqual(mut.CalcVolume(box), 6.0, 1e-14)
 
         capsule = mut.Capsule(radius=1.0, length=2.0)
         assert_shape_api(capsule)
+        capsule = mut.Capsule(measures=(1.0, 2.0))
         self.assertEqual(capsule.radius(), 1.0)
         self.assertEqual(capsule.length(), 2.0)
         assert_pickle(
@@ -371,6 +376,7 @@ class TestGeometryCore(unittest.TestCase):
 
         cylinder = mut.Cylinder(radius=1.0, length=2.0)
         assert_shape_api(cylinder)
+        cylinder = mut.Cylinder(measures=(1.0, 2.0))
         self.assertEqual(cylinder.radius(), 1.0)
         self.assertEqual(cylinder.length(), 2.0)
         assert_pickle(
@@ -378,6 +384,7 @@ class TestGeometryCore(unittest.TestCase):
 
         ellipsoid = mut.Ellipsoid(a=1.0, b=2.0, c=3.0)
         assert_shape_api(ellipsoid)
+        ellipsoid = mut.Ellipsoid(measures=(1.0, 2.0, 3.0))
         self.assertEqual(ellipsoid.a(), 1.0)
         self.assertEqual(ellipsoid.b(), 2.0)
         self.assertEqual(ellipsoid.c(), 3.0)
@@ -401,6 +408,7 @@ class TestGeometryCore(unittest.TestCase):
 
         cone = mut.MeshcatCone(height=1.2, a=3.4, b=5.6)
         assert_shape_api(cone)
+        cone = mut.MeshcatCone(measures=(1.2, 3.4, 5.6))
         self.assertEqual(cone.height(), 1.2)
         self.assertEqual(cone.a(), 3.4)
         self.assertEqual(cone.b(), 5.6)

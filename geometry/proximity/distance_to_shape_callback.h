@@ -230,7 +230,7 @@ void ComputeNarrowPhaseDistance(const fcl::CollisionObjectd& a,
 
 template <typename T>
 struct ScalarSupport {
-  static bool is_supported(fcl::NODE_TYPE node1, fcl::NODE_TYPE node2) {
+  static bool is_supported(fcl::NODE_TYPE, fcl::NODE_TYPE) {
     return false;
   }
 };
@@ -238,12 +238,12 @@ struct ScalarSupport {
 /* Primitive support for double-valued query.  */
 template <>
 struct ScalarSupport<double> {
-  static bool is_supported(fcl::NODE_TYPE node1, fcl::NODE_TYPE node2);
+  static bool is_supported(fcl::NODE_TYPE, fcl::NODE_TYPE);
 };
 
 /* Primitive support for AutoDiff-valued query.  */
-template <typename DerType>
-struct ScalarSupport<Eigen::AutoDiffScalar<DerType>> {
+template <>
+struct ScalarSupport<AutoDiffXd> {
   static bool is_supported(fcl::NODE_TYPE node1, fcl::NODE_TYPE node2) {
     // TODO(SeanCurtis-TRI): Confirm derivatives for sphere-capsule.
     // Explicitly permit the following pair types (with ordering

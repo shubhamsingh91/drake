@@ -5,30 +5,12 @@
 
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/deprecation_pybind.h"
+#include "drake/bindings/pydrake/common/monostate_pybind.h"
 #include "drake/bindings/pydrake/common/type_pack.h"
 #include "drake/bindings/pydrake/common/value_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/geometry/geometry_frame.h"
 #include "drake/geometry/scene_graph.h"
-
-// TODO(SeanCurtis-TRI) When pybind issue 3019 gets resolved, we won't need to
-//  define this locally anymore. In fact, it will probably cause link errors.
-namespace pybind11 {
-namespace detail {
-template <>
-struct type_caster<std::monostate> {
- public:
-  PYBIND11_TYPE_CASTER(std::monostate, _("None"));
-
-  bool load(handle src, bool) { return src.ptr() == Py_None; }
-
-  static handle cast(
-      std::monostate, return_value_policy /* policy */, handle /* parent */) {
-    Py_RETURN_NONE;
-  }
-};
-}  // namespace detail
-}  // namespace pybind11
 
 namespace drake {
 namespace pydrake {
@@ -37,6 +19,22 @@ namespace {
 using systems::Context;
 using systems::LeafSystem;
 
+void DoScalarIndependentDefinitions(py::module m) {
+  constexpr auto& doc = pydrake_doc.drake.geometry;
+
+  // NOLINTNEXTLINE(build/namespaces): Emulate placement in namespace.
+  using namespace drake::geometry;
+
+  // HydroelasticContactRepresentation enumeration
+  {
+    using Class = HydroelasticContactRepresentation;
+    constexpr auto& cls_doc = doc.HydroelasticContactRepresentation;
+    py::enum_<Class>(m, "HydroelasticContactRepresentation", cls_doc.doc)
+        .value("kTriangle", Class::kTriangle, cls_doc.kTriangle.doc)
+        .value("kPolygon", Class::kPolygon, cls_doc.kPolygon.doc);
+  }
+}
+
 template <typename T>
 void DoScalarDependentDefinitions(py::module m, T) {
   py::tuple param = GetPyParam<T>();
@@ -44,7 +42,6 @@ void DoScalarDependentDefinitions(py::module m, T) {
 
   // NOLINTNEXTLINE(build/namespaces): Emulate placement in namespace.
   using namespace drake::geometry;
-  py::module::import("pydrake.systems.framework");
 
   //  SceneGraphInspector
   {
@@ -56,21 +53,6 @@ void DoScalarDependentDefinitions(py::module m, T) {
          // Scene-graph wide data.
         .def("num_sources", &Class::num_sources, cls_doc.num_sources.doc)
         .def("num_frames", &Class::num_frames, cls_doc.num_frames.doc);
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    cls.def("all_frame_ids",
-        WrapDeprecated(cls_doc.all_frame_ids.doc_deprecated,
-            [](Class* self) -> std::vector<FrameId> {
-              std::vector<FrameId> frame_ids;
-              frame_ids.reserve(self->num_frames());
-              for (FrameId id : self->all_frame_ids()) {
-                frame_ids.push_back(id);
-              }
-              return frame_ids;
-            }),
-        cls_doc.all_frame_ids.doc_deprecated);
-#pragma GCC diagnostic pop
 
     cls  // BR
         .def("GetAllFrameIds", &Class::GetAllFrameIds,
@@ -191,16 +173,6 @@ void DoScalarDependentDefinitions(py::module m, T) {
         .def("get_source_pose_port", &Class::get_source_pose_port,
             py_rvp::reference_internal, cls_doc.get_source_pose_port.doc);
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    cls  // BR
-        .def("get_pose_bundle_output_port",
-            WrapDeprecated(cls_doc.get_pose_bundle_output_port.doc_deprecated,
-                &Class::get_pose_bundle_output_port),
-            py_rvp::reference_internal,
-            cls_doc.get_pose_bundle_output_port.doc_deprecated);
-#pragma GCC diagnostic pop
-
     cls  // BR
         .def("get_query_output_port", &Class::get_query_output_port,
             py_rvp::reference_internal, cls_doc.get_query_output_port.doc)
@@ -230,11 +202,36 @@ void DoScalarDependentDefinitions(py::module m, T) {
                 std::unique_ptr<GeometryInstance>>(&Class::RegisterGeometry),
             py::arg("source_id"), py::arg("geometry_id"), py::arg("geometry"),
             cls_doc.RegisterGeometry.doc_3args_source_id_geometry_id_geometry)
+        .def("RegisterGeometry",
+            overload_cast_explicit<GeometryId, systems::Context<T>*, SourceId,
+                FrameId, std::unique_ptr<GeometryInstance>>(
+                &Class::RegisterGeometry),
+            py::arg("context"), py::arg("source_id"), py::arg("frame_id"),
+            py::arg("geometry"),
+            cls_doc.RegisterGeometry
+                .doc_4args_context_source_id_frame_id_geometry)
+        .def("RegisterGeometry",
+            overload_cast_explicit<GeometryId, systems::Context<T>*, SourceId,
+                GeometryId, std::unique_ptr<GeometryInstance>>(
+                &Class::RegisterGeometry),
+            py::arg("context"), py::arg("source_id"), py::arg("geometry_id"),
+            py::arg("geometry"),
+            cls_doc.RegisterGeometry
+                .doc_4args_context_source_id_geometry_id_geometry)
         .def("RegisterAnchoredGeometry",
             py::overload_cast<SourceId, std::unique_ptr<GeometryInstance>>(
                 &Class::RegisterAnchoredGeometry),
             py::arg("source_id"), py::arg("geometry"),
             cls_doc.RegisterAnchoredGeometry.doc)
+        .def("RemoveGeometry",
+            py::overload_cast<SourceId, GeometryId>(&Class::RemoveGeometry),
+            py::arg("source_id"), py::arg("geometry_id"),
+            cls_doc.RemoveGeometry.doc_2args)
+        .def("RemoveGeometry",
+            overload_cast_explicit<void, systems::Context<T>*, SourceId,
+                GeometryId>(&Class::RemoveGeometry),
+            py::arg("context"), py::arg("source_id"), py::arg("geometry_id"),
+            cls_doc.RemoveGeometry.doc_3args)
         .def("collision_filter_manager",
             overload_cast_explicit<CollisionFilterManager, Context<T>*>(
                 &Class::collision_filter_manager),
@@ -331,28 +328,25 @@ void DoScalarDependentDefinitions(py::module m, T) {
   {
     using Class = FramePoseVector<T>;
     auto cls = DefineTemplateClassWithDefault<Class>(
-        m, "FramePoseVector", param, doc.FrameKinematicsVector.doc);
+        m, "FramePoseVector", param, doc.KinematicsVector.doc);
     cls  // BR
-        .def(py::init<>(), doc.FrameKinematicsVector.ctor.doc_0args)
-        .def("clear", &FramePoseVector<T>::clear,
-            doc.FrameKinematicsVector.clear.doc)
+        .def(py::init<>(), doc.KinematicsVector.ctor.doc_0args)
+        .def(
+            "clear", &FramePoseVector<T>::clear, doc.KinematicsVector.clear.doc)
         .def(
             "set_value",
             [](Class* self, FrameId id, const math::RigidTransform<T>& value) {
               self->set_value(id, value);
             },
-            py::arg("id"), py::arg("value"),
-            doc.FrameKinematicsVector.set_value.doc)
-        .def("size", &FramePoseVector<T>::size,
-            doc.FrameKinematicsVector.size.doc)
+            py::arg("id"), py::arg("value"), doc.KinematicsVector.set_value.doc)
+        .def("size", &FramePoseVector<T>::size, doc.KinematicsVector.size.doc)
         // This intentionally copies the value to avoid segfaults from accessing
         // the result after clear() is called. (see #11583)
         .def("value", &FramePoseVector<T>::value, py::arg("id"),
-            doc.FrameKinematicsVector.value.doc)
+            doc.KinematicsVector.value.doc)
         .def("has_id", &FramePoseVector<T>::has_id, py::arg("id"),
-            doc.FrameKinematicsVector.has_id.doc)
-        .def("frame_ids", &FramePoseVector<T>::frame_ids,
-            doc.FrameKinematicsVector.frame_ids.doc);
+            doc.KinematicsVector.has_id.doc)
+        .def("ids", &FramePoseVector<T>::ids, doc.KinematicsVector.ids.doc);
     AddValueInstantiation<FramePoseVector<T>>(m);
   }
 
@@ -435,6 +429,28 @@ void DoScalarDependentDefinitions(py::module m, T) {
             py::arg("camera"), py::arg("parent_frame"), py::arg("X_PC"),
             cls_doc.RenderLabelImage.doc);
 
+    if constexpr (scalar_predicate<T>::is_bool) {
+      cls  // BR
+          .def("ComputeContactSurfaces",
+              &Class::template ComputeContactSurfaces<T>,
+              py::arg("representation"), cls_doc.ComputeContactSurfaces.doc)
+          .def(
+              "ComputeContactSurfacesWithFallback",
+              [](const Class* self,
+                  HydroelasticContactRepresentation representation) {
+                // For the Python bindings, we'll use return values instead of
+                // output pointers.
+                std::vector<ContactSurface<T>> surfaces;
+                std::vector<PenetrationAsPointPair<T>> point_pairs;
+                self->template ComputeContactSurfacesWithFallback<T>(
+                    representation, &surfaces, &point_pairs);
+                return std::make_pair(
+                    std::move(surfaces), std::move(point_pairs));
+              },
+              py::arg("representation"),
+              cls_doc.ComputeContactSurfacesWithFallback.doc);
+    }
+
     AddValueInstantiation<QueryObject<T>>(m);
   }
 
@@ -487,7 +503,7 @@ void DoScalarDependentDefinitions(py::module m, T) {
     auto cls = DefineTemplateClassWithDefault<Class>(
         m, "PenetrationAsPointPair", param, doc.PenetrationAsPointPair.doc);
     cls  // BR
-        .def(ParamInit<Class>(), doc.PenetrationAsPointPair.ctor.doc)
+        .def(ParamInit<Class>())
         .def_readwrite("id_A", &PenetrationAsPointPair<T>::id_A,
             doc.PenetrationAsPointPair.id_A.doc)
         .def_readwrite("id_B", &PenetrationAsPointPair<T>::id_B,
@@ -503,21 +519,57 @@ void DoScalarDependentDefinitions(py::module m, T) {
   }
 
   // ContactSurface
-  {
+  // Currently we do not bind the constructor because users do not need to
+  // construct it directly yet. We can get it from ComputeContactSurface*().
+  if constexpr (scalar_predicate<T>::is_bool) {
     using Class = ContactSurface<T>;
+    constexpr auto& cls_doc = doc.ContactSurface;
     auto cls = DefineTemplateClassWithDefault<Class>(
-        m, "ContactSurface", param, doc.ContactSurface.doc);
+        m, "ContactSurface", param, cls_doc.doc);
     cls  // BR
-        .def("id_M", &Class::id_M, doc.ContactSurface.id_M.doc)
-        .def("id_N", &Class::id_N, doc.ContactSurface.id_N.doc)
-        .def("mesh_W", &Class::mesh_W, doc.ContactSurface.mesh_W.doc);
+         // The two overloaded constructors are not bound yet.
+        .def("id_M", &Class::id_M, cls_doc.id_M.doc)
+        .def("id_N", &Class::id_N, cls_doc.id_N.doc)
+        .def("num_faces", &Class::num_faces, cls_doc.num_faces.doc)
+        .def("num_vertices", &Class::num_vertices, cls_doc.num_vertices.doc)
+        .def("area", &Class::area, py::arg("face_index"), cls_doc.area.doc)
+        .def("total_area", &Class::total_area, cls_doc.total_area.doc)
+        .def("face_normal", &Class::face_normal, py::arg("face_index"),
+            cls_doc.face_normal.doc)
+        .def("centroid",
+            overload_cast_explicit<Vector3<T>, int>(&Class::centroid),
+            py::arg("face_index"), cls_doc.centroid.doc)
+        .def("centroid",
+            overload_cast_explicit<const Vector3<T>&>(&Class::centroid),
+            cls_doc.centroid.doc)
+        .def("is_triangle", &Class::is_triangle, cls_doc.is_triangle.doc)
+        .def("representation", &Class::representation,
+            cls_doc.representation.doc)
+        .def("tri_mesh_W", &Class::tri_mesh_W, py_rvp::reference_internal,
+            cls_doc.tri_mesh_W.doc)
+        .def("tri_e_MN", &Class::tri_e_MN, py_rvp::reference_internal,
+            cls_doc.tri_e_MN.doc)
+        .def("poly_mesh_W", &Class::poly_mesh_W, py_rvp::reference_internal,
+            cls_doc.poly_mesh_W.doc)
+        .def("poly_e_MN", &Class::poly_e_MN, py_rvp::reference_internal,
+            cls_doc.poly_e_MN.doc)
+        .def("HasGradE_M", &Class::HasGradE_M, cls_doc.HasGradE_M.doc)
+        .def("HasGradE_N", &Class::HasGradE_N, cls_doc.HasGradE_N.doc)
+        .def("EvaluateGradE_M_W", &Class::EvaluateGradE_M_W, py::arg("index"),
+            cls_doc.EvaluateGradE_M_W.doc)
+        .def("EvaluateGradE_N_W", &Class::EvaluateGradE_N_W, py::arg("index"),
+            cls_doc.EvaluateGradE_N_W.doc)
+        .def("Equal", &Class::Equal, py::arg("surface"), cls_doc.Equal.doc);
+    DefCopyAndDeepCopy(&cls);
   }
 }
 }  // namespace
 
 void DefineGeometrySceneGraph(py::module m) {
+  py::module::import("pydrake.systems.framework");
+  DoScalarIndependentDefinitions(m);
   type_visit([m](auto dummy) { DoScalarDependentDefinitions(m, dummy); },
-      NonSymbolicScalarPack{});
+      CommonScalarPack{});
 }
 }  // namespace pydrake
 }  // namespace drake

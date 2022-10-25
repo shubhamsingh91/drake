@@ -44,7 +44,7 @@ GTEST_TEST(ProximityPropertiesTest, AddContactMaterial) {
     ProximityProperties p;
     p.AddProperty(kMaterialGroup, kHcDissipation, d);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        AddContactMaterial(d, ps, mu, &p), std::logic_error,
+        AddContactMaterial(d, ps, mu, &p),
         ".+ Trying to add property \\('.+', '.+'\\).+ name already exists");
   }
 
@@ -53,7 +53,7 @@ GTEST_TEST(ProximityPropertiesTest, AddContactMaterial) {
     ProximityProperties p;
     p.AddProperty(kMaterialGroup, kPointStiffness, ps);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        AddContactMaterial(d, ps, mu, &p), std::logic_error,
+        AddContactMaterial(d, ps, mu, &p),
         ".+ Trying to add property \\('.+', '.+'\\).+ name already exists");
   }
 
@@ -62,7 +62,7 @@ GTEST_TEST(ProximityPropertiesTest, AddContactMaterial) {
     ProximityProperties p;
     p.AddProperty(kMaterialGroup, kFriction, mu);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        AddContactMaterial(d, ps, mu, &p), std::logic_error,
+        AddContactMaterial(d, ps, mu, &p),
         ".+ Trying to add property \\('.+', '.+'\\).+ name already exists");
   }
 
@@ -70,7 +70,6 @@ GTEST_TEST(ProximityPropertiesTest, AddContactMaterial) {
   {
     ProximityProperties p;
     DRAKE_EXPECT_THROWS_MESSAGE(AddContactMaterial(-1.2, ps, mu, &p),
-                                std::logic_error,
                                 ".+dissipation can't be negative.+");
   }
 
@@ -78,7 +77,6 @@ GTEST_TEST(ProximityPropertiesTest, AddContactMaterial) {
   {
     ProximityProperties p;
     DRAKE_EXPECT_THROWS_MESSAGE(AddContactMaterial(d, -200, mu, &p),
-                                std::logic_error,
                                 ".+stiffness must be strictly positive.+");
   }
 
@@ -86,7 +84,6 @@ GTEST_TEST(ProximityPropertiesTest, AddContactMaterial) {
   {
     ProximityProperties p;
     DRAKE_EXPECT_THROWS_MESSAGE(AddContactMaterial(d, 0, mu, &p),
-                                std::logic_error,
                                 ".+stiffness must be strictly positive.+");
   }
 }
@@ -117,14 +114,12 @@ void CheckDisallowedModulusValues(
   {
     ProximityProperties p;
     DRAKE_EXPECT_THROWS_MESSAGE(function_to_test(0., &p),
-                                std::logic_error,
                                 ".+elastic modulus must be positive.+");
   }
   // Error case: negative hydroelastic modulus.
   {
     ProximityProperties p;
     DRAKE_EXPECT_THROWS_MESSAGE(function_to_test(-1.3, &p),
-                                std::logic_error,
                                 ".+elastic modulus must be positive.+");
   }
 }
@@ -133,11 +128,11 @@ void CheckDisallowedModulusValues(
 // vigorously test multiple values of the other fields. We assume that it's been
 // tested already, and we just want to make sure the custom pressure field comes
 // through.
-GTEST_TEST(ProximityPropertiesTest, AddSoftProperties) {
+GTEST_TEST(ProximityPropertiesTest, AddCompliantProperties) {
   const double E = 1.5e8;
   for (double length : {1e-5, 1.25, 1e7}) {
     ProximityProperties props;
-    AddSoftHydroelasticProperties(length, E, &props);
+    AddCompliantHydroelasticProperties(length, E, &props);
     EXPECT_TRUE(props.HasProperty(kHydroGroup, kComplianceType));
     EXPECT_EQ(props.GetProperty<HydroelasticType>(kHydroGroup, kComplianceType),
               HydroelasticType::kSoft);
@@ -148,9 +143,9 @@ GTEST_TEST(ProximityPropertiesTest, AddSoftProperties) {
   }
 
   CheckDisallowedModulusValues(
-      "AddSoftHydroelasticProperties",
+      "AddCompliantHydroelasticProperties",
       [](double modulus, ProximityProperties* p) {
-        AddSoftHydroelasticProperties(1., modulus, p);
+        AddCompliantHydroelasticProperties(1., modulus, p);
       });
 }
 
@@ -160,7 +155,7 @@ GTEST_TEST(ProximityPropertiesTest, AddHalfSpaceSoftProperties) {
   const double E = 1.5e8;
   for (double thickness : {1e-5, 1.25, 1e7}) {
     ProximityProperties props;
-    AddSoftHydroelasticPropertiesForHalfSpace(thickness, E, &props);
+    AddCompliantHydroelasticPropertiesForHalfSpace(thickness, E, &props);
     EXPECT_TRUE(props.HasProperty(kHydroGroup, kSlabThickness));
     EXPECT_EQ(props.GetProperty<double>(kHydroGroup, kSlabThickness),
               thickness);
@@ -171,9 +166,9 @@ GTEST_TEST(ProximityPropertiesTest, AddHalfSpaceSoftProperties) {
   }
 
   CheckDisallowedModulusValues(
-      "AddSoftHydroelasticPropertiesForHalfSpace",
+      "AddCompliantHydroelasticPropertiesForHalfSpace",
       [](double modulus, ProximityProperties* p) {
-        AddSoftHydroelasticPropertiesForHalfSpace(1., modulus, p);
+        AddCompliantHydroelasticPropertiesForHalfSpace(1., modulus, p);
       });
 }
 

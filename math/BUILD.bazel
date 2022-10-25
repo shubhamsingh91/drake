@@ -25,6 +25,7 @@ drake_cc_package_library(
         ":eigen_sparse_triplet",
         ":evenly_distributed_pts_on_sphere",
         ":fast_pose_composition_functions",
+        ":fast_pose_composition_functions_avx2_fma",
         ":geometric_transform",
         ":gradient",
         ":gray_code",
@@ -147,6 +148,7 @@ drake_cc_library(
         "//common:essential",
         "//common:is_approx_equal_abstol",
         "//common:unused",
+        "//math:gradient",
     ],
 )
 
@@ -156,7 +158,7 @@ drake_cc_library(
     hdrs = ["linear_solve.h"],
     deps = [
         ":gradient",
-        "//common:symbolic",
+        "//common/symbolic:expression",
     ],
 )
 
@@ -176,12 +178,14 @@ drake_cc_library(
     name = "gradient",
     srcs = [
         "autodiff_gradient.cc",
+        "differentiable_norm.cc",
         "gradient.cc",
         "normalize_vector.cc",
         "rotation_conversion_gradient.cc",
     ],
     hdrs = [
         "autodiff_gradient.h",
+        "differentiable_norm.h",
         "gradient.h",
         "gradient_util.h",
         "normalize_vector.h",
@@ -277,9 +281,9 @@ drake_cc_library(
 # due to our old Mac CI machines. Compiling for Broadwell (or later) gets
 # those instructions.
 drake_cc_library(
-    name = "fast_pose_composition_functions",
-    srcs = ["fast_pose_composition_functions.cc"],
-    hdrs = ["fast_pose_composition_functions.h"],
+    name = "fast_pose_composition_functions_avx2_fma",
+    srcs = ["fast_pose_composition_functions_avx2_fma.cc"],
+    hdrs = ["fast_pose_composition_functions_avx2_fma.h"],
     copts = select({
         "//tools/cc_toolchain:apple": [],
         "//conditions:default": [
@@ -287,6 +291,13 @@ drake_cc_library(
         ],
     }),
     deps = [],
+)
+
+drake_cc_library(
+    name = "fast_pose_composition_functions",
+    srcs = ["fast_pose_composition_functions.cc"],
+    hdrs = ["fast_pose_composition_functions.h"],
+    deps = [":fast_pose_composition_functions_avx2_fma"],
 )
 
 # === test/ ===
@@ -306,7 +317,7 @@ drake_cc_googletest(
     name = "barycentric_test",
     deps = [
         ":barycentric",
-        "//common:symbolic",
+        "//common/symbolic:expression",
         "//common/test_utilities:eigen_matrix_compare",
     ],
 )
@@ -359,6 +370,14 @@ drake_cc_googletest(
     name = "convert_time_derivative_test",
     deps = [
         ":vector3_util",
+        "//common/test_utilities:eigen_matrix_compare",
+    ],
+)
+
+drake_cc_googletest(
+    name = "differentiable_norm_test",
+    deps = [
+        ":gradient",
         "//common/test_utilities:eigen_matrix_compare",
     ],
 )
@@ -442,7 +461,7 @@ drake_cc_googletest(
     name = "matrix_util_test",
     deps = [
         ":matrix_util",
-        "//common:symbolic",
+        "//common/symbolic:expression",
         "//common/test_utilities:eigen_matrix_compare",
     ],
 )
@@ -478,7 +497,7 @@ drake_cc_googletest(
     name = "random_rotation_test",
     deps = [
         ":geometric_transform",
-        "//common:symbolic",
+        "//common/symbolic:expression",
     ],
 )
 
@@ -509,10 +528,10 @@ drake_cc_googletest(
 
 drake_cc_googletest(
     name = "saturate_test",
+    copts = ["-Wno-deprecated-declarations"],
     deps = [
         ":saturate",
-        "//common:autodiff",
-        "//common:symbolic",
+        "//common:default_scalars",
     ],
 )
 

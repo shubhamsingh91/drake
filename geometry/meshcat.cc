@@ -1,8 +1,10 @@
 #include "drake/geometry/meshcat.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <future>
@@ -22,12 +24,22 @@
 #include <msgpack.hpp>
 #include <uuid.h>
 
-#include "drake/common/filesystem.h"
+#include "drake/common/drake_throw.h"
 #include "drake/common/find_resource.h"
 #include "drake/common/never_destroyed.h"
+#include "drake/common/scope_exit.h"
 #include "drake/common/text_logging.h"
 #include "drake/common/unused.h"
 #include "drake/geometry/meshcat_types.h"
+
+#ifdef BOOST_VERSION
+# error Drake should be using the non-boost flavor of msgpack.
+#endif
+
+// Steal one function declaration from usockets/src/internal/internal.h.
+extern "C" {
+void us_internal_free_closed_sockets(struct us_loop_t*);
+}
 
 namespace {
 std::string LoadResource(const std::string& resource_name) {
@@ -44,17 +56,34 @@ std::string LoadResource(const std::string& resource_name) {
 const std::string& GetUrlContent(std::string_view url_path) {
   static const drake::never_destroyed<std::string> meshcat_js(
       LoadResource("drake/geometry/meshcat.js"));
+  static const drake::never_destroyed<std::string> stats_js(
+      LoadResource("drake/geometry/stats.min.js"));
+  static const drake::never_destroyed<std::string> msgpack_lite_js(
+      LoadResource("drake/geometry/msgpack.min.js"));
   static const drake::never_destroyed<std::string> meshcat_ico(
       LoadResource("drake/geometry/meshcat.ico"));
   static const drake::never_destroyed<std::string> meshcat_html(
       LoadResource("drake/geometry/meshcat.html"));
+  static const drake::never_destroyed<std::string> empty;
+  if ((url_path == "/")
+      || (url_path == "/index.html")
+      || (url_path == "/meshcat.html")) {
+    return meshcat_html.access();
+  }
   if (url_path == "/meshcat.js") {
     return meshcat_js.access();
+  }
+  if (url_path == "/stats.min.js") {
+    return stats_js.access();
+  }
+  if (url_path == "/msgpack.min.js") {
+    return msgpack_lite_js.access();
   }
   if (url_path == "/favicon.ico") {
     return meshcat_ico.access();
   }
-  return meshcat_html.access();
+  drake::log()->warn("Ignoring Meshcat http request for {}", url_path);
+  return empty.access();
 }
 
 }  // namespace
@@ -75,22 +104,17 @@ struct PerSocketData {
 using WebSocket = uWS::WebSocket<kSsl, kIsServer, PerSocketData>;
 using MsgPackMap = std::map<std::string, msgpack::object>;
 
-// The maximum "backpressure" allowed each websocket, in bytes.  This
-// effectively sets a maximum size for messages, which may include mesh files
-// and texture maps.  50mb is a guess at a compromise that is safely larger than
-// reasonable meshfiles.
-constexpr static double kMaxBackPressure{50 * 1024 * 1024};
-
-void CheckBackPressure(const std::string& path, const std::string& message) {
-  if (message.size() > kMaxBackPressure) {
-    drake::log()->warn(
-        "The message describing the object at {} is too large for the "
-        "current websocket setup (size {} is greater than the max "
-        "backpressure {}).  You will either need to reduce the size of "
-        "your object/mesh/textures, or modify the code to increase the "
-        "allowance.",
-        path, message.size(), kMaxBackPressure);
-  }
+// Encode the meshcat command into a Javascript fetch() command.  The particular
+// syntax using `fetch()` was replicated from the corresponding functionality in
+// meshcat-python.
+std::string CreateCommand(const std::string& data) {
+  return fmt::format(R"""(
+fetch("data:application/octet-binary;base64,{}")
+    .then(res => res.arrayBuffer())
+    .then(buffer => viewer.handle_command_bytearray(new Uint8Array(buffer)));
+)""",
+                     common_robotics_utilities::base64_helpers::Encode(
+                         std::vector<uint8_t>(data.begin(), data.end())));
 }
 
 class SceneTreeElement {
@@ -192,6 +216,28 @@ class SceneTreeElement {
       unused(name);
       child->Send(ws);
     }
+  }
+
+  // Returns a string which implements the entire tree directly in javascript.
+  // This is intended for use in generating a "static html" of the scene.
+  std::string CreateCommands() {
+    std::string html;
+    if (object_) {
+      html += CreateCommand(*object_);
+    }
+    if (transform_) {
+      html += CreateCommand(*transform_);
+    }
+    for (const auto& [property, msg] : properties_) {
+      unused(property);
+      html += CreateCommand(msg);
+    }
+
+    for (const auto& [name, child] : children_) {
+      unused(name);
+      html += child->CreateCommands();
+    }
+    return html;
   }
 
  private:
@@ -300,7 +346,7 @@ class MeshcatShapeReifier : public ShapeReifier {
     // meshes unless necessary.  Using the filename is tempting, but that leads
     // to problems when the file contents change on disk.
 
-    const filesystem::path filename(mesh.filename());
+    const std::filesystem::path filename(mesh.filename());
     std::string format = filename.extension();
     format.erase(0, 1);  // remove the . from the extension
     std::ifstream input(mesh.filename(), std::ios::binary | std::ios::ate);
@@ -346,7 +392,7 @@ class MeshcatShapeReifier : public ShapeReifier {
       std::string mtllib = matches.str(1);
 
       // Use filename path as the base directory for textures.
-      const filesystem::path basedir = filename.parent_path();
+      const std::filesystem::path basedir = filename.parent_path();
 
       // Read .mtl file into geometry.mtl_library.
       std::ifstream mtl_stream(basedir / mtllib, std::ios::ate);
@@ -360,8 +406,16 @@ class MeshcatShapeReifier : public ShapeReifier {
 
         // Scan .mtl file for map_ lines.  For each, load the file and add
         // the contents to geometry.resources.
-        // TODO(russt): Make this parsing more robust.
-        std::regex map_regex("map_[^\\s]+\\s+([^\\s]+)");
+        // The syntax (http://paulbourke.net/dataformats/mtl/) is e.g.
+        //   map_Ka -options args filename
+        // Here we ignore the options and only extract the filename (by
+        // extracting the last word before the end of line/string).
+        //  - "map_.+" matches the map_ plus any options,
+        //  - "\s" matches one whitespace (before the filename),
+        //  - "[^\s]+" matches the filename, and
+        //  - "[$\r\n]" matches the end of string or end of line.
+        // TODO(russt): This parsing could still be more robust.
+        std::regex map_regex(R"""(map_.+\s([^\s]+)[$\r\n])""");
         for (std::sregex_iterator iter(meshfile_object.mtl_library.begin(),
                                        meshfile_object.mtl_library.end(),
                                        map_regex);
@@ -456,51 +510,201 @@ int ToMeshcatColor(const Rgba& rgba) {
 
 }  // namespace
 
-class Meshcat::WebSocketPublisher {
+class Meshcat::Impl {
  public:
-  DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(WebSocketPublisher);
+  DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(Impl);
 
-  explicit WebSocketPublisher(const std::optional<int> port)
-      : prefix_("/drake"), main_thread_id_(std::this_thread::get_id()) {
-    DRAKE_DEMAND(!port.has_value() || *port >= 1024);
-    std::promise<std::tuple<uWS::Loop*, int, bool>> app_promise;
-    std::future<std::tuple<uWS::Loop*, int, bool>> app_future =
+  // Some implementation notes for this Impl constructor:
+  //
+  // It must not call any nontrivial class methods. In general self-calls from
+  // a constructor should always be treated with caution, but it's especially
+  // important in this case because of the complicated threading and state
+  // invariants that we need to maintain.
+  //
+  // It launches the websocket thread and waits for the thread to reply that
+  // either the application started listning successfully, or else failed.
+  //
+  // If the websocket thread failed to bind to a port, then this constructor
+  // will first join the websocket thread and then throw an exception; the
+  // destructor will not be run.
+  //
+  // Otherwise, upon success the postconditions are that both:
+  //   loop_ is non-null; and
+  //   mode_ is either kFinished (the typical case) or possibly kStopping (in
+  //     the unusual case where websocket thread faulted soon after starting).
+  explicit Impl(const MeshcatParams& params)
+      : prefix_("/drake"),
+        main_thread_id_(std::this_thread::get_id()),
+        params_(params) {
+    DRAKE_THROW_UNLESS(params.port.value_or(7000) >= 1024);
+
+    // Sanity-check the pattern, by passing it (along with dummy host and port
+    // values) through to fmt to allow any fmt-specific exception to percolate.
+    // Then, confirm that the user's pattern started with a valid protocol.
+    const std::string url = fmt::format(
+        fmt_runtime(params.web_url_pattern),
+        fmt::arg("host", "foo"), fmt::arg("port", 1));
+    if (url.substr(0, 4) != "http") {
+      throw std::logic_error("The web_url_pattern must be http:// or https://");
+    }
+
+    // Fetch the index once to be sure that we preload the content.
+    GetUrlContent("/");
+
+    std::promise<std::tuple<int, bool>> app_promise;
+    std::future<std::tuple<int, bool>> app_future =
         app_promise.get_future();
-    websocket_thread_ = std::thread(&WebSocketPublisher::WebSocketMain, this,
-                                    std::move(app_promise), port);
+    websocket_thread_ = std::thread(
+        &Impl::WrappedWebSocketMain, this, std::move(app_promise),
+        params.host, params.port);
     bool connected;
-    std::tie(loop_, port_, connected) = app_future.get();
+    std::tie(port_, connected) = app_future.get();
 
     if (!connected) {
+      mode_.store(kFinished);
       websocket_thread_.join();
       throw std::runtime_error("Meshcat failed to open a websocket port.");
     }
   }
 
-  ~WebSocketPublisher() {
+  ~Impl() {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
-    loop_->defer([this]() {
+
+    // Ensure that the App::run loop stops, in case it hasn't already done so.
+    Defer([this]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
-      auto iter = websockets_.begin();
-      while (iter != websockets_.end()) {
-        // Need to advance the iterator before calling close (#15821).
-        auto* ws = *iter++;
-        ws->close();
-      }
-      us_listen_socket_close(0, listen_socket_);
+      Shutdown();
     });
+
+    // Tell the websocket thread that we'll never call Defer() again,
+    // and then wait for it to exit.
+    mode_.store(kFinished);
     websocket_thread_.join();
   }
 
+  // Throws an exception if the websocket thread has died.
+  // This function is a file-internal helper, not public in the PIMPL.
+  //
+  // This should called from every public function of the outer class (other
+  // than the destructor) before doing any other real work, so that we can pass
+  // along error conditions from the websocket thread back onto the main thread.
+  //
+  // Don't fall into a TOCTOU trap here -- just because this function returned
+  // successfully does *not* mean that the websocket thread is still running; it
+  // might have crashed immediately after this check. Calling code should not
+  // presume that success here means that additional calls into the websocket
+  // will continue to succeed.
+  void ThrowIfWebsocketThreadExited() const {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    // N.B. Refer to the comments on the `mode_` and `loop_` class member
+    // fields to help understand what's happening here.
+    if (mode_.load() != kNominal) {
+      mode_.store(kFinished);
+      throw std::runtime_error(
+          "Meshcat's internal websocket thread exited unexpectedly");
+    }
+  }
+
+  // This function is public via the PIMPL.
+  std::string web_url() const {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    const std::string& host = params_.host;
+    const bool is_localhost = host.empty() || host == "*";
+    const std::string display_host = is_localhost ? "localhost" : host;
+    return fmt::format(
+        fmt_runtime(params_.web_url_pattern),
+        fmt::arg("host", display_host),
+        fmt::arg("port", port_));
+  }
+
+  // This function is public via the PIMPL.
   int port() const {
     DRAKE_DEMAND(IsThread(main_thread_id_));
     return port_;
   }
 
+  // This function is public via the PIMPL.
+  void SetRealtimeRate(double rate) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    internal::RealtimeRateData data;
+    data.rate = rate;
+    Defer([this, data = std::move(data)]() {
+      DRAKE_DEMAND(IsThread(websocket_thread_id_));
+      DRAKE_DEMAND(app_ != nullptr);
+      std::stringstream message_stream;
+      msgpack::pack(message_stream, data);
+      std::string message = message_stream.str();
+      app_->publish("all", message, uWS::OpCode::BINARY, false);
+    });
+  }
+
+  // This function is public via the PIMPL.
+  std::string ws_url() const {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    const std::string http_url = web_url();
+    DRAKE_DEMAND(http_url.substr(0, 4) == "http");
+    return "ws" + http_url.substr(4);
+  }
+
+  // This function is public via the PIMPL.
+  int GetNumActiveConnections() const {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    return num_websockets_.load();
+  }
+
+  // This function is public via the PIMPL.
+  void Flush() const {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+
+    // We simply loop until the backpressure is zero.  In each iteration, if
+    // the connections have any backpressure, then we sleep the main thread to
+    // let the websocket thread drain.
+    //
+    // Note: The following attempts to avoid the explicit sleep failed:
+    // - loop_->defer(callback) does not drain automatically between executing
+    //   the deferred callbacks.
+    // - calling app_->topicTree->drain() or ws->send("") did not actually
+    //   force any drainage.
+    //
+    // It *is* possible to monitor the drainage by registering the
+    // behavior.drain callback on the websocket connection, but we avoid
+    // explicitly locking the main thread to wait for the drainage in order to
+    // keep the thread logic simpler.
+    int main_backpressure;
+
+    // Set a very conservative iteration limit; since we sleep for .1 seconds
+    // on each iteration, this corresponds to (approximately) 10 minutes.
+    const int kIterationLimit{6000};
+    int iteration = 0;
+
+    do {
+      std::promise<int> p;
+      std::future<int> f = p.get_future();
+      Defer([this, p = std::move(p)]() mutable {
+        DRAKE_DEMAND(IsThread(websocket_thread_id_));
+        int websocket_backpressure = 0;
+        for (WebSocket* ws : websockets_) {
+          websocket_backpressure += ws->getBufferedAmount();
+        }
+        p.set_value(websocket_backpressure);
+      });
+      main_backpressure = f.get();
+      if (main_backpressure > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      ++iteration;
+    } while (main_backpressure > 0 && iteration < kIterationLimit);
+
+    if (main_backpressure > 0) {
+      drake::log()->warn(
+          "Meshcat::Flush() reached an iteration limit before the buffer could "
+          "be completely flushed.");
+    }
+  }
+
+  // This function is public via the PIMPL.
   void SetObject(std::string_view path, const Shape& shape, const Rgba& rgba) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     uuids::uuid_random_generator uuid_generator{generator_};
     internal::SetObjectData data;
@@ -548,7 +752,7 @@ class Meshcat::WebSocketPublisher {
       data.object.material = std::move(material);
     }
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -557,17 +761,16 @@ class Meshcat::WebSocketPublisher {
       // (here and throughout) to avoid this copy.
       // https://github.com/redboltz/msgpack-c/wiki/v2_0_cpp_packer
       std::string message = message_stream.str();
-      CheckBackPressure(data.path, message);
       app_->publish("all", message, uWS::OpCode::BINARY, false);
       SceneTreeElement& e = scene_tree_root_[data.path];
       e.object() = std::move(message);
     });
   }
 
+  // This function is public via the PIMPL.
   void SetObject(std::string_view path, const perception::PointCloud& cloud,
                  double point_size, const Rgba& rgba) {
-    DRAKE_DEMAND(std::this_thread::get_id() == main_thread_id_);
-    DRAKE_DEMAND(loop_ != nullptr);
+    DRAKE_DEMAND(IsThread(main_thread_id_));
 
     uuids::uuid_random_generator uuid_generator{generator_};
     internal::SetObjectData data;
@@ -598,23 +801,66 @@ class Meshcat::WebSocketPublisher {
     mesh.material = data.object.material->uuid;
     data.object.object = std::move(mesh);
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       std::stringstream message_stream;
       msgpack::pack(message_stream, data);
       std::string message = message_stream.str();
-      CheckBackPressure(data.path, message);
       app_->publish("all", message, uWS::OpCode::BINARY, false);
       SceneTreeElement& e = scene_tree_root_[data.path];
       e.object() = std::move(message);
     });
   }
 
+  // This function is public via the PIMPL.
+  void SetObject(std::string_view path, const TriangleSurfaceMesh<double>& mesh,
+                 const Rgba& rgba, bool wireframe,
+                 double wireframe_line_width) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    Eigen::Matrix3Xd vertices(3, mesh.num_vertices());
+    for (int i = 0; i < mesh.num_vertices(); ++i) {
+      vertices.col(i) = mesh.vertex(i);
+    }
+    Eigen::Matrix3Xi faces(3, mesh.num_triangles());
+    for (int i = 0; i < mesh.num_triangles(); ++i) {
+      const auto& e = mesh.element(i);
+      for (int j = 0; j < 3; ++j) {
+        faces(j, i) = e.vertex(j);
+      }
+    }
+    SetTriangleMesh(path, vertices, faces, rgba, wireframe,
+                    wireframe_line_width);
+  }
+
+  // This function is public via the PIMPL.
   void SetLine(std::string_view path,
                const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
-               double line_width, const Rgba& rgba, bool line_segments) {
-    DRAKE_DEMAND(std::this_thread::get_id() == main_thread_id_);
-    DRAKE_DEMAND(loop_ != nullptr);
+               double line_width, const Rgba& rgba) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    const bool kLineSegments = false;
+    SetLineImpl(path, vertices, line_width, rgba, kLineSegments);
+  }
 
+  // This function is public via the PIMPL.
+  void SetLineSegments(std::string_view path,
+                       const Eigen::Ref<const Eigen::Matrix3Xd>& start,
+                       const Eigen::Ref<const Eigen::Matrix3Xd>& end,
+                       double line_width, const Rgba& rgba) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    DRAKE_THROW_UNLESS(start.cols() == end.cols());
+    // The LineSegments loader in three.js take the same data structure as Line,
+    // but takes every consecutive pair of vertices as a (start, end).
+    Eigen::Matrix<double, 6, Eigen::Dynamic> vstack(6, start.cols());
+    vstack << start, end;
+    Eigen::Map<Eigen::Matrix3Xd> vertices(vstack.data(), 3, 2*start.cols());
+    const bool kLineSegments = true;
+    SetLineImpl(path, vertices, line_width, rgba, kLineSegments);
+  }
+
+  // This function is internal to the PIMPL, used to implement the prior two
+  // functions (SetLine and SetLineSegments).
+  void SetLineImpl(std::string_view path,
+                   const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
+                   double line_width, const Rgba& rgba, bool line_segments) {
     uuids::uuid_random_generator uuid_generator{generator_};
     internal::SetObjectData data;
     data.path = FullPath(path);
@@ -639,24 +885,23 @@ class Meshcat::WebSocketPublisher {
     mesh.material = data.object.material->uuid;
     data.object.object = std::move(mesh);
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       std::stringstream message_stream;
       msgpack::pack(message_stream, data);
       std::string message = message_stream.str();
-      CheckBackPressure(data.path, message);
       app_->publish("all", message, uWS::OpCode::BINARY, false);
       SceneTreeElement& e = scene_tree_root_[data.path];
       e.object() = std::move(message);
     });
   }
 
+  // This function is public via the PIMPL.
   void SetTriangleMesh(std::string_view path,
                        const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
                        const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
                        const Rgba& rgba, bool wireframe,
                        double wireframe_line_width) {
-    DRAKE_DEMAND(std::this_thread::get_id() == main_thread_id_);
-    DRAKE_DEMAND(loop_ != nullptr);
+    DRAKE_DEMAND(IsThread(main_thread_id_));
 
     uuids::uuid_random_generator uuid_generator{generator_};
     internal::SetObjectData data;
@@ -686,28 +931,75 @@ class Meshcat::WebSocketPublisher {
     mesh.material = data.object.material->uuid;
     data.object.object = std::move(mesh);
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       std::stringstream message_stream;
       msgpack::pack(message_stream, data);
       std::string message = message_stream.str();
-      CheckBackPressure(data.path, message);
       app_->publish("all", message, uWS::OpCode::BINARY, false);
       SceneTreeElement& e = scene_tree_root_[data.path];
       e.object() = std::move(message);
     });
   }
 
+  // This function is public via the PIMPL.
+  void SetTriangleColorMesh(std::string_view path,
+                       const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
+                       const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
+                       const Eigen::Ref<const Eigen::Matrix3Xd>& colors,
+                       bool wireframe,
+                       double wireframe_line_width) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+
+    uuids::uuid_random_generator uuid_generator{generator_};
+    internal::SetObjectData data;
+    data.path = FullPath(path);
+
+    auto geometry = std::make_unique<internal::BufferGeometryData>();
+    geometry->uuid = uuids::to_string(uuid_generator());
+    geometry->position = vertices.cast<float>();
+    geometry->faces = faces.cast<uint32_t>();
+    geometry->color = colors.cast<float>();
+    data.object.geometry = std::move(geometry);
+
+    auto material = std::make_unique<internal::MaterialData>();
+    material->uuid = uuids::to_string(uuid_generator());
+    material->type = "MeshPhongMaterial";
+    material->transparent = false;
+    material->opacity = 1.0;
+    material->wireframe = wireframe;
+    material->wireframeLineWidth = wireframe_line_width;
+    material->vertexColors = true;
+    material->side = internal::kDoubleSide;
+    data.object.material = std::move(material);
+
+    internal::MeshData mesh;
+    mesh.uuid = uuids::to_string(uuid_generator());
+    mesh.type = "Mesh";
+    mesh.geometry = data.object.geometry->uuid;
+    mesh.material = data.object.material->uuid;
+    data.object.object = std::move(mesh);
+
+    Defer([this, data = std::move(data)]() {
+      std::stringstream message_stream;
+      msgpack::pack(message_stream, data);
+      std::string message = message_stream.str();
+      app_->publish("all", message, uWS::OpCode::BINARY, false);
+      SceneTreeElement& e = scene_tree_root_[data.path];
+      e.object() = std::move(message);
+    });
+  }
+
+  // This function is public via the PIMPL.
   template <typename CameraData>
   void SetCamera(CameraData camera, std::string path) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     uuids::uuid_random_generator uuid_generator{generator_};
     internal::SetCameraData<CameraData> data;
     data.path = std::move(path);
     data.object.object = std::move(camera);
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -717,129 +1009,137 @@ class Meshcat::WebSocketPublisher {
       SceneTreeElement& e = scene_tree_root_[data.path];
       e.object() = std::move(message);
     });
-    }
+  }
 
-    void SetTransform(std::string_view path,
-                      const Eigen::Ref<const Eigen::Matrix4d>& matrix) {
-      DRAKE_DEMAND(IsThread(main_thread_id_));
-      DRAKE_DEMAND(loop_ != nullptr);
+  // This function is public via the PIMPL.
+  void SetTransform(std::string_view path,
+                    const RigidTransformd& X_ParentPath) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    SetTransform(path, X_ParentPath.GetAsMatrix4());
+  }
 
-      internal::SetTransformData data;
-      data.path = FullPath(path);
-      Eigen::Map<Eigen::Matrix4d>(data.matrix) = matrix;
+  // This function is public via the PIMPL.
+  void SetTransform(std::string_view path,
+                    const Eigen::Ref<const Eigen::Matrix4d>& matrix) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
 
-      loop_->defer([this, data = std::move(data)]() {
-        DRAKE_DEMAND(IsThread(websocket_thread_id_));
-        DRAKE_DEMAND(app_ != nullptr);
-        std::stringstream message_stream;
-        msgpack::pack(message_stream, data);
-        std::string message = message_stream.str();
-        app_->publish("all", message, uWS::OpCode::BINARY, false);
-        SceneTreeElement& e = scene_tree_root_[data.path];
-        e.transform() = std::move(message);
-      });
-    }
+    internal::SetTransformData data;
+    data.path = FullPath(path);
+    Eigen::Map<Eigen::Matrix4d>(data.matrix) = matrix;
 
-    void Delete(std::string_view path) {
-      DRAKE_DEMAND(IsThread(main_thread_id_));
-      DRAKE_DEMAND(loop_ != nullptr);
-
-      internal::DeleteData data;
-      data.path = FullPath(path);
-
-      loop_->defer([this, data = std::move(data)]() {
-        DRAKE_DEMAND(IsThread(websocket_thread_id_));
-        DRAKE_DEMAND(app_ != nullptr);
-        std::stringstream message_stream;
-        msgpack::pack(message_stream, data);
-        app_->publish("all", message_stream.str(), uWS::OpCode::BINARY, false);
-        scene_tree_root_.Delete(data.path);
-      });
-    }
-
-    template <typename T>
-    void SetProperty(std::string_view path, std::string property,
-                     const T& value) {
-      DRAKE_DEMAND(IsThread(main_thread_id_));
-      DRAKE_DEMAND(loop_ != nullptr);
-
-      internal::SetPropertyData<T> data;
-      data.path = FullPath(path);
-      data.property = std::move(property);
-      data.value = value;
-
-      loop_->defer([this, data = std::move(data)]() {
-        DRAKE_DEMAND(IsThread(websocket_thread_id_));
-        DRAKE_DEMAND(app_ != nullptr);
-        std::stringstream message_stream;
-        msgpack::pack(message_stream, data);
-        std::string message = message_stream.str();
-        app_->publish("all", message, uWS::OpCode::BINARY, false);
-        SceneTreeElement& e = scene_tree_root_[data.path];
-        e.properties()[data.property] = std::move(message);
-      });
-    }
-
-    void SetAnimation(const MeshcatAnimation& animation) {
-      DRAKE_DEMAND(IsThread(main_thread_id_));
-      DRAKE_DEMAND(loop_ != nullptr);
-
+    Defer([this, data = std::move(data)]() {
+      DRAKE_DEMAND(IsThread(websocket_thread_id_));
+      DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
-      // We pack this message in-place (rather than using structs to organize
-      // the packing) for a few reasons:
-      //  1) we want to avoid copying the big data nested structure,
-      //  2) this message type would require a nasty hairball of structs, and
-      //  3) the nested structures have paths inside that must be modified with
-      //     FullPath().
-      msgpack::packer o(message_stream);
-      // The details of this message have been extracted primarily from
-      // meshcat/test/animation.html and
-      // meshcat-python/src/meshcat/animation.py.
-      o.pack_map(3);
-      o.pack("type");
-      o.pack("set_animation");
-      o.pack("animations");
-      {
-        o.pack_array(animation.path_tracks_.size());
-        for (const auto& path_track : animation.path_tracks_) {
-          o.pack_map(2);
-          o.pack("path");
-          // TODO(russt): Handle the case where the FullPaths are not unique.
-          o.pack(FullPath(path_track.first));
-          o.pack("clip");
+      msgpack::pack(message_stream, data);
+      std::string message = message_stream.str();
+      app_->publish("all", message, uWS::OpCode::BINARY, false);
+      SceneTreeElement& e = scene_tree_root_[data.path];
+      e.transform() = std::move(message);
+    });
+  }
+
+  // This function is public via the PIMPL.
+  void Delete(std::string_view path) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+
+    internal::DeleteData data;
+    data.path = FullPath(path);
+
+    Defer([this, data = std::move(data)]() {
+      DRAKE_DEMAND(IsThread(websocket_thread_id_));
+      DRAKE_DEMAND(app_ != nullptr);
+      std::stringstream message_stream;
+      msgpack::pack(message_stream, data);
+      app_->publish("all", message_stream.str(), uWS::OpCode::BINARY, false);
+      scene_tree_root_.Delete(data.path);
+    });
+  }
+
+  // This function is public via the PIMPL, via overloads for a specific set of
+  // template types (not all possible T's).
+  template <typename T>
+  void SetProperty(std::string_view path, std::string property,
+                   const T& value) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+
+    internal::SetPropertyData<T> data;
+    data.path = FullPath(path);
+    data.property = std::move(property);
+    data.value = value;
+
+    Defer([this, data = std::move(data)]() {
+      DRAKE_DEMAND(IsThread(websocket_thread_id_));
+      DRAKE_DEMAND(app_ != nullptr);
+      std::stringstream message_stream;
+      msgpack::pack(message_stream, data);
+      std::string message = message_stream.str();
+      app_->publish("all", message, uWS::OpCode::BINARY, false);
+      SceneTreeElement& e = scene_tree_root_[data.path];
+      e.properties()[data.property] = std::move(message);
+    });
+  }
+
+  // This function is public via the PIMPL.
+  void SetAnimation(const MeshcatAnimation& animation) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+
+    std::stringstream message_stream;
+    // We pack this message in-place (rather than using structs to organize
+    // the packing) for a few reasons:
+    //  1) we want to avoid copying the big data nested structure,
+    //  2) this message type would require a nasty hairball of structs, and
+    //  3) the nested structures have paths inside that must be modified with
+    //     FullPath().
+    msgpack::packer o(message_stream);
+    // The details of this message have been extracted primarily from
+    // meshcat/test/animation.html and
+    // meshcat-python/src/meshcat/animation.py.
+    o.pack_map(3);
+    o.pack("type");
+    o.pack("set_animation");
+    o.pack("animations");
+    {
+      o.pack_array(animation.path_tracks_.size());
+      for (const auto& path_track : animation.path_tracks_) {
+        o.pack_map(2);
+        o.pack("path");
+        // TODO(russt): Handle the case where the FullPaths are not unique.
+        o.pack(FullPath(path_track.first));
+        o.pack("clip");
+        {
+          o.pack_map(3);
+          o.pack("fps");
+          o.pack(animation.frames_per_second());
+          o.pack("name");
+          o.pack("default");
+          o.pack("tracks");
           {
-            o.pack_map(3);
-            o.pack("fps");
-            o.pack(animation.frames_per_second());
-            o.pack("name");
-            o.pack("default");
-            o.pack("tracks");
-            {
-              o.pack_array(path_track.second.size());
-              for (const auto& property_track : path_track.second) {
-                o.pack_map(3);
-                o.pack("name");
-                o.pack("." + property_track.first);
-                o.pack("type");
-                o.pack(property_track.second.js_type);
-                o.pack("keys");
-                std::visit(
-                    [&o](const auto& track) {
-                      using T = std::decay_t<decltype(track)>;
-                      if constexpr (!std::is_same_v<T, std::monostate>) {
-                        o.pack_array(track.size());
-                        for (const auto& key : track) {
-                          o.pack_map(2);
-                          o.pack("time");
-                          o.pack(key.first);
-                          o.pack("value");
-                          o.pack(key.second);
-                        }
+            o.pack_array(path_track.second.size());
+            for (const auto& property_track : path_track.second) {
+              o.pack_map(3);
+              o.pack("name");
+              o.pack("." + property_track.first);
+              o.pack("type");
+              o.pack(property_track.second.js_type);
+              o.pack("keys");
+              std::visit(
+                  [&o](const auto& track) {
+                    using T = std::decay_t<decltype(track)>;
+                    if constexpr (!std::is_same_v<T, std::monostate>) {
+                      o.pack_array(track.size());
+                      for (const auto& key : track) {
+                        o.pack_map(2);
+                        o.pack("time");
+                        o.pack(key.first);
+                        o.pack("value");
+                        o.pack(key.second);
                       }
-                    },
-                    property_track.second.track);
-              }
+                    }
+                  },
+                  property_track.second.track);
             }
+          }
         }
       }
     }
@@ -856,7 +1156,7 @@ class Meshcat::WebSocketPublisher {
       o.pack(animation.clamp_when_finished());
     }
 
-    loop_->defer(
+    Defer(
         [this, message = message_stream.str()]() {
           DRAKE_DEMAND(IsThread(websocket_thread_id_));
           DRAKE_DEMAND(app_ != nullptr);
@@ -865,32 +1165,84 @@ class Meshcat::WebSocketPublisher {
         });
   }
 
-  void AddButton(std::string name) {
+  // This function is public via the PIMPL.
+  void Set2dRenderMode(const math::RigidTransformd& X_WC, double xmin,
+                      double xmax, double ymin, double ymax) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
+    // Set orthographic camera.
+    OrthographicCamera camera;
+    camera.left = xmin;
+    camera.right = xmax;
+    camera.bottom = ymin;
+    camera.top = ymax;
+    SetCamera(camera, "/Cameras/default/rotated");
+
+    SetTransform("/Cameras/default", X_WC);
+    // Lock orbit controls.
+    SetProperty("/Cameras/default/rotated/<object>", "position",
+                std::vector<double>{0.0, 0.0, 0.0});
+
+    SetProperty("/Background", "visible", false);
+    SetProperty("/Grid", "visible", false);
+    SetProperty("/Axes", "visible", false);
+  }
+
+  // This function is public via the PIMPL.
+  void ResetRenderMode() {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    PerspectiveCamera camera;
+    SetCamera(camera, "/Cameras/default/rotated");
+    SetTransform("/Cameras/default", math::RigidTransformd());
+    // Lock orbit controls.
+    SetProperty("/Cameras/default/rotated/<object>", "position",
+                std::vector<double>{0.0, 1.0, 3.0});
+    SetProperty("/Background", "visible", true);
+    SetProperty("/Grid", "visible", true);
+    SetProperty("/Axes", "visible", true);
+  }
+
+  // This function is public via the PIMPL.
+  void AddButton(std::string name, std::string keycode) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
 
     internal::SetButtonControl data;
+    data.name = std::move(name);
     data.callback = fmt::format(R"""(
 () => this.connection.send(msgpack.encode({{
   'type': 'button',
   'name': '{}'
-}})))""",
-                                name);
-    data.name = std::move(name);
+}})))""", data.name);
+    data.keycode1 = std::move(keycode);
 
     {
       std::lock_guard<std::mutex> lock(controls_mutex_);
-      if (buttons_.find(name) != buttons_.end()) {
-        DeleteButton(name);
+      if (sliders_.find(data.name) != sliders_.end()) {
+        throw std::logic_error(
+            fmt::format("Meshcat already has a slider named {}.", data.name));
       }
-      if (sliders_.find(name) != sliders_.end()) {
-        DeleteSlider(name);
+      auto iter = buttons_.find(data.name);
+      if (iter == buttons_.end()) {
+        controls_.emplace_back(data.name);
+      } else {
+        iter->second.num_clicks = 0;
+        if (iter->second.keycode1.empty()) {
+          if (data.keycode1.empty()) {
+            // No need to publish to meshcat.
+            return;
+          }  // else fall through.
+        } else if (iter->second.keycode1 != data.keycode1) {
+          throw std::logic_error(fmt::format(
+              "Meshcat already has a button named `{}`, but the previously "
+              "assigned keycode `{}` does not match the current keycode `{}`. "
+              "To re-assign the keycode, you must first delete the button.",
+              data.name, iter->second.keycode1, data.keycode1));
+        }
       }
-      controls_.emplace_back(data.name);
       buttons_[data.name] = data;
+      DRAKE_DEMAND(controls_.size() == (buttons_.size() + sliders_.size()));
     }
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -899,26 +1251,27 @@ class Meshcat::WebSocketPublisher {
     });
   }
 
+  // This function is public via the PIMPL.
   int GetButtonClicks(std::string_view name) {
     std::lock_guard<std::mutex> lock(controls_mutex_);
     auto iter = buttons_.find(name);
     if (iter == buttons_.end()) {
-      throw std::out_of_range(
+      throw std::logic_error(
           fmt::format("Meshcat does not have any button named {}.", name));
     }
     return iter->second.num_clicks;
   }
 
+  // This function is public via the PIMPL.
   void DeleteButton(std::string name) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     internal::DeleteControl data;
     {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       auto iter = buttons_.find(name);
       if (iter == buttons_.end()) {
-        throw std::out_of_range(
+        throw std::logic_error(
             fmt::format("Meshcat does not have any button named {}.", name));
       }
       buttons_.erase(iter);
@@ -926,9 +1279,10 @@ class Meshcat::WebSocketPublisher {
       DRAKE_DEMAND(c_iter != controls_.end());
       controls_.erase(c_iter);
       data.name = std::move(name);
+      DRAKE_DEMAND(controls_.size() == (buttons_.size() + sliders_.size()));
     }
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -937,20 +1291,20 @@ class Meshcat::WebSocketPublisher {
     });
   }
 
-  void AddSlider(std::string name, double min, double max,
-                               double step, double value) {
+  // This function is public via the PIMPL.
+  void AddSlider(std::string name, double min, double max, double step,
+                 double value, std::string decrement_keycode,
+                 std::string increment_keycode) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     internal::SetSliderControl data;
+    data.name = std::move(name);
     data.callback = fmt::format(R"""(
 (value) => this.connection.send(msgpack.encode({{
   'type': 'slider',
   'name': '{}',
   'value': value
-}})))""",
-                                name);
-    data.name = std::move(name);
+}})))""", data.name);
     data.min = min;
     data.max = max;
     data.step = step;
@@ -958,22 +1312,27 @@ class Meshcat::WebSocketPublisher {
     // https://github.com/dataarts/dat.gui/blob/f720c729deca5d5c79da8464f8a05500d38b140c/src/dat/controllers/NumberController.js#L62
     value = std::max(value, min);
     value = std::min(value, max);
-    value = std::round(value/step)*step;
+    value = std::round(value / step) * step;
     data.value = value;
+    data.keycode1 = std::move(decrement_keycode);
+    data.keycode2 = std::move(increment_keycode);
 
     {
       std::lock_guard<std::mutex> lock(controls_mutex_);
-      if (buttons_.find(name) != buttons_.end()) {
-        DeleteButton(name);
+      if (buttons_.find(data.name) != buttons_.end()) {
+        throw std::logic_error(
+            fmt::format("Meshcat already has a button named {}.", data.name));
       }
-      if (sliders_.find(name) != sliders_.end()) {
-        DeleteSlider(name);
+      if (sliders_.find(data.name) != sliders_.end()) {
+        throw std::logic_error(
+            fmt::format("Meshcat already has a slider named {}.", data.name));
       }
       controls_.emplace_back(data.name);
       sliders_[data.name] = data;
+      DRAKE_DEMAND(controls_.size() == (buttons_.size() + sliders_.size()));
     }
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -982,15 +1341,15 @@ class Meshcat::WebSocketPublisher {
     });
   }
 
+  // This function is public via the PIMPL.
   void SetSliderValue(std::string name, double value) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       auto iter = sliders_.find(name);
       if (iter == sliders_.end()) {
-        throw std::out_of_range(
+        throw std::logic_error(
             fmt::format("Meshcat does not have any slider named {}.", name));
       }
       internal::SetSliderControl& s = iter->second;
@@ -1005,7 +1364,7 @@ class Meshcat::WebSocketPublisher {
     data.name = std::move(name);
     data.value = value;
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -1014,28 +1373,29 @@ class Meshcat::WebSocketPublisher {
     });
   }
 
+  // This function is public via the PIMPL.
   double GetSliderValue(std::string_view name) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
 
     std::lock_guard<std::mutex> lock(controls_mutex_);
     auto iter = sliders_.find(name);
     if (iter == sliders_.end()) {
-      throw std::out_of_range(
+      throw std::logic_error(
           fmt::format("Meshcat does not have any slider named {}.", name));
     }
     return iter->second.value;
   }
 
+  // This function is public via the PIMPL.
   void DeleteSlider(std::string name) {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     internal::DeleteControl data;
     {
       std::lock_guard<std::mutex> lock(controls_mutex_);
       auto iter = sliders_.find(name);
       if (iter == sliders_.end()) {
-        throw std::out_of_range(
+        throw std::logic_error(
             fmt::format("Meshcat does not have any slider named {}.", name));
       }
       sliders_.erase(iter);
@@ -1043,9 +1403,10 @@ class Meshcat::WebSocketPublisher {
       DRAKE_DEMAND(c_iter != controls_.end());
       controls_.erase(c_iter);
       data.name = std::move(name);
+      DRAKE_DEMAND(controls_.size() == (buttons_.size() + sliders_.size()));
     }
 
-    loop_->defer([this, data = std::move(data)]() {
+    Defer([this, data = std::move(data)]() {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       DRAKE_DEMAND(app_ != nullptr);
       std::stringstream message_stream;
@@ -1054,6 +1415,7 @@ class Meshcat::WebSocketPublisher {
     });
   }
 
+  // This function is public via the PIMPL.
   void DeleteAddedControls() {
     DRAKE_DEMAND(IsThread(main_thread_id_));
     // We copy the data structures so that the main thread can iterate through
@@ -1073,26 +1435,65 @@ class Meshcat::WebSocketPublisher {
     }
   }
 
+  // This function is public via the PIMPL.
+  std::string StaticHtml() {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    std::string html = GetUrlContent("/");
+
+    std::promise<std::string> p;
+    std::future<std::string> f = p.get_future();
+    Defer([this, p = std::move(p)]() mutable {
+      DRAKE_DEMAND(IsThread(websocket_thread_id_));
+      std::string commands = scene_tree_root_.CreateCommands();
+      if (!animation_.empty()) {
+        commands += CreateCommand(animation_);
+      }
+      p.set_value(std::move(commands));
+    });
+
+    // Replace the javascript code in the original html file which connects via
+    // websockets with the static javascript commands.
+    std::regex block_re(
+        "<!-- CONNECTION BLOCK BEGIN [^]+ CONNECTION BLOCK END -->\n");
+    html = std::regex_replace(html, block_re, f.get());
+
+    // Insert the javascript directly into the html.
+    std::vector<std::pair<std::string, std::string>> js_paths{
+        {" src=\"meshcat.js\"", "/meshcat.js"},
+        {" src=\"stats.min.js\"", "/stats.min.js"},
+        {" src=\"msgpack.min.js\"", "/msgpack.min.js"},
+    };
+
+    for (const auto& [src_link, url] : js_paths) {
+      const size_t js_pos = html.find(src_link);
+      DRAKE_DEMAND(js_pos != std::string::npos);
+      html.erase(js_pos, src_link.size());
+      html.insert(js_pos+1, GetUrlContent(url));
+    }
+
+    return html;
+  }
+
+  // This function is public via the PIMPL.
   bool HasPath(std::string_view path) const {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     std::promise<bool> p;
     std::future<bool> f = p.get_future();
-    loop_->defer([this, path = FullPath(path), p = std::move(p)]() mutable {
+    Defer([this, path = FullPath(path), p = std::move(p)]() mutable {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       p.set_value(scene_tree_root_.Find(path) != nullptr);
     });
     return f.get();
   }
 
+  // This function is public via the PIMPL.
   std::string GetPackedObject(std::string_view path) const {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     std::promise<std::string> p;
     std::future<std::string> f = p.get_future();
-    loop_->defer([this, path = FullPath(path), p = std::move(p)]() mutable {
+    Defer([this, path = FullPath(path), p = std::move(p)]() mutable {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       const SceneTreeElement* e = scene_tree_root_.Find(path);
       if (!e || !e->object()) {
@@ -1104,13 +1505,13 @@ class Meshcat::WebSocketPublisher {
     return f.get();
   }
 
+  // This function is public via the PIMPL.
   std::string GetPackedTransform(std::string_view path) const {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     std::promise<std::string> p;
     std::future<std::string> f = p.get_future();
-    loop_->defer([this, path = FullPath(path), p = std::move(p)]() mutable {
+    Defer([this, path = FullPath(path), p = std::move(p)]() mutable {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       const SceneTreeElement* e = scene_tree_root_.Find(path);
       if (!e || !e->transform()) {
@@ -1122,14 +1523,14 @@ class Meshcat::WebSocketPublisher {
     return f.get();
   }
 
+  // This function is public via the PIMPL.
   std::string GetPackedProperty(std::string_view path,
                                 std::string property) const {
     DRAKE_DEMAND(IsThread(main_thread_id_));
-    DRAKE_DEMAND(loop_ != nullptr);
 
     std::promise<std::string> p;
     std::future<std::string> f = p.get_future();
-    loop_->defer([this, path = FullPath(path), property = std::move(property),
+    Defer([this, path = FullPath(path), property = std::move(property),
                   p = std::move(p)]() mutable {
       DRAKE_DEMAND(IsThread(websocket_thread_id_));
       const SceneTreeElement* e = scene_tree_root_.Find(path);
@@ -1147,90 +1548,120 @@ class Meshcat::WebSocketPublisher {
     return f.get();
   }
 
+  void InjectWebsocketThreadFault(int fault_number) {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    DRAKE_DEMAND(fault_number >= 0);
+    DRAKE_DEMAND(fault_number <= kMaxFaultNumber);
+    log()->warn("InjectWebsocketThreadFault({}) was called", fault_number);
+    switch (fault_number) {
+      case 0: {
+        Defer([this]() {
+          DRAKE_DEMAND(IsThread(websocket_thread_id_));
+          // Closing the listen socket will cause the app.run() loop to exit.
+          us_listen_socket_close(0, listen_socket_);
+          listen_socket_ = nullptr;
+        });
+        return;
+      }
+      case 1: {
+        Defer([this]() {
+          DRAKE_DEMAND(IsThread(websocket_thread_id_));
+          throw std::runtime_error("InjectWebsocketThreadFault during defer");
+        });
+        return;
+      }
+      case 2: {
+        inject_open_fault_.store(true);
+        return;
+      }
+      case 3: {
+        inject_message_fault_.store(true);
+        return;
+      }
+      static_assert(kMaxFaultNumber == 3);
+    }
+    DRAKE_UNREACHABLE();
+  }
+
  private:
   bool IsThread(std::thread::id thread_id) const {
     return (std::this_thread::get_id() == thread_id);
   }
 
+  // This is the entry point for our websocket thread. Its only job is as a
+  // last-resort exception catcher so that we'll always log it and never call
+  // std::terminate (an exception leaking from std::thread always terminates).
+  //
+  // Our design goal is that no exception can ever reach this function anyway
+  // (it should be caught by a more local try-catch block) but in case we've
+  // missed one of those, we want to be sure to log it here.
+  //
+  // Catching exceptions is generally prohibited by Drake's style guide, but
+  // in this case the std::terminate fall-through is too painful to live with,
+  // and we end up re-throwing an exception on the main thread eventually.
+  //
+  // N.B. Our arguments must not be pass-by-reference because this function is
+  // called from a new thread!
+  void WrappedWebSocketMain(
+      std::promise<std::tuple<int, bool>> app_promise,
+      std::string host, std::optional<int> desired_port) {
+    try {
+      WebSocketMain(std::move(app_promise), host, desired_port);
+    } catch (const std::exception& e) {
+      drake::log()->critical(
+          "Meshcat's internal websocket thread crashed via an exception: {}",
+          e.what());
+    }
+  }
+
   void WebSocketMain(
-      std::promise<std::tuple<uWS::Loop*, int, bool>> app_promise,
-      const std::optional<int>& desired_port) {
+      std::promise<std::tuple<int, bool>> app_promise,
+      const std::string& host, std::optional<int> desired_port) {
     websocket_thread_id_ = std::this_thread::get_id();
+    ScopeExit guard([this]() {
+      // N.B. Refer to the comments on the `mode_` and `loop_` class member
+      // fields to help understand what's happening here.
+      OperatingMode nominal = kNominal;
+      mode_.compare_exchange_strong(nominal, kStopping);
+      // We must not exit this thread (destroying the thread_local uWS::Loop)
+      // until we know that the main thread is no longer adding more callbacks.
+      // It signals that by setting mode_ to kFinshed.
+      while (mode_.load() != kFinished) {
+        // TODO(jwnimmer-tri) Use atomic::wait instead, once we have C++20.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      loop_ = nullptr;
+      // Given this scope guard, the post-condition upon return from
+      // WebSocketMain is that mode_ is kFinished and loop_ is null.
+    });
+    loop_ = uWS::Loop::get();
+
+    // This canonicalization of the bind_host is currently redundant with what
+    // uWebSockets already implements, but we'll keep it here anyway, to defend
+    // our code from potential implementation changes to uWebSockets.
+    const std::string bind_host = (host == "*") ? "" : host;
 
     int port = desired_port ? *desired_port : 7000;
     const int kMaxPort = desired_port ? *desired_port : 7099;
 
     uWS::App::WebSocketBehavior<PerSocketData> behavior;
+    // Set maxBackpressure = 0 so that uWS does *not* drop any messages due to
+    // back pressure.
+    behavior.maxBackpressure = 0;
     behavior.open = [this](WebSocket* ws) {
-      DRAKE_DEMAND(IsThread(websocket_thread_id_));
-      websockets_.emplace(ws);
-      ws->subscribe("all");
-      // Update this new connection with previously published data.
-      SendTree(ws);
-      if (!animation_.empty()) {
-        ws->send(animation_);
-      }
-      std::lock_guard<std::mutex> lock(controls_mutex_);
-      for (const auto& c : controls_) {
-        auto b_iter = buttons_.find(c);
-        if (b_iter != buttons_.end()) {
-          std::stringstream message_stream;
-          msgpack::pack(message_stream, b_iter->second);
-          ws->send(message_stream.str());
-        } else {
-          auto s_iter = sliders_.find(c);
-          DRAKE_DEMAND(s_iter != sliders_.end());
-          std::stringstream message_stream;
-          msgpack::pack(message_stream, s_iter->second);
-          ws->send(message_stream.str());
-        }
-      }
+      // IsThread(websocket_thread_id_) is checked by the Handle... function.
+      HandleSocketOpen(ws);
     };
-    // TODO(russt): I could increase this more if necessary (when it was too
-    // low, some SetObject messages were dropped).  But at some point the real
-    // fix is to actually throttle the sending (e.g. by slowing down the main
-    // thread).
-    behavior.maxBackpressure = kMaxBackPressure;
+    behavior.close = [this](WebSocket* ws, int, std::string_view message) {
+      // IsThread(websocket_thread_id_) is checked by the Handle... function.
+      unused(message);
+      HandleSocketClose(ws);
+    };
     behavior.message = [this](WebSocket* ws, std::string_view message,
                               uWS::OpCode op_code) {
-      unused(ws, op_code);
-      internal::UserInterfaceEvent data;
-      try {
-        msgpack::object_handle o_h =
-            msgpack::unpack(message.data(), message.size());
-        o_h.get().convert(data);
-      } catch (const std::bad_alloc& e) {
-        // Quietly ignore messages that don't match our expected message type.
-        // This violates the style guide, but msgpack does not provide any other
-        // mechanism for checking the message type.
-        return;
-      }
-      std::lock_guard<std::mutex> lock(controls_mutex_);
-      if (data.type == "button") {
-        auto iter = buttons_.find(data.name);
-        if (iter != buttons_.end()) {
-          iter->second.num_clicks++;
-        }
-      } else if (data.type == "slider" && data.value.has_value()) {
-        auto iter = sliders_.find(data.name);
-        if (iter != sliders_.end()) {
-          iter->second.value = *data.value;
-          if (websockets_.size() > 1) {
-            // Send SetSliderValue message to all other websockets.
-            internal::SetSliderValue set_slider;
-            set_slider.name = std::move(data.name);
-            set_slider.value = *data.value;
-            std::stringstream message_stream;
-            msgpack::pack(message_stream, set_slider);
-            // ws->publish sends to all but not to ws.
-            ws->publish("all", message_stream.str(), uWS::OpCode::BINARY);
-          }
-        }
-      }
-    };
-    behavior.close = [this](WebSocket* ws, int, std::string_view) {
-      DRAKE_DEMAND(IsThread(websocket_thread_id_));
-      websockets_.erase(ws);
+      // IsThread(websocket_thread_id_) is checked by the Handle... function.
+      unused(op_code);
+      HandleMessage(ws, message);
     };
 
     uWS::App app =
@@ -1245,31 +1676,186 @@ class Meshcat::WebSocketPublisher {
 
     do {
       app.listen(
-          port, LIBUS_LISTEN_EXCLUSIVE_PORT,
-          [this, port](us_listen_socket_t* socket) {
+          bind_host, port, LIBUS_LISTEN_EXCLUSIVE_PORT,
+          [this](us_listen_socket_t* socket) {
             DRAKE_DEMAND(IsThread(websocket_thread_id_));
             if (socket) {
-              drake::log()->info(
-                  "Meshcat listening for connections at http://localhost:{}",
-                  port);
               listen_socket_ = socket;
             }
           });
     } while (listen_socket_ == nullptr && port++ < kMaxPort);
 
     bool connected = listen_socket_ != nullptr;
-    app_promise.set_value(std::make_tuple(uWS::Loop::get(), port, connected));
+    app_promise.set_value(std::make_tuple(port, connected));
 
-    if (connected) {
-      app.run();
+    if (!connected) {
+      return;
+    }
+
+    ScopeExit listen_guard([this]() {
+      if (listen_socket_ != nullptr) {
+        drake::log()->warn(
+            "Meshcat's internal websocket is stopping via an exception");
+        Shutdown();
+        // Normally uWS will free all of its memory as part of App shutdown.
+        // However, when exiting via exception it only places the socket memory
+        // onto a close-list instead of freeing it. To avoid heap leaks, we'll
+        // manually free the memory here using an internal helper function.
+        // TODO(jwnimmer-tri) Probably uWS::LoopCleaner::~LoopCleaner should be
+        // doing this? Submit a ticket with upstream to find the correct answer.
+        us_internal_free_closed_sockets(
+            reinterpret_cast<struct us_loop_t*>(uWS::Loop::get()));
+      }
+    });
+
+    app.run();
+  }
+
+  // This function is a callback from a WebSocketBehavior.
+  void HandleSocketOpen(WebSocket* ws) {
+    DRAKE_DEMAND(IsThread(websocket_thread_id_));
+    drake::log()->debug(
+        "Meshcat connection opened from {}",
+        ws->getRemoteAddressAsText());
+    websockets_.emplace(ws);
+    const int new_count = ++num_websockets_;
+    DRAKE_DEMAND(new_count >= 0);
+    DRAKE_DEMAND(new_count == static_cast<int>(websockets_.size()));
+    ws->subscribe("all");
+    // Update this new connection with previously published data.
+    scene_tree_root_.Send(ws);
+    if (!animation_.empty()) {
+      ws->send(animation_);
+    }
+    std::lock_guard<std::mutex> lock(controls_mutex_);
+    for (const auto& c : controls_) {
+      auto b_iter = buttons_.find(c);
+      if (b_iter != buttons_.end()) {
+        std::stringstream message_stream;
+        msgpack::pack(message_stream, b_iter->second);
+        ws->send(message_stream.str());
+      } else {
+        auto s_iter = sliders_.find(c);
+        DRAKE_DEMAND(s_iter != sliders_.end());
+        std::stringstream message_stream;
+        msgpack::pack(message_stream, s_iter->second);
+        ws->send(message_stream.str());
+      }
+    }
+
+    // Tell client if the realtime rate plot should be hidden
+    internal::ShowRealtimeRate realtime_rate_message;
+    realtime_rate_message.show = params_.show_stats_plot;
+    std::stringstream realtime_message_stream;
+    msgpack::pack(realtime_message_stream, realtime_rate_message);
+    ws->send(realtime_message_stream.str());
+
+    if (inject_open_fault_.load()) {
+      throw std::runtime_error(
+          "InjectWebsocketThreadFault during socket open");
     }
   }
 
-  void SendTree(WebSocket* ws) {
+  // This function is a callback from a WebSocketBehavior.
+  void HandleSocketClose(WebSocket* ws) {
     DRAKE_DEMAND(IsThread(websocket_thread_id_));
-    scene_tree_root_.Send(ws);
+    drake::log()->debug(
+        "Meshcat connection closed from {}",
+        ws->getRemoteAddressAsText());
+    websockets_.erase(ws);
+    const int new_count = --num_websockets_;
+    DRAKE_DEMAND(new_count >= 0);
+    DRAKE_DEMAND(new_count == static_cast<int>(websockets_.size()));
   }
 
+  // This function is a callback from a WebSocketBehavior.
+  void HandleMessage(WebSocket* ws, std::string_view message) {
+    internal::UserInterfaceEvent data;
+    try {
+      msgpack::object_handle o_h =
+          msgpack::unpack(message.data(), message.size());
+      o_h.get().convert(data);
+    } catch (const msgpack::type_error& e) {
+      // Quietly ignore messages that don't match our expected message type.
+      // This violates the style guide, but msgpack does not provide any other
+      // mechanism for checking the message type.
+      drake::log()->debug("Meshcat ignored an unparseable message");
+      return;
+    }
+    std::lock_guard<std::mutex> lock(controls_mutex_);
+    if (data.type == "button") {
+      auto iter = buttons_.find(data.name);
+      if (iter != buttons_.end()) {
+        iter->second.num_clicks++;
+      }
+      return;
+    }
+    if (data.type == "slider" && data.value.has_value()) {
+      auto iter = sliders_.find(data.name);
+      if (iter != sliders_.end()) {
+        iter->second.value = *data.value;
+        if (websockets_.size() > 1) {
+          // Send SetSliderValue message to all other websockets.
+          internal::SetSliderValue set_slider;
+          set_slider.name = std::move(data.name);
+          set_slider.value = *data.value;
+          std::stringstream message_stream;
+          msgpack::pack(message_stream, set_slider);
+          // ws->publish sends to all but not to ws.
+          ws->publish("all", message_stream.str(), uWS::OpCode::BINARY);
+        }
+      }
+      return;
+    }
+    drake::log()->warn("Meshcat ignored a '{}' event", data.type);
+    if (inject_message_fault_.load()) {
+      throw std::runtime_error(
+          "InjectWebsocketThreadFault during message callback");
+    }
+  }
+
+  // A functor object that we can post from the main thread into the websocket
+  // thread.
+  using Callback = uWS::MoveOnlyFunction<void()>;
+
+  // This function is a private utility for use within this class.
+  // It posts the given callback into the websocket thread, safely.
+  // If the websocket thread is no longer operating, then this function will
+  // destroy the callback, without ever invoking it.
+  void Defer(Callback&& callback) const {
+    DRAKE_DEMAND(IsThread(main_thread_id_));
+    if (mode_.load() == kNominal) {
+      DRAKE_DEMAND(loop_ != nullptr);
+      loop_->defer(std::move(callback));
+    }
+  }
+
+  // This function is a private utility for use within this class. It closes all
+  // sockets therefore will cause the uWS::App::run() function to return, and
+  // therefore the worker thread will (eventually) exit. This should only be
+  // called from two places: in the case of graceful shutdown as a deferred
+  // event posted by the ~Impl destructor, or in the case of faulty shutdown
+  // in the websocket thread's scope guard.
+  void Shutdown() {
+    DRAKE_DEMAND(IsThread(websocket_thread_id_));
+    drake::log()->debug("Meshcat Shutdown");
+
+    // Stop accepting new connections.
+    if (listen_socket_ != nullptr) {
+      us_listen_socket_close(0, listen_socket_);
+      listen_socket_ = nullptr;
+    }
+
+    // Close any existing connections. Calling ws->close() erases the WebSocket
+    // from websockets_, so we need to advance the iterator beforehand (#15821).
+    auto iter = websockets_.begin();
+    while (iter != websockets_.end()) {
+      WebSocket* ws = *iter++;
+      ws->close();
+    }
+  }
+
+  // This function is a private utility for use within this class.
   std::string FullPath(std::string_view path) const {
     DRAKE_DEMAND(IsThread(main_thread_id_));
     while (path.size() > 1 && path.back() == '/') {
@@ -1297,6 +1883,7 @@ class Meshcat::WebSocketPublisher {
   // These variables should only be accessed in the main thread, where "main
   // thread" is the thread in which this class was constructed.
   std::thread::id main_thread_id_{};
+  const MeshcatParams params_;
   int port_{};
   std::mt19937 generator_{};
 
@@ -1308,213 +1895,307 @@ class Meshcat::WebSocketPublisher {
   us_listen_socket_t* listen_socket_{nullptr};
   std::set<WebSocket*> websockets_{};
 
-  // This pointer should only be accessed in the main thread, but the Loop
-  // object itself should be only used in the websocket thread, with one
-  // exception: loop_->defer(), which is thread safe. See the documentation for
+  // This variable may be accessed from any thread, but should only be modified
+  // in the websocket thread.
+  std::atomic<int> num_websockets_{0};
+
+  // The loop_ pointer is used to pass functors from the main thread into the
+  // websocket worker thread, via loop_->defer(...). See the documentation of
   // uWebSockets for further details:
-  // https://github.com/uNetworking/uWebSockets/blob/d94bf2cd43bed5e0de396a8412f156e15c141e98/misc/READMORE.md#threading
+  // https://github.com/uNetworking/uWebSockets/blob/d94bf2c/misc/READMORE.md#threading
+  //
+  // We must be *extremely careful* with the lifecycle of the loop_ pointer.
+  //
+  // It's initialized to nullptr. Then, our constructor launches the websocket
+  // thread and blocks on a future until the thread is ready. Before declaring
+  // itself ready via the promise, the websocket thread sets loop_ to the
+  // correct value. Therefore, when our constructor returns we can rest assured
+  // that the loop_ contains a valid value.
+  //
+  // However, the *grave danger* here is that loop_ points to uWS::Loop::get,
+  // which is a *thread_local static object*. When the thread finishes, the C++
+  // runtime will destroy the thread_local object and our loop_ will become a
+  // dangling pointer. Calling any function on it would lead to nasal demons.
+  //
+  // Therefore, we must prevent the websocket thread from exiting until it's
+  // sure that the main thread will never again use the loop_. We implement
+  // that using a scope guard within the websocket thread, where it monitors
+  // the mode_ member. Only once mode_ is set to kFinished may the thread be
+  // allowed to exit. We also encapsulate all main-thread access to loop_
+  // within the Defer() helper function, to help maintain this invariant.
+  //
+  // In short, our invariant is that: loop_ is only guaranteed to be non-null
+  // when mode_ is either kNominal or kStopping.
   uWS::Loop* loop_{nullptr};
+
+  // The other half of maintaining the loop lifecycle invariant (as described
+  // on the loop_ member above) is the mode_ enum.
+  //
+  // The mode_ enum is always set to one of exactly three values:
+  // - kNominal
+  // - kStopping
+  // - kFinished
+  //
+  // It begins life set to Nominal. In this mode, calls to the Defer()
+  // helper are passed along to the websocket thread's uWS event loop.
+  //
+  // Within the websocket thread, anytime the thread is about to exit (whether
+  // through normal means or an exception), the scope guard takes over and
+  // does an atomic compare-and-swap, demoting Nominal to Stopping. This is
+  // the indication to the main thread that the websocket thread is shutting
+  // down. Any *thereafter* calls to Defer() will destroy the callback functor
+  // instead of posting it into the uWS loop.
+  //
+  // Note, however, that if a call to Defer() was partway through execution
+  // (where it had done mode_.load(), but not yet called into the loop_),
+  // then callbacks could still be placed into the uWS loop even after the
+  // compare-and-swap had completed. This is still fine. They will not be run
+  // (because the loop isn't running), but they will be correctly destroyed
+  // when the loop is destroyed.
+  //
+  // The websocket thread then spinloops until it sees that mode_ has been
+  // set to kFinished. In relevant places on the main thread (i.e., in the
+  // ThrowIfWebsocketThreadExited failure poll, or in the constructor when
+  // throwing, or during the destructor as normal), it sets mode_ to
+  // kFinished to indicate that it will never post into the loop again.
+
+  enum OperatingMode {
+    // The main thread and websocket thread are operating as normal.
+    kNominal,
+
+    // The websocket thread is no longer running the event loop. It is paused
+    // waiting for the main thread to acknowledge the that the event loop is
+    // no longer running.
+    kStopping,
+
+    // Once this mode is reached, the main thread will not perform any more
+    // operations on the websocket thread, other than joining it. Therefore,
+    // in this mode the main thread is not allowed to refer to the loop_
+    // pointer (it might be nullptr).
+    kFinished,
+  };
+  mutable std::atomic<OperatingMode> mode_{kNominal};
+
+  // These bools are used during unit testing to inject exceptions into various
+  // places on the websocket thread.
+  std::atomic<bool> inject_open_fault_{false};
+  std::atomic<bool> inject_message_fault_{false};
 };
 
-Meshcat::Meshcat(const std::optional<int>& port) {
-  // Fetch the index once to be sure that we preload the content.
-  GetUrlContent("/");
+namespace {
+MeshcatParams MakeMeshcatParamsPortOnly(std::optional<int> port) {
+  MeshcatParams result;
+  result.port = port;
+  return result;
+}
+}  // namespace
 
-  publisher_ = std::make_unique<WebSocketPublisher>(port);
+Meshcat::Meshcat(std::optional<int> port)
+    : Meshcat(MakeMeshcatParamsPortOnly(port)) {}
+
+Meshcat::Meshcat(const MeshcatParams& params)
+    // Creates the server thread, bind to the port, etc.
+    : impl_{new Impl(params)} {
+  drake::log()->info("Meshcat listening for connections at {}", web_url());
 }
 
-Meshcat::~Meshcat() = default;
+Meshcat::~Meshcat() {
+  delete static_cast<Impl*>(impl_);
+}
+
+// This overloaded function ensures that ThrowIfWebsocketThreadExited always
+// happens before accessing the Impl class.
+Meshcat::Impl& Meshcat::impl() {
+  DRAKE_DEMAND(impl_ != nullptr);
+  Impl* result = static_cast<Impl*>(impl_);
+  result->ThrowIfWebsocketThreadExited();
+  return *result;
+}
+
+const Meshcat::Impl& Meshcat::impl() const {
+  return const_cast<Meshcat*>(this)->impl();
+}
 
 std::string Meshcat::web_url() const {
-  return fmt::format("http://localhost:{}", publisher_->port());
+  return impl().web_url();
 }
 
 int Meshcat::port() const {
-  return publisher_->port();
+  return impl().port();
 }
 
 std::string Meshcat::ws_url() const {
-  return fmt::format("ws://localhost:{}", publisher_->port());
+  return impl().ws_url();
+}
+
+int Meshcat::GetNumActiveConnections() const {
+  return impl().GetNumActiveConnections();
+}
+
+void Meshcat::Flush() const {
+  impl().Flush();
 }
 
 void Meshcat::SetObject(std::string_view path, const Shape& shape,
                         const Rgba& rgba) {
-  publisher_->SetObject(path, shape, rgba);
+  impl().SetObject(path, shape, rgba);
 }
 
 void Meshcat::SetObject(std::string_view path,
                         const perception::PointCloud& cloud, double point_size,
                         const Rgba& rgba) {
-  publisher_->SetObject(path, cloud, point_size, rgba);
+  impl().SetObject(path, cloud, point_size, rgba);
 }
 
 void Meshcat::SetObject(std::string_view path,
                         const TriangleSurfaceMesh<double>& mesh,
                         const Rgba& rgba, bool wireframe,
                         double wireframe_line_width) {
-  Eigen::Matrix3Xd vertices(3, mesh.num_vertices());
-  for (int i = 0; i < mesh.num_vertices(); ++i) {
-    vertices.col(i) = mesh.vertex(i);
-  }
-  Eigen::Matrix3Xi faces(3, mesh.num_triangles());
-  for (int i = 0; i < mesh.num_triangles(); ++i) {
-    const auto& e = mesh.element(i);
-    for (int j = 0; j < 3; ++j) {
-      faces(j, i) = e.vertex(j);
-    }
-  }
-  publisher_->SetTriangleMesh(path, vertices, faces, rgba, wireframe,
-                              wireframe_line_width);
+  impl().SetObject(path, mesh, rgba, wireframe, wireframe_line_width);
 }
 
 void Meshcat::SetLine(std::string_view path,
                       const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
                       double line_width, const Rgba& rgba) {
-  const bool kLineSegments = false;
-  publisher_->SetLine(path, vertices, line_width, rgba, kLineSegments);
+  impl().SetLine(path, vertices, line_width, rgba);
 }
 
 void Meshcat::SetLineSegments(std::string_view path,
                               const Eigen::Ref<const Eigen::Matrix3Xd>& start,
                               const Eigen::Ref<const Eigen::Matrix3Xd>& end,
                               double line_width, const Rgba& rgba) {
-  DRAKE_THROW_UNLESS(start.cols() == end.cols());
-  // The LineSegments loader in three.js take the same data structure as Line,
-  // but takes every consecutive pair of vertices as a (start, end).
-  Eigen::Matrix<double, 6, Eigen::Dynamic> vstack(6, start.cols());
-  vstack << start, end;
-  Eigen::Map<Eigen::Matrix3Xd> vertices(vstack.data(), 3, 2*start.cols());
-  const bool kLineSegments = true;
-  publisher_->SetLine(path, vertices, line_width, rgba, kLineSegments);
+  impl().SetLineSegments(path, start, end, line_width, rgba);
 }
 
 void Meshcat::SetTriangleMesh(
     std::string_view path, const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
     const Eigen::Ref<const Eigen::Matrix3Xi>& faces, const Rgba& rgba,
     bool wireframe, double wireframe_line_width) {
-  publisher_->SetTriangleMesh(path, vertices, faces, rgba, wireframe,
+  impl().SetTriangleMesh(path, vertices, faces, rgba, wireframe,
                               wireframe_line_width);
 }
 
+void Meshcat::SetTriangleColorMesh(
+    std::string_view path, const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
+    const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
+    const Eigen::Ref<const Eigen::Matrix3Xd>& colors, bool wireframe,
+    double wireframe_line_width) {
+  impl().SetTriangleColorMesh(path, vertices, faces, colors, wireframe,
+                         wireframe_line_width);
+}
+
 void Meshcat::SetCamera(PerspectiveCamera camera, std::string path) {
-  publisher_->SetCamera(std::move(camera), std::move(path));
+  impl().SetCamera(std::move(camera), std::move(path));
 }
 
 void Meshcat::SetCamera(OrthographicCamera camera, std::string path) {
-  publisher_->SetCamera(std::move(camera), std::move(path));
+  impl().SetCamera(std::move(camera), std::move(path));
 }
 
 void Meshcat::SetTransform(std::string_view path,
                            const RigidTransformd& X_ParentPath) {
-  publisher_->SetTransform(path, X_ParentPath.GetAsMatrix4());
+  impl().SetTransform(path, X_ParentPath);
 }
 
 void Meshcat::SetTransform(std::string_view path,
                            const Eigen::Ref<const Eigen::Matrix4d>& matrix) {
-  publisher_->SetTransform(path, matrix);
+  impl().SetTransform(path, matrix);
 }
 
-void Meshcat::Delete(std::string_view path) { publisher_->Delete(path); }
+void Meshcat::Delete(std::string_view path) {
+  impl().Delete(path);
+}
+
+void Meshcat::SetRealtimeRate(double rate) {
+  impl().SetRealtimeRate(rate);
+}
 
 void Meshcat::SetProperty(std::string_view path, std::string property,
                           bool value) {
-  publisher_->SetProperty(path, std::move(property), value);
+  impl().SetProperty(path, std::move(property), value);
 }
 
 void Meshcat::SetProperty(std::string_view path, std::string property,
                           double value) {
-  publisher_->SetProperty(path, std::move(property), value);
+  impl().SetProperty(path, std::move(property), value);
 }
 
 void Meshcat::SetProperty(std::string_view path, std::string property,
                           const std::vector<double>& value) {
-  publisher_->SetProperty(path, std::move(property), value);
+  impl().SetProperty(path, std::move(property), value);
 }
 
 void Meshcat::SetAnimation(const MeshcatAnimation& animation) {
-  publisher_->SetAnimation(animation);
+  impl().SetAnimation(animation);
 }
 
 void Meshcat::Set2dRenderMode(const math::RigidTransformd& X_WC, double xmin,
                               double xmax, double ymin, double ymax) {
-  // Set orthographic camera.
-  OrthographicCamera camera;
-  camera.left = xmin;
-  camera.right = xmax;
-  camera.bottom = ymin;
-  camera.top = ymax;
-  SetCamera(camera);
-
-  SetTransform("/Cameras/default", X_WC);
-  // Lock orbit controls.
-  SetProperty("/Cameras/default/rotated/<object>", "position",
-              {0.0, 0.0, 0.0});
-
-  SetProperty("/Background", "visible", false);
-  SetProperty("/Grid", "visible", false);
-  SetProperty("/Axes", "visible", false);
+  impl().Set2dRenderMode(X_WC, xmin, xmax, ymin, ymax);
 }
 
 void Meshcat::ResetRenderMode() {
-  PerspectiveCamera camera;
-  SetCamera(camera);
-  SetTransform("/Cameras/default", math::RigidTransformd());
-  // Lock orbit controls.
-  SetProperty("/Cameras/default/rotated/<object>", "position",
-              {0.0, 1.0, 3.0});
-  SetProperty("/Background", "visible", true);
-  SetProperty("/Grid", "visible", true);
-  SetProperty("/Axes", "visible", true);
+  impl().ResetRenderMode();
 }
 
-void Meshcat::AddButton(std::string name) {
-  publisher_->AddButton(std::move(name));
+void Meshcat::AddButton(std::string name, std::string keycode) {
+  impl().AddButton(std::move(name), std::move(keycode));
 }
 
 int Meshcat::GetButtonClicks(std::string_view name) {
-  return publisher_->GetButtonClicks(name);
+  return impl().GetButtonClicks(name);
 }
 
 void Meshcat::DeleteButton(std::string name) {
-  publisher_->DeleteButton(std::move(name));
+  impl().DeleteButton(std::move(name));
 }
 
-void Meshcat::AddSlider(std::string name, double min, double max,
-                               double step, double value) {
-  publisher_->AddSlider(std::move(name), min, max, step, value);
+void Meshcat::AddSlider(std::string name, double min, double max, double step,
+                        double value, std::string decrement_keycode,
+                        std::string increment_keycode) {
+  impl().AddSlider(std::move(name), min, max, step, value,
+                   std::move(decrement_keycode), std::move(increment_keycode));
 }
 
 void Meshcat::SetSliderValue(std::string name, double value) {
-  publisher_->SetSliderValue(std::move(name), value);
+  impl().SetSliderValue(std::move(name), value);
 }
 
 double Meshcat::GetSliderValue(std::string_view name) {
-  return publisher_->GetSliderValue(name);
+  return impl().GetSliderValue(name);
 }
 
 void Meshcat::DeleteSlider(std::string name) {
-  publisher_->DeleteSlider(std::move(name));
+  impl().DeleteSlider(std::move(name));
 }
 
 void Meshcat::DeleteAddedControls() {
-  publisher_->DeleteAddedControls();
+  impl().DeleteAddedControls();
+}
+
+std::string Meshcat::StaticHtml() {
+  return impl().StaticHtml();
 }
 
 bool Meshcat::HasPath(std::string_view path) const {
-  return publisher_->HasPath(path);
+  return impl().HasPath(path);
 }
 
 std::string Meshcat::GetPackedObject(std::string_view path) const {
-  return publisher_->GetPackedObject(path);
+  return impl().GetPackedObject(path);
 }
 
 std::string Meshcat::GetPackedTransform(std::string_view path) const {
-  return publisher_->GetPackedTransform(path);
+  return impl().GetPackedTransform(path);
 }
 
 std::string Meshcat::GetPackedProperty(std::string_view path,
                                        std::string property) const {
-  return publisher_->GetPackedProperty(path, std::move(property));
+  return impl().GetPackedProperty(path, std::move(property));
+}
+
+void Meshcat::InjectWebsocketThreadFault(int fault_number) {
+  impl().InjectWebsocketThreadFault(fault_number);
 }
 
 }  // namespace geometry

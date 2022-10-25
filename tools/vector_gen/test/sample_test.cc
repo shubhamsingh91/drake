@@ -6,8 +6,7 @@
 
 #include <gtest/gtest.h>
 
-#include "drake/common/autodiff.h"
-#include "drake/common/symbolic.h"
+#include "drake/common/default_scalars.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/common/yaml/yaml_io.h"
@@ -132,7 +131,7 @@ GTEST_TEST(SampleTest, Move) {
   // Move construction.  The heap storage of `first` is stolen.
   Sample<double> second(std::move(first));
   EXPECT_EQ(first.size(), 0);
-  DRAKE_EXPECT_THROWS_MESSAGE(first.x(), std::out_of_range, ".*moved-from.*");
+  DRAKE_EXPECT_THROWS_MESSAGE(first.x(), ".*moved-from.*");
   EXPECT_EQ(second.size(), nominal_size);
   EXPECT_EQ(second.x(), 1.0);
   EXPECT_EQ(&second.x(), original_storage);
@@ -143,7 +142,7 @@ GTEST_TEST(SampleTest, Move) {
   DRAKE_DEMAND(third.x() != 1.0);  // Prove that assignment will change this.
   third = std::move(second);
   EXPECT_EQ(second.size(), 0);
-  DRAKE_EXPECT_THROWS_MESSAGE(second.x(), std::out_of_range, ".*moved-from.*");
+  DRAKE_EXPECT_THROWS_MESSAGE(second.x(), ".*moved-from.*");
   EXPECT_EQ(third.size(), nominal_size);
   EXPECT_EQ(third.x(), 1.0);
   EXPECT_EQ(&third.x(), original_storage);
@@ -169,14 +168,14 @@ GTEST_TEST(SampleTest, IsValid) {
 
 // Cover Simple<AutoDiffXd>::IsValid.
 GTEST_TEST(SampleTest, AutoDiffXdIsValid) {
-  // A NaN in the AutoDiffScalar::value() makes us invalid.
+  // A NaN in the AutoDiffXd::value() makes us invalid.
   Sample<AutoDiffXd> dut;
   dut.set_unset(0.0);  // N.B. Sample<T>.unset is an invalid value by default.
   EXPECT_TRUE(dut.IsValid());
   dut.set_x(std::numeric_limits<double>::quiet_NaN());
   EXPECT_FALSE(dut.IsValid());
 
-  // A NaN in the AutoDiffScalar::derivatives() is still valid.
+  // A NaN in the AutoDiffXd::derivatives() is still valid.
   AutoDiffXd zero_with_nan_derivatives{0};
   zero_with_nan_derivatives.derivatives() =
       Vector1d(std::numeric_limits<double>::quiet_NaN());

@@ -6,10 +6,13 @@
 #include <string>
 #include <variant>
 
-#include <sdf/sdf.hh>
-#include <tinyxml2.h>
+#include <drake_vendor/sdf/Element.hh>
+#include <drake_vendor/tinyxml2.h>
 
+#include "drake/common/diagnostic_policy.h"
+#include "drake/common/drake_copyable.h"
 #include "drake/geometry/proximity_properties.h"
+#include "drake/multibody/parsing/detail_collision_filter_group_resolver.h"
 #include "drake/multibody/plant/coulomb_friction.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/multibody/tree/linear_bushing_roll_pitch_yaw.h"
@@ -20,14 +23,58 @@ namespace internal {
 
 using ElementNode = std::variant<sdf::ElementPtr, tinyxml2::XMLElement*>;
 
-// Helper struct that provides for either a file name xor file contents to be
-// passed between our various parsing functions.  Exactly one of the pointers
-// must be set to non-nullptr.
-struct DataSource {
-  const std::string* file_name{};
-  const std::string* file_contents{};
+// @returns true if @p str ends with @p ext. The match is case-insensitive.
+bool EndsWithCaseInsensitive(std::string_view str, std::string_view ext);
 
-  void DemandExactlyOne() const;
+// Helper class that provides for either a file name xor file contents to be
+// passed between our various parsing functions.
+class DataSource {
+ public:
+  DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(DataSource);
+
+  // The result of calling GetStem on a file-contents data source.
+  static constexpr char kContentsPseudoStem[] = "<literal-string>";
+
+  // A data source contains either a file name, or file contents.
+  enum DataSourceType {kFilename, kContents};
+
+  // Depending on the DataSourceType value supplied, @p data will be treated as
+  // either a file name or contents. The data is aliased, so the lifetime of
+  // the passed data must exceed the lifetime of the created object.
+  // @pre data cannot be nullptr.
+  DataSource(DataSourceType type, const std::string* data);
+
+  // @return true iff the data source is a file name.
+  bool IsFilename() const { return type_ == kFilename; }
+
+  // @return true iff the data source is file contents.
+  bool IsContents() const { return type_ == kContents; }
+
+  // Returns a reference to the filename.
+  // @pre IsFilename().
+  const std::string& filename() const;
+
+  // Returns a reference to the contents.
+  // @pre IsContents().
+  const std::string& contents() const;
+
+  // If the data source is a file name, returns its absolute path. If the
+  // absolute path calculation causes errors, throw std::exception. Otherwise,
+  // returns an empty string.
+  std::string GetAbsolutePath() const;
+
+  // If the data source is a file name, returns its parent path. If the parent
+  // path calculation causes errors, throw std::exception. Otherwise, returns
+  // an empty string.
+  std::string GetRootDir() const;
+
+  // If the data source is a file name, returns its base name, without
+  // directory or extension. Otherwise, returns kContentsPseudoStem.
+  std::string GetStem() const;
+
+ private:
+  DataSourceType type_{};
+  const std::string* data_{};
 };
 
 // Note:
@@ -48,7 +95,7 @@ inline CoulombFriction<double> default_friction() {
 // the two parsers use different mechanisms to extract data from the file):
 //
 //   1. Determine if the `<drake:rigid_hydroelastic>` tag is present.
-//   2. Determine if the `<drake:soft_hydroelastic>` tag is present.
+//   2. Determine if the `<drake:compliant_hydroelastic>` tag is present.
 //   3. Create a function that will extract an *optional* double-valued scalar
 //      from a <drake:some_property> child tag of the
 //      <drake:proximity_properties> tag.
@@ -60,17 +107,19 @@ inline CoulombFriction<double> default_friction() {
 // properties. Downstream consumers of those properties are responsible for
 // confirming that all required properties are present and well formed.
 //
+// @param diagnostic   The error-reporting channel.
 // @param read_double  The function for extracting double values for specific
 //                     named tags.
 // @param is_rigid     True if the caller detected the presence of the
 //                     <drake:rigid_hydroelastic> tag.
-// @param is_soft      True if the caller detected the presence of the
-//                     <drake:soft_hydroelastic> tag.
+// @param is_compliant True if the caller detected the presence of the
+//                     <drake:compliant_hydroelastic> tag.
 // @return All proximity properties discovered via the `read_double` function.
-// @pre At most one of `is_rigid` and `is_soft` is true.
+// @pre At most one of `is_rigid` and `is_compliant` is true.
 geometry::ProximityProperties ParseProximityProperties(
+    const drake::internal::DiagnosticPolicy& diagnostic,
     const std::function<std::optional<double>(const char*)>& read_double,
-    bool is_rigid, bool is_soft);
+    bool is_rigid, bool is_compliant);
 
 // Populates a LinearBushingRollPitchYaw from a reading interface in a URDF/SDF
 // agnostic manner. This function does no semantic parsing and leaves the
@@ -103,9 +152,14 @@ geometry::ProximityProperties ParseProximityProperties(
 //   <drake:bushing_force_stiffness  value="0 0 0"/>
 //   <drake:bushing_force_damping    value="0 0 0"/>
 // </drake:linear_bushing_rpy>
-const LinearBushingRollPitchYaw<double>& ParseLinearBushingRollPitchYaw(
+//
+// The @p read_frame functor may (at its option) throw std:exception, or return
+// nullptr when frame parsing fails. Similarly,
+// ParseLinearBushingRollPitchYaw() may return nullptr when read_frame has
+// returned nullptr.
+const LinearBushingRollPitchYaw<double>* ParseLinearBushingRollPitchYaw(
     const std::function<Eigen::Vector3d(const char*)>& read_vector,
-    const std::function<const Frame<double>&(const char*)>& read_frame,
+    const std::function<const Frame<double>*(const char*)>& read_frame,
     MultibodyPlant<double>* plant);
 
 // TODO(@SeanCurtis-TRI): The real solution here is to create a wrapper
@@ -118,10 +172,14 @@ const LinearBushingRollPitchYaw<double>& ParseLinearBushingRollPitchYaw(
 // tag in both SDF and URDF can be controlled/modified in a single function.
 // Functors are allowed to throw an exception when the requested quantities
 // are not available.
+// @param diagnostic            The error-reporting channel.
 // @param model_instance        Model Instance that contains the bodies involved
 //                              in the collision filter groups.
 // @param model_node            Node used to parse for the
 //                              collision_gilter_group tag.
+// @param plant                 MultibodyPlant used to register the collision
+//                              filter groups.
+// @param resolver              Collects the collision filter group data.
 // @param next_child_element    Function that returns the next child element
 //                              with the specified tag in the ElementNode
 //                              provided.
@@ -138,11 +196,11 @@ const LinearBushingRollPitchYaw<double>& ParseLinearBushingRollPitchYaw(
 //                              name provided in the ElementNoded provided.
 // @param read_bool_attribute   Function that reads a boolean attribute with
 //                              the name provided in the ElementNode provided.
-// @param plant                 MultibodyPlant used to register the collision
-//                              filter groups.
 void ParseCollisionFilterGroupCommon(
+    const drake::internal::DiagnosticPolicy& diagnostic,
     ModelInstanceIndex model_instance, const ElementNode& model_node,
     MultibodyPlant<double>* plant,
+    internal::CollisionFilterGroupResolver* resolver,
     const std::function<ElementNode(const ElementNode&, const char*)>&
         next_child_element,
     const std::function<ElementNode(const ElementNode&, const char*)>&

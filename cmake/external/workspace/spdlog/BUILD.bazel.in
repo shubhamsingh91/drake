@@ -1,0 +1,33 @@
+# -*- python -*-
+
+load("@drake//tools/install:install.bzl", "install")
+load(
+    "@drake//:cmake/external/workspace/conversion.bzl",
+    "split_cmake_list",
+)
+
+_DEFINES = split_cmake_list(
+    "$<TARGET_PROPERTY:spdlog::spdlog,INTERFACE_COMPILE_DEFINITIONS>",
+)
+
+cc_library(
+    name = "spdlog",
+    srcs = glob(
+        ["lib/**"],
+        allow_empty = False,
+    ),
+    hdrs = glob(
+        ["include/**"],
+        allow_empty = False,
+    ),
+    defines = _DEFINES + ["HAVE_SPDLOG"],
+    includes = ["include"],
+    linkopts = ["-pthread"],
+    visibility = ["//visibility:public"],
+    deps = ["@fmt"],
+)
+
+install(
+    name = "install",
+    visibility = ["//visibility:public"],
+)

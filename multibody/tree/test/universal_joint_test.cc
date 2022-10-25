@@ -38,7 +38,7 @@ class UniversalJointTest : public ::testing::Test {
     auto model = std::make_unique<internal::MultibodyTree<double>>();
 
     // Add some bodies so we can add joints between them:
-    body_ = &model->AddBody<RigidBody>(M_B);
+    body_ = &model->AddBody<RigidBody>("Body", M_B);
 
     // Add a universal joint between the world and body1:
     joint_ = &model->AddJoint<UniversalJoint>("Joint", model->world_body(),
@@ -112,7 +112,11 @@ TEST_F(UniversalJointTest, GetJointLimits) {
             Vector2d::Constant(kAccelerationLowerLimit));
   EXPECT_EQ(joint_->acceleration_upper_limits(),
             Vector2d::Constant(kAccelerationUpperLimit));
+}
+
+TEST_F(UniversalJointTest, Damping) {
   EXPECT_EQ(joint_->damping(), kDamping);
+  EXPECT_EQ(joint_->damping_vector(), Vector2d::Constant(kDamping));
 }
 
 // Context-dependent value access.
@@ -192,17 +196,14 @@ TEST_F(UniversalJointTest, SetVelocityAndAccelerationLimits) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       mutable_joint_->set_velocity_limits(VectorX<double>(2),
                                           VectorX<double>()),
-      std::runtime_error,
       ".* 'lower_limits.size\\(\\) == upper_limits.size\\(\\)' failed.");
   DRAKE_EXPECT_THROWS_MESSAGE(
       mutable_joint_->set_velocity_limits(VectorX<double>(),
                                           VectorX<double>(2)),
-      std::runtime_error,
       ".* 'lower_limits.size\\(\\) == upper_limits.size\\(\\)' failed.");
   // Lower limit is larger than upper limit.
   DRAKE_EXPECT_THROWS_MESSAGE(mutable_joint_->set_velocity_limits(
                                   Vector2d::Constant(2), Vector2d::Constant(0)),
-                              std::runtime_error,
                               ".* '\\(lower_limits.array\\(\\) <= "
                               "upper_limits.array\\(\\)\\).all\\(\\)' failed.");
 
@@ -215,19 +216,28 @@ TEST_F(UniversalJointTest, SetVelocityAndAccelerationLimits) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       mutable_joint_->set_acceleration_limits(VectorX<double>(2),
                                               VectorX<double>()),
-      std::runtime_error,
       ".* 'lower_limits.size\\(\\) == upper_limits.size\\(\\)' failed.");
   DRAKE_EXPECT_THROWS_MESSAGE(
       mutable_joint_->set_acceleration_limits(VectorX<double>(),
                                               VectorX<double>(2)),
-      std::runtime_error,
       ".* 'lower_limits.size\\(\\) == upper_limits.size\\(\\)' failed.");
   // Lower limit is larger than upper limit.
   DRAKE_EXPECT_THROWS_MESSAGE(mutable_joint_->set_acceleration_limits(
                                   Vector2d::Constant(2), Vector2d::Constant(0)),
-                              std::runtime_error,
                               ".* '\\(lower_limits.array\\(\\) <= "
                               "upper_limits.array\\(\\)\\).all\\(\\)' failed.");
+}
+
+TEST_F(UniversalJointTest, CanRotateOrTranslate) {
+  EXPECT_TRUE(joint_->can_rotate());
+  EXPECT_FALSE(joint_->can_translate());
+}
+
+TEST_F(UniversalJointTest, NameSuffix) {
+  EXPECT_EQ(joint_->position_suffix(0), "qx");
+  EXPECT_EQ(joint_->position_suffix(1), "qy");
+  EXPECT_EQ(joint_->velocity_suffix(0), "wx");
+  EXPECT_EQ(joint_->velocity_suffix(1), "wy");
 }
 
 TEST_F(UniversalJointTest, DefaultAngles) {

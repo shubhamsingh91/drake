@@ -249,20 +249,20 @@ GTEST_TEST(OsqpSolverTest, TimeLimitTest) {
     // OSQP is not very accurate, use a loose tolerance.
     EXPECT_TRUE(CompareMatrices(result.GetSolution(x), -b, 1E-5));
 
-    // Now only allow one tenth of the solve time in the OSQP solver. The solver
-    // should not be able to solve the problem in time.
-    const double one_tenth_solve_time =
-        result.get_solver_details<OsqpSolver>().solve_time / 10;
+    // Now only allow one hundredth of the solve time in the OSQP solver. The
+    // solver should not be able to solve the problem in time.
+    const double one_hundredth_solve_time =
+        result.get_solver_details<OsqpSolver>().solve_time / 100.0;
     SolverOptions solver_options;
     solver_options.SetOption(osqp_solver.solver_id(), "time_limit",
-                             one_tenth_solve_time);
+                             one_hundredth_solve_time);
     osqp_solver.Solve(prog, {}, solver_options, &result);
     EXPECT_EQ(result.get_solver_details<OsqpSolver>().status_val,
               OSQP_TIME_LIMIT_REACHED);
 
     // Now set the options in prog.
     prog.SetSolverOption(osqp_solver.solver_id(), "time_limit",
-                         one_tenth_solve_time);
+                         one_hundredth_solve_time);
     osqp_solver.Solve(prog, {}, {}, &result);
     EXPECT_EQ(result.get_solver_details<OsqpSolver>().status_val,
               OSQP_TIME_LIMIT_REACHED);
@@ -302,6 +302,55 @@ GTEST_TEST(OsqpSolverTest, TestNonconvexQP) {
     TestNonconvexQP(solver, true);
   }
 }
+
+GTEST_TEST(OsqpSolverTest, VariableScaling1) {
+  // Quadractic cost and linear inequality constraints.
+  double s = 100;
+  MathematicalProgram prog;
+  auto x = prog.NewContinuousVariables<2>();
+  prog.AddLinearConstraint(2 * x(0) / s - 2 * x(1) == 2);
+  prog.AddQuadraticCost((x(0) / s + 1) * (x(0) / s + 1));
+  prog.AddQuadraticCost((x(1) + 1) * (x(1) + 1));
+
+  prog.SetVariableScaling(x(0), s);
+
+  OsqpSolver solver;
+  if (solver.available()) {
+    auto result = solver.Solve(prog);
+
+    EXPECT_TRUE(result.is_success());
+    const double tol = 1E-6;
+    EXPECT_NEAR(result.get_optimal_cost(), 0.5, tol);
+    EXPECT_TRUE(CompareMatrices(result.GetSolution(x),
+                                Eigen::Vector2d((-0.5) * s, -1.5), tol));
+  }
+}
+
+GTEST_TEST(OsqpSolverTest, VariableScaling2) {
+  // Quadratic and linear cost, together with bounding box constraints.
+  double s = 100;
+  MathematicalProgram prog;
+  auto x = prog.NewContinuousVariables<2>();
+  prog.AddBoundingBoxConstraint(
+      0.5 * s, std::numeric_limits<double>::infinity(), x(0));
+  prog.AddQuadraticCost((x(0) / s + 1) * (x(0) / s + 1));
+  prog.AddQuadraticCost(x(1) * x(1));
+  prog.AddLinearCost(2 * x(1) + 1);
+
+  prog.SetVariableScaling(x(0), s);
+
+  OsqpSolver solver;
+  if (solver.available()) {
+    auto result = solver.Solve(prog);
+
+    EXPECT_TRUE(result.is_success());
+    const double tol = 1E-6;
+    EXPECT_NEAR(result.get_optimal_cost(), 2.25, tol);
+    EXPECT_TRUE(CompareMatrices(result.GetSolution(x),
+                                Eigen::Vector2d((0.5) * s, -1), tol));
+  }
+}
+
 }  // namespace test
 }  // namespace solvers
 }  // namespace drake

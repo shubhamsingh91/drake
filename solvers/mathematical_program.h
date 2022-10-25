@@ -2,12 +2,12 @@
 
 #include <array>
 #include <cstddef>
-#include <iostream>
 #include <limits>
 #include <list>
 #include <map>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -24,7 +24,9 @@
 #include "drake/common/drake_copyable.h"
 #include "drake/common/eigen_types.h"
 #include "drake/common/polynomial.h"
-#include "drake/common/symbolic.h"
+#include "drake/common/symbolic/expression.h"
+#include "drake/common/symbolic/monomial_util.h"
+#include "drake/common/symbolic/polynomial.h"
 #include "drake/solvers/binding.h"
 #include "drake/solvers/constraint.h"
 #include "drake/solvers/cost.h"
@@ -140,7 +142,17 @@ struct assert_if_is_constraint {
  */
 class MathematicalProgram {
  public:
-  DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(MathematicalProgram)
+  /** @name Does not allow copy, move, or assignment. */
+  /** @{ */
+#ifdef DRAKE_DOXYGEN_CXX
+  // Copy constructor is private for use in implementing Clone().
+  MathematicalProgram(const MathematicalProgram&) = delete;
+#endif
+  MathematicalProgram& operator=(const MathematicalProgram&) = delete;
+  MathematicalProgram(MathematicalProgram&&) = delete;
+  MathematicalProgram& operator=(MathematicalProgram&&) = delete;
+  /** @} */
+
   using VarType = symbolic::Variable::Type;
 
   /// The optimal cost is +∞ when the problem is globally infeasible.
@@ -163,11 +175,12 @@ class MathematicalProgram {
    * - solver settings
    * - initial guess
    *
-   * However, the clone's x values will be initialized to NaN, and all internal
-   * solvers will be freshly constructed.
+   * Note that this is currently a *shallow* clone. The costs and constraints
+   * are not themselves cloned.
+   *
    * @retval new_prog. The newly constructed mathematical program.
    */
-  std::unique_ptr<MathematicalProgram> Clone() const;
+  [[nodiscard]] std::unique_ptr<MathematicalProgram> Clone() const;
 
   /**
    * Returns string representation of this program, listing the decision
@@ -179,7 +192,7 @@ class MathematicalProgram {
    * of the output.  See the tutorial `debug_mathematical_program.ipynb`
    * for more information.
    */
-  std::string to_string() const;
+  [[nodiscard]] std::string to_string() const;
 
   /**
    * Adds continuous variables, appending them to an internal vector of any
@@ -410,8 +423,10 @@ class MathematicalProgram {
    * @pre Each entry in `decision_variables` should not be a dummy variable.
    * @throws std::exception if the preconditions are not satisfied.
    */
+  // TODO(hongkai.dai): also check if decision_variables contain duplicate
+  // entries.
   void AddDecisionVariables(
-      const Eigen::Ref<const VectorXDecisionVariable>& decision_variables);
+      const Eigen::Ref<const MatrixXDecisionVariable>& decision_variables);
 
   /**
    * Returns a free polynomial in a monomial basis over @p indeterminates of a
@@ -461,67 +476,11 @@ class MathematicalProgram {
    * https://arxiv.org/abs/1706.02586
    */
   enum class NonnegativePolynomial {
-    kSos,    ///< A sum-of-squares polynomial.
-    kSdsos,  ///< A scaled-diagonally dominant sum-of-squares polynomial.
-    kDsos,   ///< A diagonally dominant sum-of-squares polynomial.
+    // We reserve the 0 value as a tactic for identifying uninitialized enums.
+    kSos = 1,    ///< A sum-of-squares polynomial.
+    kSdsos,      ///< A scaled-diagonally dominant sum-of-squares polynomial.
+    kDsos,       ///< A diagonally dominant sum-of-squares polynomial.
   };
-
-  /**
-   * Returns a pair of nonnegative polynomial p = mᵀQm and the Gramian
-   * matrix Q, where m is @p monomial_basis. Adds Q as decision variables to the
-   * program. Depending on the type of the polynomial, we will impose different
-   * constraint on Q.
-   * - if type = kSos, we impose Q being positive semidefinite.
-   * - if type = kSdsos, we impose Q being scaled diagonally dominant.
-   * - if type = kDsos, we impose Q being positive diagonally dominant.
-   * @param monomial_basis The monomial basis.
-   * @param type The type of the nonnegative polynomial.
-   * @return (p, Q) The polynomial p and the Gramian matrix Q. Q has been
-   * added as decision variables to the program.
-   */
-  std::pair<symbolic::Polynomial, MatrixXDecisionVariable>
-  NewNonnegativePolynomial(
-      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
-      NonnegativePolynomial type);
-
-  /**
-   * Overloads NewNonnegativePolynomial(), except the Gramian matrix Q is an
-   * input instead of an output.
-   * Depending on the type of the polynomial, we will impose different
-   * constraint on the Gramian matrix.
-   * - if type = kSos, we impose the Gramian matrix being positive semidefinite.
-   * - if type = kSdsos, we impose the Gramian matrix being scaled diagonally
-   *   dominant.
-   * - if type = kDsos, we impose the Gramian matrix being positive diagonally
-   *   dominant.
-   */
-  symbolic::Polynomial NewNonnegativePolynomial(
-      const Eigen::Ref<const MatrixX<symbolic::Variable>>& gramian,
-      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
-      NonnegativePolynomial type);
-
-  /**
-   * Overloads NewNonnegativePolynomial(). Instead of passing the monomial
-   * basis, we use a monomial basis that contains all monomials of @p
-   * indeterminates of total order up to @p degree / 2, hence the returned
-   * polynomial p contains all the monomials of @p indeterminates of total order
-   * up to @p degree.
-   * Depending on the type of the polynomial, we will impose different
-   * constraint on the polynomial.
-   * - if type = kSos, we impose the polynomial being SOS.
-   * - if type = kSdsos, we impose the polynomial being SDSOS.
-   * - if type = kDsos, we impose the polynomial being DSOS.
-   * @param indeterminates All the indeterminates in the polynomial p.
-   * @param degree The polynomial p will contain all the monomials up to order
-   * @p degree.
-   * @param type The type of the nonnegative polynomial.
-   * @return (p, Q) The polynomial p and the Gramian matrix Q. Q has been
-   * added as decision variables to the program.
-   * @pre @p degree is a positive even number.
-   */
-  std::pair<symbolic::Polynomial, MatrixXDecisionVariable>
-  NewNonnegativePolynomial(const symbolic::Variables& indeterminates,
-                           int degree, NonnegativePolynomial type);
 
   /** Returns a pair of a SOS polynomial p = mᵀQm and the Gramian matrix Q,
    * where m is the @p monomial basis.
@@ -529,24 +488,51 @@ class MathematicalProgram {
    * polynomial
    *   p = Q₍₀,₀₎x² + 2Q₍₁,₀₎xy + Q₍₁,₁₎y²
    * and Q.
+   * Depending on the type of the polynomial, we will impose different
+   * constraint on the polynomial.
+   * - if type = kSos, we impose the polynomial being SOS.
+   * - if type = kSdsos, we impose the polynomial being SDSOS.
+   * - if type = kDsos, we impose the polynomial being DSOS.
+   * @param gram_name The name of the gram matrix for print out.
    * @note Q is a symmetric monomial_basis.rows() x monomial_basis.rows()
    * matrix.
    */
   std::pair<symbolic::Polynomial, MatrixXDecisionVariable> NewSosPolynomial(
-      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis);
+      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
+      NonnegativePolynomial type = NonnegativePolynomial::kSos,
+      const std::string& gram_name = "S");
 
-  /** Returns a pair of a SOS polynomial p = m(x)ᵀQm(x) of degree @p degree
+  /**
+   * Overloads NewSosPolynomial, except the Gramian matrix Q is an
+   * input instead of an output.
+   */
+  symbolic::Polynomial NewSosPolynomial(
+      const Eigen::Ref<const MatrixX<symbolic::Variable>>& gramian,
+      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
+      NonnegativePolynomial type = NonnegativePolynomial::kSos);
+
+  /**
+   * Overloads NewSosPolynomial.
+   * Returns a pair of a SOS polynomial p = m(x)ᵀQm(x) of degree @p degree
    * and the Gramian matrix Q that should be PSD, where m(x) is the
    * result of calling `MonomialBasis(indeterminates, degree/2)`. For example,
    * `NewSosPolynomial({x}, 4)` returns a pair of a polynomial
    *   p = Q₍₀,₀₎x⁴ + 2Q₍₁,₀₎ x³ + (2Q₍₂,₀₎ + Q₍₁,₁₎)x² + 2Q₍₂,₁₎x + Q₍₂,₂₎
    * and Q.
+   * @param type Depending on the type of the polynomial, we will impose
+   * different constraint on the polynomial.
+   * - if type = kSos, we impose the polynomial being SOS.
+   * - if type = kSdsos, we impose the polynomial being SDSOS.
+   * - if type = kDsos, we impose the polynomial being DSOS.
+   * @param gram_name The name of the gram matrix for print out.
    *
    * @throws std::exception if @p degree is not a positive even integer.
    * @see MonomialBasis.
    */
   std::pair<symbolic::Polynomial, MatrixXDecisionVariable> NewSosPolynomial(
-      const symbolic::Variables& indeterminates, int degree);
+      const symbolic::Variables& indeterminates, int degree,
+      NonnegativePolynomial type = NonnegativePolynomial::kSos,
+      const std::string& gram_name = "S");
 
   /**
    * @anchor even_degree_nonnegative_polynomial
@@ -836,8 +822,9 @@ class MathematicalProgram {
    * @pre Each entry in new_indeterminates should not be dummy.
    * @pre Each entry in new_indeterminates should be of CONTINUOUS type.
    */
+  // TODO(hongkai.dai): check if new_indeterminates contain duplicate entries.
   void AddIndeterminates(
-      const Eigen::Ref<const VectorXIndeterminate>& new_indeterminates);
+      const Eigen::Ref<const MatrixXIndeterminate>& new_indeterminates);
 
   /**
    * Adds a callback method to visualize intermediate results of the
@@ -1156,6 +1143,25 @@ class MathematicalProgram {
   }
 
   /**
+   * Adds an L2 norm cost min |Ax+b|₂ as a linear cost min s
+   * on the slack variable s, together with a Lorentz cone constraint
+   * s ≥ |Ax+b|₂
+   * Many conic optimization solvers (Gurobi, MOSEK™, SCS, etc) natively prefers
+   * this form of linear cost + conic constraints. So if you are going to use
+   * one of these conic solvers, then add the L2 norm cost using this function
+   * instead of AddL2NormCost().
+   * @return (s, linear_cost, lorentz_cone_constraint). `s` is the slack
+   * variable (with variable name string as "slack"), `linear_cost` is the cost
+   * on `s`, and `lorentz_cone_constraint` is the constraint s≥|Ax+b|₂
+   */
+  std::tuple<symbolic::Variable, Binding<LinearCost>,
+             Binding<LorentzConeConstraint>>
+  AddL2NormCostUsingConicConstraint(
+      const Eigen::Ref<const Eigen::MatrixXd>& A,
+      const Eigen::Ref<const Eigen::VectorXd>& b,
+      const Eigen::Ref<const VectorXDecisionVariable>& vars);
+
+  /**
    * Adds a cost term in the polynomial form.
    * @param e A symbolic expression in the polynomial form.
    * @return The newly created cost and the bound variables.
@@ -1180,18 +1186,32 @@ class MathematicalProgram {
    * log(det(X)) is a concave function of X, so we can maximize it through
    * convex optimization. In order to do that, we introduce slack variables t,
    * and a lower triangular matrix Z, with the constraints
-   * ⌈X         Z⌉ is positive semidifinite.
-   * ⌊Zᵀ  diag(Z)⌋
-   * log(Z(i, i)) >= t(i)
+   *
+   *     ⌈X         Z⌉ is positive semidifinite.
+   *     ⌊Zᵀ  diag(Z)⌋
+   *
+   *     log(Z(i, i)) >= t(i)
+   *
    * and we will minimize -∑ᵢt(i).
    * @param X A symmetric positive semidefinite matrix X, whose log(det(X)) will
    * be maximized.
+   * @return (cost, t, Z) cost is -∑ᵢt(i), we also return the newly created
+   * slack variables t and the lower triangular matrix Z. Note that Z is not a
+   * matrix of symbolic::Variable but symbolic::Expression, because the
+   * upper-diagonal entries of Z are not variable, but expression 0.
    * @pre X is a symmetric matrix.
+   * @note We implicitly require that `X` being positive semidefinite (psd) (as
+   * X is the diagonal entry of the big psd matrix above). If your `X` is not
+   * necessarily psd, then don't call this function.
    * @note The constraint log(Z(i, i)) >= t(i) is imposed as an exponential cone
    * constraint. Please make sure your have a solver that supports exponential
    * cone constraint (currently SCS does).
+   * Refer to https://docs.mosek.com/modeling-cookbook/sdo.html#log-determinant
+   * for more details.
    */
-  void AddMaximizeLogDeterminantSymmetricMatrixCost(
+  std::tuple<Binding<LinearCost>, VectorX<symbolic::Variable>,
+             MatrixX<symbolic::Expression>>
+  AddMaximizeLogDeterminantCost(
       const Eigen::Ref<const MatrixX<symbolic::Expression>>& X);
 
   /**
@@ -1221,9 +1241,11 @@ class MathematicalProgram {
   //@{
   /**
    * An overloaded version of @ref maximize_geometric_mean.
+   * @return cost The added cost (note that since MathematicalProgram only
+   * minimizes the cost, the returned cost evaluates to -c * power(∏ᵢx(i), 1/n).
    * @pre A.rows() == b.rows(), A.rows() >= 2.
    */
-  void AddMaximizeGeometricMeanCost(
+  Binding<LinearCost> AddMaximizeGeometricMeanCost(
       const Eigen::Ref<const Eigen::MatrixXd>& A,
       const Eigen::Ref<const Eigen::VectorXd>& b,
       const Eigen::Ref<const VectorX<symbolic::Variable>>& x);
@@ -1234,18 +1256,24 @@ class MathematicalProgram {
    * 1/n).
    * @param c The positive coefficient of the geometric mean cost, @default
    * is 1.
+   * @return cost The added cost (note that since MathematicalProgram only
+   * minimizes the cost, the returned cost evaluates to -c * power(∏ᵢx(i), 1/n).
    * @pre x.rows() >= 2.
    * @pre c > 0.
    */
-  void AddMaximizeGeometricMeanCost(
+  Binding<LinearCost> AddMaximizeGeometricMeanCost(
       const Eigen::Ref<const VectorX<symbolic::Variable>>& x, double c = 1.0);
   //@}
 
   /**
-   * Adds a generic constraint to the program.  This should
+   * Adds a generic constraint to the program. This should
    * only be used if a more specific type of constraint is not
    * available, as it may require the use of a significantly more
    * expensive solver.
+   *
+   * @note If @p binding.evaluator()->num_constraints() == 0, then this
+   * constraint is not added into the MathematicalProgram. We return @p binding
+   * directly.
    */
   Binding<Constraint> AddConstraint(const Binding<Constraint>& binding);
 
@@ -1280,9 +1308,9 @@ class MathematicalProgram {
    * @exclude_from_pydrake_mkdoc{Not bound in pydrake.}
    */
   Binding<Constraint> AddConstraint(
-      const Eigen::Ref<const VectorX<symbolic::Expression>>& v,
-      const Eigen::Ref<const Eigen::VectorXd>& lb,
-      const Eigen::Ref<const Eigen::VectorXd>& ub);
+      const Eigen::Ref<const MatrixX<symbolic::Expression>>& v,
+      const Eigen::Ref<const Eigen::MatrixXd>& lb,
+      const Eigen::Ref<const Eigen::MatrixXd>& ub);
 
   /**
    * Add a constraint represented by a symbolic formula to the program. The
@@ -1313,17 +1341,17 @@ class MathematicalProgram {
   Binding<Constraint> AddConstraint(const symbolic::Formula& f);
 
   /**
-   * Add a constraint represented by an Eigen::Array<symbolic::Formula>
-   * to the program. A common use-case of this function is to add a constraint
-   * with the element-wise comparison between two Eigen matrices,
-   * using `A.array() <= B.array()`. See the following example.
+   * Adds a constraint represented by an Eigen::Matrix<symbolic::Formula> or
+   * Eigen::Array<symbolic::Formula> to the program. A common use-case of this
+   * function is to add a constraint with the element-wise comparison between
+   * two Eigen matrices, using `A.array() <= B.array()`. See the following
+   * example.
    *
    * @code
    *   MathematicalProgram prog;
-   *   Eigen::Matrix<double, 2, 2> A;
+   *   Eigen::Matrix<double, 2, 2> A = ...;
+   *   Eigen::Vector2d b = ...;
    *   auto x = prog.NewContinuousVariables(2, "x");
-   *   Eigen::Vector2d b;
-   *   ... // set up A and b
    *   prog.AddConstraint((A * x).array() <= b.array());
    * @endcode
    *
@@ -1338,41 +1366,14 @@ class MathematicalProgram {
    *
    * @overload Binding<Constraint> AddConstraint(const symbolic::Formula& f)
    *
-   * @tparam Derived An Eigen Array type of Formula.
-   *
-   * @exclude_from_pydrake_mkdoc{Not bound in pydrake.}
+   * @tparam Derived Eigen::Matrix or Eigen::Array with Formula as the Scalar.
    */
   template <typename Derived>
   typename std::enable_if_t<
       is_eigen_scalar_same<Derived, symbolic::Formula>::value,
       Binding<Constraint>>
-  AddConstraint(const Eigen::ArrayBase<Derived>& formulas) {
+  AddConstraint(const Eigen::DenseBase<Derived>& formulas) {
     return AddConstraint(internal::ParseConstraint(formulas));
-  }
-
-  /**
-   * Add a constraint represented by an Eigen::Matrix<symbolic::Formula>
-   * to the program.
-   *
-   * A formula in @p formulas can be of the following forms:
-   *
-   * 1. e1 <= e2
-   * 2. e1 >= e2
-   * 3. e1 == e2
-   *
-   * It throws an exception if AddConstraint(const symbolic::Formula& f)
-   * throws an exception for any f ∈ formulas.
-   *
-   * @tparam Derived An Eigen Matrix type of Formula.
-   *
-   * @pydrake_mkdoc_identifier{matrix_formula}
-   */
-  template <typename Derived>
-  typename std::enable_if_t<
-      is_eigen_scalar_same<Derived, symbolic::Formula>::value,
-      Binding<Constraint>>
-  AddConstraint(const Eigen::MatrixBase<Derived>& formulas) {
-    return AddConstraint(formulas.array());
   }
 
   /**
@@ -1486,9 +1487,9 @@ class MathematicalProgram {
    * ub</tt> includes trivial/unsatisfiable constraints.
    */
   Binding<LinearConstraint> AddLinearConstraint(
-      const Eigen::Ref<const VectorX<symbolic::Expression>>& v,
-      const Eigen::Ref<const Eigen::VectorXd>& lb,
-      const Eigen::Ref<const Eigen::VectorXd>& ub);
+      const Eigen::Ref<const MatrixX<symbolic::Expression>>& v,
+      const Eigen::Ref<const Eigen::MatrixXd>& lb,
+      const Eigen::Ref<const Eigen::MatrixXd>& ub);
 
   /**
    * Add a linear constraint represented by a symbolic formula to the
@@ -1542,23 +1543,9 @@ class MathematicalProgram {
    * throws an exception for f ∈ @p formulas.
    * @tparam Derived An Eigen Array type of Formula.
    */
-  template <typename Derived>
-  typename std::enable_if_t<
-      is_eigen_scalar_same<Derived, symbolic::Formula>::value,
-      Binding<LinearConstraint>>
-  AddLinearConstraint(const Eigen::ArrayBase<Derived>& formulas) {
-    Binding<Constraint> binding = internal::ParseConstraint(formulas);
-    Constraint* constraint = binding.evaluator().get();
-    if (dynamic_cast<LinearConstraint*>(constraint)) {
-      return AddConstraint(
-          internal::BindingDynamicCast<LinearConstraint>(binding));
-    } else {
-      std::stringstream oss;
-      oss << "Formulas are non-linear.";
-      throw std::runtime_error(
-          "AddLinearConstraint called but formulas are non-linear");
-    }
-  }
+  Binding<LinearConstraint> AddLinearConstraint(
+      const Eigen::Ref<const Eigen::Array<
+          symbolic::Formula, Eigen::Dynamic, Eigen::Dynamic>>& formulas);
 
   /**
    * Adds linear equality constraints referencing potentially a
@@ -1791,13 +1778,13 @@ class MathematicalProgram {
    * decision variables.
    * @param lb The lower bound.
    * @param ub The upper bound.
-   * @param vars Will imposes constraint lb(i) <= vars(i) <= ub(i).
+   * @param vars Will imposes constraint lb(i, j) <= vars(i, j) <= ub(i, j).
    * @return The newly constructed BoundingBoxConstraint.
    */
   Binding<BoundingBoxConstraint> AddBoundingBoxConstraint(
-      const Eigen::Ref<const Eigen::VectorXd>& lb,
-      const Eigen::Ref<const Eigen::VectorXd>& ub,
-      const Eigen::Ref<const VectorXDecisionVariable>& vars);
+      const Eigen::Ref<const Eigen::MatrixXd>& lb,
+      const Eigen::Ref<const Eigen::MatrixXd>& ub,
+      const Eigen::Ref<const MatrixXDecisionVariable>& vars);
 
   /**
    * Adds bounds for a single variable.
@@ -2272,6 +2259,29 @@ class MathematicalProgram {
     return AddRotatedLorentzConeConstraint(A, b, vars);
   }
 
+  /** Add the convex quadratic constraint 0.5xᵀQx + bᵀx + c <= 0 as a
+   * rotated Lorentz cone constraint [rᵀx+s, 1, Px+q] is in the rotated Lorentz
+   * cone. When solving the optimization problem using conic solvers (like
+   * Mosek, Gurobi, SCS, etc), it is numerically preferrable to impose the
+   * convex quadratic constraint as rotated Lorentz cone constraint. See
+   * https://docs.mosek.com/latest/capi/prob-def-quadratic.html#a-recommendation
+   * @throw exception if this quadratic constraint is not convex (Q is not
+   * positive semidefinite)
+   * @param Q The Hessian of the quadratic constraint. Should be positive
+   * semidefinite.
+   * @param b The linear coefficient of the quadratic constraint.
+   * @param c The constant term of the quadratic constraint.
+   * @param vars x in the documentation above.
+   * @param psd_tol If the minimal eigenvalue of Q is smaller than -psd_tol,
+   * then throw an exception. @default = 0.
+   */
+  Binding<RotatedLorentzConeConstraint>
+  AddQuadraticAsRotatedLorentzConeConstraint(
+      const Eigen::Ref<const Eigen::MatrixXd>& Q,
+      const Eigen::Ref<const Eigen::VectorXd>& b, double c,
+      const Eigen::Ref<const VectorX<symbolic::Variable>>& vars,
+      double psd_tol = 0.);
+
   /**
    * Adds a linear complementarity constraints referencing a subset of
    * the decision variables.
@@ -2306,9 +2316,10 @@ class MathematicalProgram {
    * of the decision variables (defined in the vars parameter).
    */
   Binding<Constraint> AddPolynomialConstraint(
-      const VectorXPoly& polynomials,
+      const Eigen::Ref<const MatrixX<Polynomiald>>& polynomials,
       const std::vector<Polynomiald::VarType>& poly_vars,
-      const Eigen::VectorXd& lb, const Eigen::VectorXd& ub,
+      const Eigen::Ref<const Eigen::MatrixXd>& lb,
+      const Eigen::Ref<const Eigen::MatrixXd>& ub,
       const VariableRefList& vars) {
     return AddPolynomialConstraint(polynomials, poly_vars, lb, ub,
                                    ConcatenateVariableRefList(vars));
@@ -2319,9 +2330,10 @@ class MathematicalProgram {
    * of the decision variables (defined in the vars parameter).
    */
   Binding<Constraint> AddPolynomialConstraint(
-      const VectorXPoly& polynomials,
+      const Eigen::Ref<const MatrixX<Polynomiald>>& polynomials,
       const std::vector<Polynomiald::VarType>& poly_vars,
-      const Eigen::VectorXd& lb, const Eigen::VectorXd& ub,
+      const Eigen::Ref<const Eigen::MatrixXd>& lb,
+      const Eigen::Ref<const Eigen::MatrixXd>& ub,
       const Eigen::Ref<const VectorXDecisionVariable>& vars);
 
   /**
@@ -2501,28 +2513,39 @@ class MathematicalProgram {
    * that is, @p p can be decomposed into `mᵀQm`, where m is the @p
    * monomial_basis. It returns the coefficients matrix Q, which is positive
    * semidefinite.
+   * @param type The type of the polynomial. @default is kSos, but the user can
+   * also use kSdsos and kDsos. Refer to NonnegativePolynomial for details on
+   * different types of sos polynomials.
+   * @param gram_name The name of the gram matrix for print out.
    *
    * @note It calls `Reparse` to enforce `p` to have this MathematicalProgram's
    * indeterminates if necessary.
    */
   MatrixXDecisionVariable AddSosConstraint(
       const symbolic::Polynomial& p,
-      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis);
+      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
+      NonnegativePolynomial type = NonnegativePolynomial::kSos,
+      const std::string& gram_name = "S");
 
   /**
    * Adds constraints that a given polynomial @p p is a sums-of-squares (SOS),
    * that is, @p p can be decomposed into `mᵀQm`, where m is a monomial
    * basis selected from the sparsity of @p p. It returns a pair of constraint
    * bindings expressing:
+   *  - The coefficients matrix Q, which is positive semidefinite.
+   *  - The monomial basis m.
+   * @param type The type of the polynomial. @default is kSos, but the user can
+   * also use kSdsos and kDsos. Refer to NonnegativePolynomial for the details
+   * on different type of sos polynomials.
+   * @param gram_name The name of the gram matrix for print out.
    *
    * @note It calls `Reparse` to enforce `p` to have this MathematicalProgram's
    * indeterminates if necessary.
-   *
-   *  - The coefficients matrix Q, which is positive semidefinite.
-   *  - The monomial basis m.
    */
   std::pair<MatrixXDecisionVariable, VectorX<symbolic::Monomial>>
-  AddSosConstraint(const symbolic::Polynomial& p);
+  AddSosConstraint(const symbolic::Polynomial& p,
+                   NonnegativePolynomial type = NonnegativePolynomial::kSos,
+                   const std::string& gram_name = "S");
 
   /**
    * Adds constraints that a given symbolic expression @p e is a
@@ -2531,22 +2554,29 @@ class MathematicalProgram {
    * polynomial with respect to `indeterminates()` in this mathematical
    * program. It returns the coefficients matrix Q, which is positive
    * semidefinite.
+   * @param type Refer to NonnegativePolynomial class documentation.
+   * @param gram_name The name of the gram matrix for print out.
    */
   MatrixXDecisionVariable AddSosConstraint(
       const symbolic::Expression& e,
-      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis);
+      const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
+      NonnegativePolynomial type = NonnegativePolynomial::kSos,
+      const std::string& gram_name = "S");
 
   /**
    * Adds constraints that a given symbolic expression @p e is a sums-of-squares
    * (SOS), that is, @p e can be decomposed into `mᵀQm`. Note that it decomposes
    * @p e into a polynomial with respect to `indeterminates()` in this
    * mathematical program. It returns a pair expressing:
-   *
    *  - The coefficients matrix Q, which is positive semidefinite.
    *  - The monomial basis m.
+   * @param type Refer to NonnegativePolynomial class documentation.
+   * @param gram_name The name of the gram matrix for print out.
    */
   std::pair<MatrixXDecisionVariable, VectorX<symbolic::Monomial>>
-  AddSosConstraint(const symbolic::Expression& e);
+  AddSosConstraint(const symbolic::Expression& e,
+                   NonnegativePolynomial type = NonnegativePolynomial::kSos,
+                   const std::string& gram_name = "S");
 
   /**
    * Constraining that two polynomials are the same (i.e., they have the same
@@ -2567,8 +2597,9 @@ class MathematicalProgram {
    * @note It calls `Reparse` to enforce `p1` and `p2` to have this
    * MathematicalProgram's indeterminates.
    */
-  void AddEqualityConstraintBetweenPolynomials(const symbolic::Polynomial& p1,
-                                               const symbolic::Polynomial& p2);
+  std::vector<Binding<LinearEqualityConstraint>>
+  AddEqualityConstraintBetweenPolynomials(const symbolic::Polynomial& p1,
+                                          const symbolic::Polynomial& p2);
 
   /**
    * Adds the exponential cone constraint that
@@ -2610,7 +2641,8 @@ class MathematicalProgram {
    * @pre @p decision_variable has been registered in the optimization program.
    * @throws std::exception if the pre condition is not satisfied.
    */
-  double GetInitialGuess(const symbolic::Variable& decision_variable) const;
+  [[nodiscard]] double GetInitialGuess(
+      const symbolic::Variable& decision_variable) const;
 
   /**
    * Gets the initial guess for some variables.
@@ -2621,12 +2653,10 @@ class MathematicalProgram {
   template <typename Derived>
   typename std::enable_if_t<
       std::is_same_v<typename Derived::Scalar, symbolic::Variable>,
-      Eigen::Matrix<double, Derived::RowsAtCompileTime,
-                    Derived::ColsAtCompileTime>>
+      MatrixLikewise<double, Derived>>
   GetInitialGuess(
       const Eigen::MatrixBase<Derived>& decision_variable_mat) const {
-    Eigen::Matrix<double, Derived::RowsAtCompileTime,
-                  Derived::ColsAtCompileTime>
+    MatrixLikewise<double, Derived>
         decision_variable_values(decision_variable_mat.rows(),
                                  decision_variable_mat.cols());
     for (int i = 0; i < decision_variable_mat.rows(); ++i) {
@@ -2868,27 +2898,28 @@ class MathematicalProgram {
    * @returns Vector of all cost bindings.
    * @note The group ordering may change as more cost types are added.
    */
-  std::vector<Binding<Cost>> GetAllCosts() const;
+  [[nodiscard]] std::vector<Binding<Cost>> GetAllCosts() const;
 
   /**
    * Getter returning all linear constraints (both linear equality and
    * inequality constraints).
    * @returns Vector of all linear constraint bindings.
    */
-  std::vector<Binding<LinearConstraint>> GetAllLinearConstraints() const;
+  [[nodiscard]] std::vector<Binding<LinearConstraint>> GetAllLinearConstraints()
+      const;
 
   /**
    * Getter for returning all constraints.
    * @returns Vector of all constraint bindings.
    * @note The group ordering may change as more constraint types are added.
    */
-  std::vector<Binding<Constraint>> GetAllConstraints() const;
+  [[nodiscard]] std::vector<Binding<Constraint>> GetAllConstraints() const;
 
   /** Getter for number of variables in the optimization program */
-  int num_vars() const { return decision_variables_.rows(); }
+  int num_vars() const { return decision_variables_.size(); }
 
   /** Gets the number of indeterminates in the optimization program */
-  int num_indeterminates() const { return indeterminates_.rows(); }
+  int num_indeterminates() const { return indeterminates_.size(); }
 
   /** Getter for the initial guess */
   const Eigen::VectorXd& initial_guess() const { return x_initial_guess_; }
@@ -2900,7 +2931,8 @@ class MathematicalProgram {
    * @pre{@p var is a decision variable in the mathematical program, otherwise
    * this function throws a runtime error.}
    */
-  int FindDecisionVariableIndex(const symbolic::Variable& var) const;
+  [[nodiscard]] int FindDecisionVariableIndex(
+      const symbolic::Variable& var) const;
 
   /**
    * Returns the indices of the decision variables. Internally the solvers
@@ -2911,7 +2943,7 @@ class MathematicalProgram {
    * @pre{@p vars are decision variables in the mathematical program, otherwise
    * this function throws a runtime error.}
    */
-  std::vector<int> FindDecisionVariableIndices(
+  [[nodiscard]] std::vector<int> FindDecisionVariableIndices(
       const Eigen::Ref<const VectorXDecisionVariable>& vars) const;
 
   /** Returns the index of the indeterminate. Internally a solver
@@ -2921,7 +2953,8 @@ class MathematicalProgram {
    * @pre @p var is a indeterminate in the mathematical program,
    * otherwise this function throws a runtime error.
    */
-  size_t FindIndeterminateIndex(const symbolic::Variable& var) const;
+  [[nodiscard]] size_t FindIndeterminateIndex(
+      const symbolic::Variable& var) const;
 
   /**
    * Evaluates the value of some binding, for some input value for all
@@ -3037,9 +3070,10 @@ class MathematicalProgram {
    * of ALL of the decision variables in this program.
    * @throws std::exception if the size of `prog_var_vals` is invalid.
    */
-  bool CheckSatisfied(const Binding<Constraint>& binding,
-                      const Eigen::Ref<const Eigen::VectorXd>& prog_var_vals,
-                      double tol = 1e-6) const;
+  [[nodiscard]] bool CheckSatisfied(
+      const Binding<Constraint>& binding,
+      const Eigen::Ref<const Eigen::VectorXd>& prog_var_vals,
+      double tol = 1e-6) const;
 
   /**
    * Evaluates CheckSatisfied for the all of the constraints in @p binding using
@@ -3048,16 +3082,17 @@ class MathematicalProgram {
    * @throws std::exception if the size of `prog_var_vals` is invalid.
    * @pydrake_mkdoc_identifier{vector}
    */
-  bool CheckSatisfied(const std::vector<Binding<Constraint>>& bindings,
-                      const Eigen::Ref<const Eigen::VectorXd>& prog_var_vals,
-                      double tol = 1e-6) const;
+  [[nodiscard]] bool CheckSatisfied(
+      const std::vector<Binding<Constraint>>& bindings,
+      const Eigen::Ref<const Eigen::VectorXd>& prog_var_vals,
+      double tol = 1e-6) const;
 
   /**
    * Evaluates CheckSatisfied for the constraint in @p binding at the initial
    * guess.
    */
-  bool CheckSatisfiedAtInitialGuess(const Binding<Constraint>& binding,
-                                    double tol = 1e-6) const;
+  [[nodiscard]] bool CheckSatisfiedAtInitialGuess(
+      const Binding<Constraint>& binding, double tol = 1e-6) const;
 
   /**
    * Evaluates CheckSatisfied for the all of the constraints in @p bindings at
@@ -3065,26 +3100,34 @@ class MathematicalProgram {
    * @returns true iff all of the constraints are satisfied.
    * @pydrake_mkdoc_identifier{vector}
    */
-  bool CheckSatisfiedAtInitialGuess(
+  [[nodiscard]] bool CheckSatisfiedAtInitialGuess(
       const std::vector<Binding<Constraint>>& bindings,
       double tol = 1e-6) const;
 
   /** Getter for all decision variables in the program. */
-  const VectorXDecisionVariable& decision_variables() const {
-    return decision_variables_;
+  Eigen::Map<const VectorX<symbolic::Variable>> decision_variables() const {
+    return Eigen::Map<const VectorX<symbolic::Variable>>(
+        decision_variables_.data(), decision_variables_.size());
   }
 
   /** Getter for the decision variable with index @p i in the program. */
   const symbolic::Variable& decision_variable(int i) const {
-    return decision_variables_(i);
+    DRAKE_ASSERT(i >= 0);
+    DRAKE_ASSERT(i < static_cast<int>(decision_variables_.size()));
+    return decision_variables_[i];
   }
 
   /** Getter for all indeterminates in the program. */
-  const VectorXIndeterminate& indeterminates() const { return indeterminates_; }
+  Eigen::Map<const VectorX<symbolic::Variable>> indeterminates() const {
+    return Eigen::Map<const VectorX<symbolic::Variable>>(
+        indeterminates_.data(), indeterminates_.size());
+  }
 
   /** Getter for the indeterminate with index @p i in the program. */
   const symbolic::Variable& indeterminate(int i) const {
-    return indeterminates_(i);
+    DRAKE_ASSERT(i >= 0);
+    DRAKE_ASSERT(i < static_cast<int>(indeterminates_.size()));
+    return indeterminates_[i];
   }
 
   /// Getter for the required capability on the solver, given the
@@ -3124,7 +3167,8 @@ class MathematicalProgram {
    * unscaled. Namely, MathematicalProgramResult::GetSolution(var) returns the
    * value of var, not var_value / scaling_factor.
    *
-   * The feature of variable scaling is currently only implemented for SNOPT.
+   * The feature of variable scaling is currently only implemented for SNOPT and
+   * OSQP.
    */
   //@{
   /**
@@ -3137,14 +3181,20 @@ class MathematicalProgram {
   }
 
   /**
-   * Setter for the scaling of decision variables starting from index @p
-   * idx_start to @p idx_end (including @p idx_end).
+   * Setter for the scaling @p s of decision variable @p var.
    * @param var the decision variable to be scaled.
    * @param s scaling factor (must be positive).
    *
    * See @ref variable_scaling "Variable scaling" for more information.
    */
   void SetVariableScaling(const symbolic::Variable& var, double s);
+
+  /**
+   * Clears the scaling factors for decision variables.
+   *
+   * See @ref variable_scaling "Variable scaling" for more information.
+   */
+  void ClearVariableScaling() { var_scaling_map_.clear(); }
   //@}
 
   /**
@@ -3194,6 +3244,9 @@ class MathematicalProgram {
   //@}
 
  private:
+  // Copy constructor is private for use in implementing Clone().
+  explicit MathematicalProgram(const MathematicalProgram&);
+
   static void AppendNanToEnd(int new_var_size, Eigen::VectorXd* vector);
 
   // Removes a binding of a constraint/constraint, @p removal, from a given
@@ -3219,10 +3272,14 @@ class MathematicalProgram {
   // in the optimization program.
   std::unordered_map<symbolic::Variable::Id, int> decision_variable_index_{};
 
-  VectorXDecisionVariable decision_variables_;
+  // Use std::vector here instead of Eigen::VectorX because std::vector performs
+  // much better when pushing new variables into the container.
+  std::vector<symbolic::Variable> decision_variables_;
 
   std::unordered_map<symbolic::Variable::Id, int> indeterminates_index_;
-  VectorXIndeterminate indeterminates_;
+  // Use std::vector here instead of Eigen::VectorX because std::vector performs
+  // much better when pushing new variables into the container.
+  std::vector<symbolic::Variable> indeterminates_;
 
   std::vector<Binding<VisualizationCallback>> visualization_callbacks_;
 
@@ -3276,18 +3333,15 @@ class MathematicalProgram {
       num_new_vars = rows * (rows + 1) / 2;
     }
     DRAKE_ASSERT(static_cast<int>(names.size()) == num_new_vars);
-    decision_variables_.conservativeResize(num_vars() + num_new_vars,
-                                           Eigen::NoChange);
     int row_index = 0;
     int col_index = 0;
     for (int i = 0; i < num_new_vars; ++i) {
-      decision_variables_(num_vars() - num_new_vars + i) =
-          symbolic::Variable(names[i], type);
-      const int new_var_index = num_vars() - num_new_vars + i;
-      decision_variable_index_.insert(std::pair<int, int>(
-          decision_variables_(new_var_index).get_id(), new_var_index));
+      decision_variables_.emplace_back(names[i], type);
+      const int new_var_index = decision_variables_.size() - 1;
+      decision_variable_index_.insert(std::make_pair(
+          decision_variables_[new_var_index].get_id(), new_var_index));
       decision_variable_matrix(row_index, col_index) =
-          decision_variables_(num_vars() - num_new_vars + i);
+          decision_variables_[new_var_index];
       // If the matrix is not symmetric, then store the variable in column
       // major.
       if (!is_symmetric) {
@@ -3323,24 +3377,21 @@ class MathematicalProgram {
   template <typename T>
   void NewIndeterminates_impl(
       const T& names, Eigen::Ref<MatrixXIndeterminate> indeterminates_matrix) {
-    int rows = indeterminates_matrix.rows();
-    int cols = indeterminates_matrix.cols();
-    int num_new_vars = rows * cols;
+    const int rows = indeterminates_matrix.rows();
+    const int cols = indeterminates_matrix.cols();
+    const int num_new_vars = rows * cols;
 
     DRAKE_ASSERT(static_cast<int>(names.size()) == num_new_vars);
-    indeterminates_.conservativeResize(indeterminates_.rows() + num_new_vars,
-                                       Eigen::NoChange);
     int row_index = 0;
     int col_index = 0;
     for (int i = 0; i < num_new_vars; ++i) {
-      indeterminates_(indeterminates_.rows() - num_new_vars + i) =
-          symbolic::Variable(names[i]);
+      indeterminates_.emplace_back(names[i]);
 
-      const int new_var_index = indeterminates_.rows() - num_new_vars + i;
-      indeterminates_index_.insert(std::pair<size_t, size_t>(
-          indeterminates_(new_var_index).get_id(), new_var_index));
+      const int new_var_index = indeterminates_.size() - 1;
+      indeterminates_index_.insert(std::make_pair(
+          indeterminates_[new_var_index].get_id(), new_var_index));
       indeterminates_matrix(row_index, col_index) =
-          indeterminates_(indeterminates_.rows() - num_new_vars + i);
+          indeterminates_[new_var_index];
 
       // store the indeterminate in column major.
       if (row_index + 1 < rows) {
@@ -3356,54 +3407,20 @@ class MathematicalProgram {
    * Given a matrix of decision variables, checks if every entry in the
    * matrix is a decision variable in the program; throws a runtime
    * error if any variable is not a decision variable in the program.
-   * @tparam Derived An Eigen::Matrix type of symbolic Variable.
-   * @param vars A matrix of variables.
+   * @param vars A vector of variables.
    */
-  template <typename Derived>
-  typename std::enable_if_t<
-      std::is_same_v<typename Derived::Scalar, symbolic::Variable>>
-  CheckIsDecisionVariable(const Eigen::MatrixBase<Derived>& vars) const {
-    for (int i = 0; i < vars.rows(); ++i) {
-      for (int j = 0; j < vars.cols(); ++j) {
-        if (decision_variable_index_.find(vars(i, j).get_id()) ==
-            decision_variable_index_.end()) {
-          std::ostringstream oss;
-          oss << vars(i, j)
-              << " is not a decision variable of the mathematical program.\n";
-          throw std::runtime_error(oss.str());
-        }
-      }
-    }
-  }
+  void CheckIsDecisionVariable(const VectorXDecisionVariable& vars) const;
 
   /*
    * Ensure a binding is valid *before* adding it to the program.
    * @pre The binding has not yet been registered.
    * @pre The decision variables have been registered.
    * @throws std::exception if the binding is invalid.
+   * @returns true if the binding is non-trivial (>= 1 output); when false,
+   *   this program should avoid adding the binding to its internal state.
    */
   template <typename C>
-  void CheckBinding(const Binding<C>& binding) const {
-    // TODO(eric.cousineau): In addition to identifiers, hash bindings by
-    // their constraints and their variables, to prevent duplicates.
-    // TODO(eric.cousineau): Once bindings have identifiers (perhaps
-    // retrofitting `description`), ensure that they have unique names.
-    CheckIsDecisionVariable(binding.variables());
-  }
-
-  // Adds a constraint represented by a set of symbolic formulas to the
-  // program.
-  //
-  // Precondition: ∀ f ∈ formulas, is_relational(f).
-  Binding<Constraint> AddConstraint(
-      const std::set<symbolic::Formula>& formulas);
-
-  // Adds a linear-equality constraint represented by a set of symbolic formulas
-  // to the program.
-  //
-  // Precondition: ∀ f ∈ formulas, is_equal_to(f).
-  Binding<LinearEqualityConstraint> AddLinearEqualityConstraint(
-      const std::set<symbolic::Formula>& formulas);
+  [[nodiscard]] bool CheckBinding(const Binding<C>& binding) const;
 
   /*
    * Adds new variables to MathematicalProgram.
@@ -3441,6 +3458,8 @@ class MathematicalProgram {
   symbolic::Polynomial NewFreePolynomialImpl(
       const symbolic::Variables& indeterminates, int degree,
       const std::string& coeff_name,
+      // TODO(jwnimmer-tri) Fix this to not depend on all of "monomial_util.h"
+      // for just this tiny enum (e.g., use a bare int == 0,1,2 instead).
       symbolic::internal::DegreeType degree_type);
 
   std::unordered_map<int, double> var_scaling_map_{};

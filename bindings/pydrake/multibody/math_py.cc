@@ -10,17 +10,6 @@
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/multibody/math/spatial_algebra.h"
 
-#pragma GCC diagnostic push
-// Similar to `symbolic_py.cc`, we must suppress `-Wself-assign-overloaded` to
-/// use operators for Apple's clang>=10. However, different than
-// `symbolic_py.cc`, we must also enable this for clang 9 on Bionic, as is
-// triggered on `py::self -= py::self` for some reason.
-// It is fine to use this at a file-wide scope since in practice we only
-// encounter these warnings in bindings due to pybind11's operators.
-#if (__clang__) && (__clang_major__ >= 9)
-#pragma GCC diagnostic ignored "-Wself-assign-overloaded"
-#endif
-
 namespace drake {
 namespace pydrake {
 
@@ -103,6 +92,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
 
   m.doc() = "Bindings for multibody math.";
 
+  // N.B. Some classes define `__repr__` in `_math_extra.py`.
+
   {
     using Class = SpatialVelocity<T>;
     constexpr auto& cls_doc = doc.SpatialVelocity;
@@ -115,16 +106,18 @@ void DoScalarDependentDefinitions(py::module m, T) {
             py::arg("w"), py::arg("v"), cls_doc.ctor.doc_2args)
         .def(
             py::init<const Vector6<T>&>(), py::arg("V"), cls_doc.ctor.doc_1args)
-        .def("Shift", &Class::Shift, py::arg("p_BpBq_E"), cls_doc.Shift.doc)
         .def("ComposeWithMovingFrameVelocity",
-            &Class::ComposeWithMovingFrameVelocity, py::arg("p_PoBo_E"),
-            py::arg("V_PB_E"), cls_doc.ComposeWithMovingFrameVelocity.doc)
+            &Class::ComposeWithMovingFrameVelocity,
+            py::arg("position_of_moving_frame"),
+            py::arg("velocity_of_moving_frame"),
+            cls_doc.ComposeWithMovingFrameVelocity.doc)
+        .def("Shift", &Class::Shift, py::arg("offset"), cls_doc.Shift.doc)
         .def("dot",
             overload_cast_explicit<T, const SpatialForce<T>&>(&Class::dot),
-            py::arg("F_Q_E"), cls_doc.dot.doc_1args_F_Q_E)
+            py::arg("force"), cls_doc.dot.doc_1args_force)
         .def("dot",
             overload_cast_explicit<T, const SpatialMomentum<T>&>(&Class::dot),
-            py::arg("L_NBp_E"), cls_doc.dot.doc_1args_L_NBp_E);
+            py::arg("momentum"), cls_doc.dot.doc_1args_momentum);
     cls.attr("__matmul__") = cls.attr("dot");
     AddValueInstantiation<Class>(m);
     // Some ports need `Value<std::vector<Class>>`.
@@ -142,8 +135,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
             py::arg("h"), py::arg("l"), cls_doc.ctor.doc_2args)
         .def(
             py::init<const Vector6<T>&>(), py::arg("L"), cls_doc.ctor.doc_1args)
-        .def("Shift", &Class::Shift, py::arg("p_BpBq_E"), cls_doc.Shift.doc)
-        .def("dot", &Class::dot, py::arg("V_IBp_E"), cls_doc.dot.doc);
+        .def("Shift", &Class::Shift, py::arg("offset"), cls_doc.Shift.doc)
+        .def("dot", &Class::dot, py::arg("velocity"), cls_doc.dot.doc);
     cls.attr("__matmul__") = cls.attr("dot");
     AddValueInstantiation<Class>(m);
     // Some ports need `Value<std::vector<Class>>`.
@@ -161,16 +154,20 @@ void DoScalarDependentDefinitions(py::module m, T) {
             py::arg("alpha"), py::arg("a"), cls_doc.ctor.doc_2args)
         .def(
             py::init<const Vector6<T>&>(), py::arg("A"), cls_doc.ctor.doc_1args)
+        .def("ShiftWithZeroAngularVelocity",
+            &Class::ShiftWithZeroAngularVelocity, py::arg("offset"),
+            cls_doc.ShiftWithZeroAngularVelocity.doc)
         .def("Shift",
             overload_cast_explicit<Class, const Vector3<T>&, const Vector3<T>&>(
                 &Class::Shift),
-            py::arg("p_PoQ_E"), py::arg("w_WP_E"), cls_doc.Shift.doc_2args)
-        .def("Shift",
-            overload_cast_explicit<Class, const Vector3<T>&>(&Class::Shift),
-            py::arg("p_PoQ_E"), cls_doc.Shift.doc_1args)
+            py::arg("offset"), py::arg("angular_velocity_of_this_frame"),
+            cls_doc.Shift.doc)
         .def("ComposeWithMovingFrameAcceleration",
-            &Class::ComposeWithMovingFrameAcceleration, py::arg("p_PB_E"),
-            py::arg("w_WP_E"), py::arg("V_PB_E"), py::arg("A_PB_E"),
+            &Class::ComposeWithMovingFrameAcceleration,
+            py::arg("position_of_moving_frame"),
+            py::arg("angular_velocity_of_this_frame"),
+            py::arg("velocity_of_moving_frame"),
+            py::arg("acceleration_of_moving_frame"),
             cls_doc.ComposeWithMovingFrameAcceleration.doc);
     AddValueInstantiation<Class>(m);
     // Some ports need `Value<std::vector<Class>>`.
@@ -190,10 +187,10 @@ void DoScalarDependentDefinitions(py::module m, T) {
             py::init<const Vector6<T>&>(), py::arg("F"), cls_doc.ctor.doc_1args)
         .def("Shift",
             overload_cast_explicit<Class, const Vector3<T>&>(&Class::Shift),
-            py::arg("p_BpBq_E"), cls_doc.Shift.doc_1args)
-        .def("dot",
-            overload_cast_explicit<T, const SpatialVelocity<T>&>(&Class::dot),
-            py::arg("V_IBp_E"), cls_doc.dot.doc);
+            py::arg("offset"), cls_doc.Shift.doc_1args);
+    cls.def("dot",
+        overload_cast_explicit<T, const SpatialVelocity<T>&>(&Class::dot),
+        py::arg("velocity"), cls_doc.dot.doc);
     cls.attr("__matmul__") = cls.attr("dot");
     AddValueInstantiation<Class>(m);
     // Some ports need `Value<std::vector<Class>>`.
@@ -213,9 +210,9 @@ PYBIND11_MODULE(math, m) {
   m.doc() = "Bindings for multibody math.";
   type_visit([m](auto dummy) { DoScalarDependentDefinitions(m, dummy); },
       CommonScalarPack{});
+
+  ExecuteExtraPythonCode(m);
 }
 
 }  // namespace pydrake
 }  // namespace drake
-
-#pragma GCC diagnostic pop

@@ -121,15 +121,14 @@ class DoorHingeTest : public ::testing::Test {
     const VectorX<double> init_state =
         (VectorX<double>(3) << 0.0, 0.0, angular_rate).finished();
 
-    const systems::InitialValueProblem<double>::OdeContext default_values(
-        kInitialTime, init_state, kDefaultParameters);
-    systems::InitialValueProblem<double> ivp(energy_ode, default_values);
+    systems::InitialValueProblem<double> ivp(energy_ode, init_state,
+                                             kDefaultParameters);
     ivp.get_mutable_integrator().set_target_accuracy(kIntegrationAccuracy);
 
     // Get the integration time.
     DRAKE_THROW_UNLESS(angular_rate != 0);
     const double integration_time = std::abs(target_angle / angular_rate);
-    const VectorX<double> result = ivp.Solve(integration_time);
+    const VectorX<double> result = ivp.Solve(kInitialTime, integration_time);
 
     // Confirm the velocity is not changed.
     DRAKE_THROW_UNLESS(result[2] == angular_rate);
@@ -200,16 +199,17 @@ TEST_F(DoorHingeTest, CloneTest) {
   config.motion_threshold = 0.125;
 
   BuildDoorHinge(config);
-  MultibodyPlant<AutoDiffXd> plant_ad(plant());
+  std::unique_ptr<MultibodyPlant<AutoDiffXd>> plant_ad =
+      systems::System<double>::ToAutoDiffXd(plant());
 
-  EXPECT_EQ(plant_ad.num_positions(), 1);
-  EXPECT_EQ(plant_ad.num_velocities(), 1);
-  EXPECT_EQ(plant_ad.num_actuated_dofs(), 0);
+  EXPECT_EQ(plant_ad->num_positions(), 1);
+  EXPECT_EQ(plant_ad->num_velocities(), 1);
+  EXPECT_EQ(plant_ad->num_actuated_dofs(), 0);
 
   // Should include gravity and the door hinge.
-  EXPECT_EQ(plant_ad.num_force_elements(), 2);
+  EXPECT_EQ(plant_ad->num_force_elements(), 2);
   const DoorHinge<AutoDiffXd>& door_hinge_ad =
-      plant_ad.GetForceElement<DoorHinge>(ForceElementIndex(1));
+      plant_ad->GetForceElement<DoorHinge>(ForceElementIndex(1));
 
   EXPECT_EQ(door_hinge_ad.config().spring_zero_angle_rad,
             config.spring_zero_angle_rad);

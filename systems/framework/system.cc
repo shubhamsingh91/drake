@@ -4,6 +4,10 @@
 #include <ios>
 #include <regex>
 #include <set>
+#include <string_view>
+#include <vector>
+
+#include <fmt/format.h>
 
 #include "drake/common/unused.h"
 #include "drake/systems/framework/system_visitor.h"
@@ -216,23 +220,6 @@ const T& System<T>::EvalNonConservativePower(const Context<T>& context) const {
   const CacheEntry& entry =
       this->get_cache_entry(nonconservative_power_cache_index_);
   return entry.Eval<T>(context);
-}
-
-// Deprecated
-template <typename T>
-Eigen::VectorBlock<const VectorX<T>> System<T>::EvalEigenVectorInput(
-    const Context<T>& context, int port_index) const {
-  ValidateContext(context);
-  if (port_index < 0)
-    ThrowNegativePortIndex(__func__, port_index);
-  const InputPortIndex port(port_index);
-
-  const BasicVector<T>* const basic_value =
-      EvalBasicVectorInputImpl(__func__, context, port);
-  if (basic_value == nullptr)
-    ThrowCantEvaluateInputPort(__func__, port);
-
-  return basic_value->get_value();
 }
 
 template <typename T>
@@ -664,9 +651,18 @@ const InputPort<T>& System<T>::GetInputPort(
       return get_input_port(i);
     }
   }
-  throw std::logic_error("System " + GetSystemName() +
-                         " does not have an input port named " +
-                         port_name);
+  std::vector<std::string_view> port_names;
+  port_names.reserve(num_input_ports());
+  for (InputPortIndex i{0}; i < num_input_ports(); i++) {
+    port_names.push_back(get_input_port_base(i).get_name());
+  }
+  if (port_names.empty()) {
+    port_names.push_back("it has no input ports");
+  }
+  throw std::logic_error(fmt::format(
+      "System {} does not have an input port named {} "
+      "(valid port names: {})",
+      GetSystemName(), port_name, fmt::join(port_names, ", ")));
 }
 
 template <typename T>
@@ -706,9 +702,18 @@ const OutputPort<T>& System<T>::GetOutputPort(
       return get_output_port(i);
     }
   }
-  throw std::logic_error("System " + GetSystemName() +
-                         " does not have an output port named " +
-                         port_name);
+  std::vector<std::string_view> port_names;
+  port_names.reserve(num_output_ports());
+  for (OutputPortIndex i{0}; i < num_output_ports(); i++) {
+    port_names.push_back(get_output_port_base(i).get_name());
+  }
+  if (port_names.empty()) {
+    port_names.push_back("it has no output ports");
+  }
+  throw std::logic_error(fmt::format(
+      "System {} does not have an output port named {} "
+      "(valid port names: {})",
+      GetSystemName(), port_name, fmt::join(port_names, ", ")));
 }
 
 template <typename T>

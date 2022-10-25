@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include "drake/common/symbolic.h"
+#include "drake/common/symbolic/expression.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
 #include "drake/common/test_utilities/is_dynamic_castable.h"
 #include "drake/common/test_utilities/symbolic_test_util.h"
@@ -16,6 +16,7 @@
 #include "drake/math/autodiff_gradient.h"
 #include "drake/solvers/constraint.h"
 #include "drake/solvers/create_cost.h"
+#include "drake/solvers/evaluator_base.h"
 #include "drake/solvers/test/generic_trivial_costs.h"
 
 using std::cout;
@@ -32,6 +33,7 @@ using Eigen::Matrix;
 using Eigen::Matrix2d;
 using Eigen::Matrix3d;
 using Eigen::Ref;
+using Eigen::RowVector2d;
 using drake::Vector1d;
 using Eigen::Vector2d;
 using Eigen::Vector3d;
@@ -284,6 +286,11 @@ GTEST_TEST(TestQuadraticCost, ConvexCost) {
   // matrix psd check.
   cost->UpdateCoefficients(-Q, b, 0.1, true);
   EXPECT_TRUE(cost->is_convex());
+
+  // Call Make2NormSquaredCost.
+  cost = Make2NormSquaredCost((Eigen::Matrix2d() << 1, 2, 3, 4).finished(),
+                              Eigen::Vector2d(2, 3));
+  EXPECT_TRUE(cost->is_convex());
 }
 
 // TODO(eric.cousineau): Move QuadraticErrorCost and L2NormCost tests here from
@@ -361,6 +368,75 @@ GTEST_TEST(testCost, testFunctionCost) {
   VerifyFunctionCost(make_unique<GenericTrivialCost2>(), x);
 }
 
+GTEST_TEST(TestL1NormCost, Eval) {
+  Matrix<double, 2, 4> A;
+  // clang-format off
+  A << .32,  2.0, 1.3, -4.,
+       2.3, -2.0, 7.1, 1.3;
+  // clang-format on
+  const Vector2d b{.42, -3.2};
+
+  L1NormCost cost(A, b);
+  EXPECT_TRUE(CompareMatrices(A, cost.A()));
+  EXPECT_TRUE(CompareMatrices(b, cost.b()));
+
+  const Vector4d x0{5.2, 3.4, -1.3, 2.1};
+  const Vector2d z = A * x0 + b;
+
+  // Test double.
+  {
+    VectorXd y;
+    cost.Eval(x0, &y);
+    EXPECT_NEAR(z.cwiseAbs().sum(), y[0], 1e-15);
+  }
+
+  // Test AutoDiffXd.
+  {
+    const Vector4<AutoDiffXd> x = math::InitializeAutoDiff(x0);
+    VectorX<AutoDiffXd> y;
+    cost.Eval(x, &y);
+    EXPECT_NEAR(z.cwiseAbs().sum(), math::ExtractValue(y)[0], 1e-15);
+    const Matrix<double, 1, 4> grad_expected =
+        z.cwiseQuotient(z.cwiseAbs()).transpose() * A;
+    EXPECT_TRUE(
+        CompareMatrices(math::ExtractGradient(y), grad_expected, 1e-15));
+  }
+
+  // Test Symbolic.
+  {
+    auto x = symbolic::MakeVectorVariable(4, "x");
+    VectorX<Expression> y;
+    cost.Eval(x, &y);
+    symbolic::Environment env;
+    env.insert(x, x0);
+    EXPECT_NEAR(z.cwiseAbs().sum(), y[0].Evaluate(env), 1e-14);
+  }
+}
+
+GTEST_TEST(TestL1NormCost, UpdateCoefficients) {
+  L1NormCost cost(Matrix2d::Identity(), Vector2d::Zero());
+
+  cost.UpdateCoefficients(Matrix<double, 4, 2>::Identity(), Vector4d::Zero());
+  EXPECT_EQ(cost.A().rows(), 4);
+  EXPECT_EQ(cost.b().rows(), 4);
+
+  // Can't change the number of variables.
+  EXPECT_THROW(cost.UpdateCoefficients(Matrix3d::Identity(), Vector3d::Zero()),
+               std::exception);
+
+  // A and b must have the same number of rows.
+  EXPECT_THROW(cost.UpdateCoefficients(Matrix3d::Identity(), Vector4d::Zero()),
+               std::exception);
+}
+
+GTEST_TEST(TestL1NormCost, Display) {
+  L1NormCost cost(Matrix2d::Identity(), Vector2d::Ones());
+  std::ostringstream os;
+  cost.Display(os, symbolic::MakeVectorContinuousVariable(2, "x"));
+  EXPECT_EQ(fmt::format("{}", os.str()),
+            "L1NormCost (abs((1 + x(0))) + abs((1 + x(1))))");
+}
+
 GTEST_TEST(TestL2NormCost, Eval) {
   Matrix<double, 2, 4> A;
   // clang-format off
@@ -388,7 +464,7 @@ GTEST_TEST(TestL2NormCost, Eval) {
     const Vector4<AutoDiffXd> x = math::InitializeAutoDiff(x0);
     VectorX<AutoDiffXd> y;
     cost.Eval(x, &y);
-    EXPECT_NEAR(z.norm(), math::ExtractValue(y)[0], 1e-16);
+    EXPECT_NEAR(z.norm(), math::ExtractValue(y)[0], 1e-15);
     const Matrix<double, 1, 4> grad_expected =
         (x0.transpose() * A.transpose() * A + b.transpose() * A) / (z.norm());
     EXPECT_TRUE(CompareMatrices(math::ExtractGradient(y),
@@ -402,7 +478,7 @@ GTEST_TEST(TestL2NormCost, Eval) {
     cost.Eval(x, &y);
     symbolic::Environment env;
     env.insert(x, x0);
-    EXPECT_NEAR(z.norm(), y[0].Evaluate(env), 1e-15);
+    EXPECT_NEAR(z.norm(), y[0].Evaluate(env), 1e-14);
   }
 }
 
@@ -430,6 +506,235 @@ GTEST_TEST(TestL2NormCost, Display) {
   cost.Display(os, symbolic::MakeVectorContinuousVariable(2, "x"));
   EXPECT_EQ(fmt::format("{}", os.str()),
             "L2NormCost sqrt((pow((1 + x(0)), 2) + pow((1 + x(1)), 2)))");
+}
+
+GTEST_TEST(TestLInfNormCost, Eval) {
+  Matrix<double, 2, 4> A;
+  // clang-format off
+  A << .32,  2.0, 1.3, -4.,
+       2.3, -2.0, 7.1, 1.3;
+  // clang-format on
+  const Vector2d b{.42, -3.2};
+
+  LInfNormCost cost(A, b);
+  EXPECT_TRUE(CompareMatrices(A, cost.A()));
+  EXPECT_TRUE(CompareMatrices(b, cost.b()));
+
+  const Vector4d x0{5.2, 3.4, -1.3, 2.1};
+  const Vector2d z = A * x0 + b;
+
+  // Test double.
+  {
+    VectorXd y;
+    cost.Eval(x0, &y);
+    EXPECT_NEAR(z.cwiseAbs().maxCoeff(), y[0], 1e-16);
+  }
+
+  // Test AutoDiffXd.
+  {
+    const Vector4<AutoDiffXd> x = math::InitializeAutoDiff(x0);
+    VectorX<AutoDiffXd> y;
+    cost.Eval(x, &y);
+    int max_row;
+    EXPECT_NEAR(z.cwiseAbs().maxCoeff(&max_row), math::ExtractValue(y)[0],
+                1e-15);
+    const Matrix<double, 1, 4> grad_expected =
+        (z.cwiseQuotient(z.cwiseAbs()))(max_row)*A.row(max_row);
+    EXPECT_TRUE(
+        CompareMatrices(math::ExtractGradient(y), grad_expected, 1e-15));
+  }
+
+  // Test Symbolic.
+  {
+    auto x = symbolic::MakeVectorVariable(4, "x");
+    VectorX<Expression> y;
+    cost.Eval(x, &y);
+    symbolic::Environment env;
+    env.insert(x, x0);
+    EXPECT_NEAR(z.cwiseAbs().maxCoeff(), y[0].Evaluate(env), 1e-14);
+  }
+}
+
+GTEST_TEST(TestLInfNormCost, UpdateCoefficients) {
+  LInfNormCost cost(Matrix2d::Identity(), Vector2d::Zero());
+
+  cost.UpdateCoefficients(Matrix<double, 4, 2>::Identity(), Vector4d::Zero());
+  EXPECT_EQ(cost.A().rows(), 4);
+  EXPECT_EQ(cost.b().rows(), 4);
+
+  // Can't change the number of variables.
+  EXPECT_THROW(cost.UpdateCoefficients(Matrix3d::Identity(), Vector3d::Zero()),
+               std::exception);
+
+  // A and b must have the same number of rows.
+  EXPECT_THROW(cost.UpdateCoefficients(Matrix3d::Identity(), Vector4d::Zero()),
+               std::exception);
+}
+
+GTEST_TEST(TestLInfNormCost, Display) {
+  LInfNormCost cost(Matrix2d::Identity(), Vector2d::Ones());
+  std::ostringstream os;
+  cost.Display(os, symbolic::MakeVectorContinuousVariable(2, "x"));
+  EXPECT_EQ(fmt::format("{}", os.str()),
+            "LInfNormCost max(abs((1 + x(0))), abs((1 + x(1))))");
+}
+
+GTEST_TEST(TestPerspectiveQuadraticCost, Eval) {
+  Matrix<double, 2, 4> A;
+  // clang-format off
+  A << .32,  2.0, 1.3, -4.,
+       2.3, -2.0, 7.1, 1.3;
+  // clang-format on
+  const Vector2d b{.42, -3.2};
+
+  PerspectiveQuadraticCost cost(A, b);
+  EXPECT_TRUE(CompareMatrices(A, cost.A()));
+  EXPECT_TRUE(CompareMatrices(b, cost.b()));
+
+  const Vector4d x0{5.2, 3.4, -1.3, 2.1};
+  const Vector2d z = A * x0 + b;
+
+  // Test double.
+  {
+    VectorXd y;
+    cost.Eval(x0, &y);
+    EXPECT_DOUBLE_EQ(z(1) * z(1) / z(0), y[0]);
+  }
+
+  // Test AutoDiffXd.
+  {
+    const Vector4<AutoDiffXd> x = math::InitializeAutoDiff(x0);
+    VectorX<AutoDiffXd> y;
+    cost.Eval(x, &y);
+    EXPECT_DOUBLE_EQ(z(1) * z(1) / z(0), math::ExtractValue(y)[0]);
+    const Matrix<double, 1, 4> grad_expected =
+        RowVector2d(-(z(1) * z(1)) / (z(0) * z(0)), 2 * z(1) / z(0)) * A;
+    EXPECT_TRUE(
+        CompareMatrices(math::ExtractGradient(y), grad_expected, 1e-13));
+  }
+
+  // Test Symbolic.
+  {
+    auto x = symbolic::MakeVectorVariable(4, "x");
+    VectorX<Expression> y;
+    cost.Eval(x, &y);
+    symbolic::Environment env;
+    env.insert(x, x0);
+    EXPECT_DOUBLE_EQ(z(1) * z(1) / z(0), y[0].Evaluate(env));
+  }
+}
+
+GTEST_TEST(TestPerspectiveQuadraticCost, UpdateCoefficients) {
+  PerspectiveQuadraticCost cost(Matrix2d::Identity(), Vector2d::Zero());
+
+  cost.UpdateCoefficients(Matrix<double, 4, 2>::Identity(), Vector4d::Zero());
+  EXPECT_EQ(cost.A().rows(), 4);
+  EXPECT_EQ(cost.b().rows(), 4);
+
+  // Can't change the number of variables.
+  EXPECT_THROW(cost.UpdateCoefficients(Matrix3d::Identity(), Vector3d::Zero()),
+               std::exception);
+
+  // A and b must have the same number of rows.
+  EXPECT_THROW(cost.UpdateCoefficients(Matrix3d::Identity(), Vector4d::Zero()),
+               std::exception);
+}
+
+GTEST_TEST(TestPerspectiveQuadraticCost, Display) {
+  PerspectiveQuadraticCost cost(Matrix2d::Identity(), Vector2d::Ones());
+  std::ostringstream os;
+  cost.Display(os, symbolic::MakeVectorContinuousVariable(2, "x"));
+  EXPECT_EQ(fmt::format("{}", os.str()),
+            "PerspectiveQuadraticCost (pow((1 + x(1)), 2) / (1 + x(0)))");
+}
+
+class Evaluator2In1Out : public EvaluatorBase {
+ public:
+  Evaluator2In1Out() : EvaluatorBase(1, 2) {}
+
+  ~Evaluator2In1Out() override {}
+
+ private:
+  template <typename T, typename S>
+  void DoEvalGeneric(const Eigen::Ref<const VectorX<T>>& x,
+                     VectorX<S>* y) const {
+    y->resize(1);
+    using std::sin;
+    (*y)(0) = x(0) + sin(x(1));
+  }
+
+  void DoEval(const Eigen::Ref<const Eigen::VectorXd>& x,
+              VectorXd* y) const override {
+    this->DoEvalGeneric(x, y);
+  }
+
+  void DoEval(const Eigen::Ref<const AutoDiffVecXd>& x,
+              AutoDiffVecXd* y) const override {
+    this->DoEvalGeneric(x, y);
+  }
+
+  void DoEval(const Eigen::Ref<const VectorX<symbolic::Variable>>& x,
+              VectorX<symbolic::Expression>* y) const override {
+    this->DoEvalGeneric(x, y);
+  }
+};
+
+class Evaluator3In2Out : public EvaluatorBase {
+ public:
+  Evaluator3In2Out() : EvaluatorBase(3, 2) {}
+
+  ~Evaluator3In2Out() override {}
+
+ private:
+  template <typename T, typename S>
+  void DoEvalGeneric(const Eigen::Ref<const VectorX<T>>& x,
+                     VectorX<S>* y) const {
+    y->resize(3);
+    using std::sin;
+    (*y)(0) = x(0) + 3 * x(1) * x(0);
+    (*y)(1) = sin(x(0) + x(1));
+    (*y)(2) = 2 + x(0);
+  }
+
+  void DoEval(const Eigen::Ref<const Eigen::VectorXd>& x,
+              VectorXd* y) const override {
+    this->DoEvalGeneric(x, y);
+  }
+
+  void DoEval(const Eigen::Ref<const AutoDiffVecXd>& x,
+              AutoDiffVecXd* y) const override {
+    this->DoEvalGeneric(x, y);
+  }
+
+  void DoEval(const Eigen::Ref<const VectorX<symbolic::Variable>>& x,
+              VectorX<symbolic::Expression>* y) const override {
+    this->DoEvalGeneric(x, y);
+  }
+};
+
+GTEST_TEST(EvaluatorCost, Eval) {
+  // Test with a single-output evaluator.
+  auto evaluator_2in_1out = std::make_shared<Evaluator2In1Out>();
+  EvaluatorCost<Evaluator2In1Out> dut1(evaluator_2in_1out);
+  Eigen::Vector2d x1(0.2, 0.3);
+  VectorXd y1;
+  dut1.Eval(x1, &y1);
+  Eigen::VectorXd y1_expected;
+  evaluator_2in_1out->Eval(x1, &y1_expected);
+  EXPECT_TRUE(CompareMatrices(y1, y1_expected));
+
+  // Test a linear transformation of the evaluator output.
+  auto evaluator_3in_2out = std::make_shared<Evaluator3In2Out>();
+  const Eigen::Vector3d a(1, 2, 3);
+  const double b = 4;
+  EvaluatorCost<Evaluator3In2Out> dut2(evaluator_3in_2out, a, b);
+  const Eigen::Vector2d x2(2, 3);
+  Eigen::VectorXd y2;
+  dut2.Eval(x2, &y2);
+  Eigen::VectorXd evaluator2_y;
+  evaluator_3in_2out->Eval(x2, &evaluator2_y);
+  ASSERT_EQ(y2.rows(), 1);
+  EXPECT_NEAR(y2(0), a.dot(evaluator2_y) + b, 1E-12);
 }
 
 }  // anonymous namespace

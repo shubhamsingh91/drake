@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -45,35 +46,14 @@ namespace internal {
 
 // TODO(DamrongGuoy): Handle the case that the line is parallel to the plane.
 template <typename T>
-Vector3<T> SurfaceVolumeIntersector<T>::CalcIntersection(
-    const Vector3<T>& p_FA, const Vector3<T>& p_FB,
-    const PosedHalfSpace<double>& H_F) {
+Vector3<T> CalcIntersection(const Vector3<T>& p_FA, const Vector3<T>& p_FB,
+                            const PosedHalfSpace<T>& H_F) {
   const T a = H_F.CalcSignedDistance(p_FA);
   const T b = H_F.CalcSignedDistance(p_FB);
-  // We require that A and B classify in opposite directions (one inside and one
-  // outside). Outside has a strictly positive distance, inside is non-positive.
-  // We confirm that their product is non-positive and that at least one of the
-  // values is positive -- they can't both be zero. This prevents b - a becoming
-  // zero and the corresponding division by zero.
-  DRAKE_ASSERT(a * b <= 0 && (a > 0 || b > 0));
+  DRAKE_DEMAND(a != b);
   const T wa = b / (b - a);
-  const T wb = T(1.0) - wa;  // Enforce a + b = 1.
+  const T wb = T(1.0) - wa;  // Enforce wa + wb = 1, i.e., wb = -a/(b-a)
   const Vector3<T> intersection = wa * p_FA + wb * p_FB;
-  // Empirically we found that numeric_limits<double>::epsilon() 2.2e-16 is
-  // too small.
-  const T kEps(1e-14);
-  // TODO(SeanCurtis-TRI): Consider refactoring this fuzzy test *into*
-  //  PosedHalfSpace if it turns out we need to perform this test at other
-  //  sites. Also, the precision that works depends on the size of the triangles
-  //  in play. Generally, as long as the triangles are no larger than unit size
-  //  this should be fine.
-  // TODO(SeanCurtis-TRI): This probably shouldn't be executed in release
-  //  builds. This type of test is best suited for a unit test (do we trust this
-  //  math or not?)
-  // Verify that the intersection point is on the plane of the half space.
-  using std::abs;
-  DRAKE_DEMAND(abs(H_F.CalcSignedDistance(convert_to_double(intersection))) <
-               kEps);
   return intersection;
   // Justification.
   // 1. We set up the weights wa and wb such that wa + wb = 1, which
@@ -84,7 +64,6 @@ Vector3<T> SurfaceVolumeIntersector<T>::CalcIntersection(
   //      sdf(wa * A + wb * B)
   //      = N.dot(wa * A + wb * B) + d
   //      = wa * N.dot(A) + wb * N.dot(B) + d
-  //      = b * N.dot(A)/(b - a) + a * N.dot(B)/(a - b) + d
   //      = b * N.dot(A)/(b - a) - a * N.dot(B)/(b - a) + d
   //      = (b * N.dot(A) - a * N.dot(B) + (b - a) * d) / (b - a)
   //      = (b * (N.dot(A) + d) - a * (N.dot(B) + d)) / (b-a)
@@ -94,10 +73,9 @@ Vector3<T> SurfaceVolumeIntersector<T>::CalcIntersection(
 }
 
 template <typename T>
-void SurfaceVolumeIntersector<T>::ClipPolygonByHalfSpace(
-    const std::vector<Vector3<T>>& input_vertices_F,
-    const PosedHalfSpace<double>& H_F,
-    std::vector<Vector3<T>>* output_vertices_F) {
+void ClipPolygonByHalfSpace(const std::vector<Vector3<T>>& input_vertices_F,
+                            const PosedHalfSpace<T>& H_F,
+                            std::vector<Vector3<T>>* output_vertices_F) {
   DRAKE_ASSERT(output_vertices_F != nullptr);
   // Note: this is the inner loop of a modified Sutherland-Hodgman algorithm for
   // clipping a polygon.
@@ -138,8 +116,7 @@ void SurfaceVolumeIntersector<T>::ClipPolygonByHalfSpace(
 }
 
 template <typename T>
-void SurfaceVolumeIntersector<T>::RemoveDuplicateVertices(
-    std::vector<Vector3<T>>* polygon) {
+void RemoveNearlyDuplicateVertices(std::vector<Vector3<T>>* polygon) {
   DRAKE_ASSERT(polygon != nullptr);
 
   // TODO(SeanCurtis-TRI): The resulting polygon depends on the order of the
@@ -149,8 +126,7 @@ void SurfaceVolumeIntersector<T>::RemoveDuplicateVertices(
   //  The sequence A''AA' would be reduced to A''A.
   //  In all three cases, the exact same polygon is defined on input, but the
   //  output is different. This should be documented and/or fixed.
-  if (polygon->size() <= 1)
-    return;
+  if (polygon->size() <= 1) return;
 
   auto near = [](const Vector3<T>& p, const Vector3<T>& q) -> bool {
     // TODO(SeanCurtis-TRI): This represents 5-6 bits of loss. Confirm that a
@@ -190,9 +166,14 @@ void SurfaceVolumeIntersector<T>::RemoveDuplicateVertices(
   DRAKE_ASSERT(polygon->size() != 2 || !near((*polygon)[0], (*polygon)[1]));
 }
 
-template <typename T>
-const std::vector<Vector3<T>>&
-SurfaceVolumeIntersector<T>::ClipTriangleByTetrahedron(
+template <typename MeshBuilder, typename BvType>
+SurfaceVolumeIntersector<MeshBuilder, BvType>::~SurfaceVolumeIntersector() =
+    default;
+
+template <typename MeshBuilder, typename BvType>
+const std::vector<
+    Vector3<typename SurfaceVolumeIntersector<MeshBuilder, BvType>::T>>&
+SurfaceVolumeIntersector<MeshBuilder, BvType>::ClipTriangleByTetrahedron(
     int element, const VolumeMesh<double>& volume_M, int face,
     const TriangleSurfaceMesh<double>& surface_N,
     const math::RigidTransform<T>& X_MN) {
@@ -245,12 +226,12 @@ SurfaceVolumeIntersector<T>::ClipTriangleByTetrahedron(
   std::vector<Vector3<T>>* in_M = polygon_M;
   std::vector<Vector3<T>>* out_M = &(polygon_[1]);
   for (auto& face_vertex : faces) {
-    const Vector3<double>& p_MA = p_MVs[face_vertex[0]];
-    const Vector3<double>& p_MB = p_MVs[face_vertex[1]];
-    const Vector3<double>& p_MC = p_MVs[face_vertex[2]];
+    const Vector3<T>& p_MA = p_MVs[face_vertex[0]].cast<T>();
+    const Vector3<T>& p_MB = p_MVs[face_vertex[1]].cast<T>();
+    const Vector3<T>& p_MC = p_MVs[face_vertex[2]].cast<T>();
     // We'll allow the PosedHalfSpace to normalize our vector.
-    const Vector3<double> normal_M = (p_MB - p_MA).cross(p_MC - p_MA);
-    PosedHalfSpace<double> half_space_M(normal_M, p_MA);
+    const Vector3<T> normal_M = (p_MB - p_MA).cross(p_MC - p_MA);
+    PosedHalfSpace<T> half_space_M(normal_M, p_MA);
     // Intersects the output polygon by the half space of each face of the
     // tetrahedron.
     ClipPolygonByHalfSpace(*in_M, half_space_M, out_M);
@@ -263,10 +244,10 @@ SurfaceVolumeIntersector<T>::ClipTriangleByTetrahedron(
   //  ClipPolygonByHalfSpace().
 
   // Remove possible duplicate vertices from ClipPolygonByHalfSpace().
-  RemoveDuplicateVertices(polygon_M);
+  RemoveNearlyDuplicateVertices(polygon_M);
   if (polygon_M->size() < 3) {
-    // RemoveDuplicateVertices() may have shrunk the polygon down to one or
-    // two vertices, so we empty the polygon.
+    // RemoveNearlyDuplicateVertices() may have shrunk the polygon down to
+    // one or two vertices, so we empty the polygon.
     polygon_M->clear();
   }
 
@@ -278,121 +259,120 @@ SurfaceVolumeIntersector<T>::ClipTriangleByTetrahedron(
   return *polygon_M;
 }
 
-template <typename T>
-bool SurfaceVolumeIntersector<T>::IsFaceNormalAlongPressureGradient(
-    const VolumeMeshFieldLinear<double, double>& volume_field_M,
-    const TriangleSurfaceMesh<double>& surface_N,
-    const math::RigidTransform<double>& X_MN,
-    int tet_index, int tri_index) {
+template <typename MeshBuilder, typename BvType>
+bool SurfaceVolumeIntersector<MeshBuilder, BvType>::
+    IsFaceNormalAlongPressureGradient(
+        const VolumeMeshFieldLinear<double, double>& volume_field_M,
+        const TriangleSurfaceMesh<double>& surface_N,
+        const math::RigidTransform<double>& X_MN, int tet_index,
+        int tri_index) {
   const Vector3<double> grad_p_M = volume_field_M.EvaluateGradient(tet_index);
+  // TODO(SeanCurtis-TRI) If we pass in an *unnormalized* vector, we can
+  //  reduce the number of square roots. Currently, we produce the *unit*
+  //  gradient normal n̂ and the triangle face normal f̂ (we normalize this vector
+  //  to correct for rounding error that creeps in from rotations). We use the
+  //  unit vectors so that we can compute cos(θ) = f̂⋅n̂. However, we could
+  //  compute the following instead:
+  //
+  //      cos(θ) = f⃗/|f⃗|⋅n⃗/|n⃗|
+  //      cos(θ) = f⃗⋅n⃗/(|f⃗||n⃗|)
+  //      cos(θ) = f⃗⋅n⃗/√(|f⃗|²|n⃗|²)
+  //
+  //  Two square roots become one square root.
   return IsFaceNormalInNormalDirection(grad_p_M.normalized(), surface_N,
                                        tri_index, X_MN.rotation());
 }
 
-template <typename T>
-void SurfaceVolumeIntersector<T>::SampleVolumeFieldOnSurface(
+template <typename MeshBuilder, typename BvType>
+void SurfaceVolumeIntersector<MeshBuilder, BvType>::SampleVolumeFieldOnSurface(
     const VolumeMeshFieldLinear<double, double>& volume_field_M,
-    const Bvh<Obb, VolumeMesh<double>>& bvh_M,
+    const Bvh<BvType, VolumeMesh<double>>& bvh_M,
     const TriangleSurfaceMesh<double>& surface_N,
     const Bvh<Obb, TriangleSurfaceMesh<double>>& bvh_N,
     const math::RigidTransform<T>& X_MN,
-    ContactPolygonRepresentation representation,
-    std::unique_ptr<TriangleSurfaceMesh<T>>* surface_MN_M,
-    std::unique_ptr<TriangleSurfaceMeshFieldLinear<T, T>>* e_MN,
-    std::vector<Vector3<T>>* grad_eM_Ms) {
-  DRAKE_DEMAND(surface_MN_M != nullptr);
-  DRAKE_DEMAND(e_MN != nullptr);
-  DRAKE_DEMAND(grad_eM_Ms != nullptr);
-  grad_eM_Ms->clear();
+    const bool filter_face_normal_along_field_gradient) {
+  // Builds the intersection mesh represented in M's frame.
+  MeshBuilder builder_M;
+  const math::RigidTransform<double>& X_MN_d = convert_to_double(X_MN);
 
-  std::vector<SurfaceTriangle> surface_faces;
-  std::vector<Vector3<T>> surface_vertices_M;
-  std::vector<T> surface_e;
-  const VolumeMesh<double>& mesh_M = volume_field_M.mesh();
-  // We know that each contact polygon has at most 7 vertices because
-  // each surface triangle is clipped by four half-spaces of the four
-  // triangular faces of a tetrahedron.
-  std::vector<int> contact_polygon;
-  contact_polygon.reserve(7);
+  std::vector<std::pair<int, int>> candidate_tet_tri_pairs;
+  bvh_M.Collide(bvh_N, X_MN_d,
+                [&candidate_tet_tri_pairs](
+                    int tet_index, int tri_index) -> BvttCallbackResult {
+                  candidate_tet_tri_pairs.emplace_back(tet_index, tri_index);
+                  return BvttCallbackResult::Continue;
+                });
 
-  const math::RigidTransform<double> X_MN_d = convert_to_double(X_MN);
-  auto callback = [&volume_field_M, &surface_N, &surface_faces,
-                   &surface_vertices_M, &surface_e, &mesh_M, &X_MN_d, &X_MN,
-                   &contact_polygon, grad_eM_Ms, representation,
-                   this](int tet_index, int tri_index) -> BvttCallbackResult {
+  for (const auto& [tet_index, tri_index] : candidate_tet_tri_pairs) {
+    CalcContactPolygon(volume_field_M, surface_N, X_MN, X_MN_d, &builder_M,
+                       filter_face_normal_along_field_gradient, tet_index,
+                       tri_index);
+  }
+
+  if (builder_M.num_faces() == 0) return;
+  std::tie(mesh_M_, field_M_) = builder_M.MakeMeshAndField();
+}
+
+template <typename MeshBuilder, typename BvType>
+void SurfaceVolumeIntersector<MeshBuilder, BvType>::CalcContactPolygon(
+    const VolumeMeshFieldLinear<double, double>& volume_field_M,
+    const TriangleSurfaceMesh<double>& surface_N,
+    const math::RigidTransform<T>& X_MN,
+    const math::RigidTransform<double>& X_MN_d, MeshBuilder* builder_M,
+    const bool filter_face_normal_along_field_gradient, const int tet_index,
+    const int tri_index) {
+  const VolumeMesh<double>& vol_mesh_M = volume_field_M.mesh();
+
+  if (filter_face_normal_along_field_gradient) {
     if (!this->IsFaceNormalAlongPressureGradient(
             volume_field_M, surface_N, X_MN_d, tet_index, tri_index)) {
-      return BvttCallbackResult::Continue;
+      return;
     }
+  }
 
-    // TODO(SeanCurtis-TRI): This redundantly transforms surface mesh vertex
-    //  positions. Specifically, each vertex will be transformed M times (once
-    //  per tetrahedron). Even with broadphase culling, this vertex will get
-    //  transformed once for each tet-tri pair where the tri is incidental
-    //  to the vertex and the tet-tri pair can't be conservatively culled.
-    //  This is O(mn), where m is the number of faces incident to the vertex
-    //  and n is the number of tet BVs that overlap this triangle BV. However,
-    //  if the broadphase culling determines the surface and volume are
-    //  disjoint regions, *no* vertices will be transformed. Unclear what the
-    //  best balance for best average performance.
-    const std::vector<Vector3<T>>& polygon_vertices_M =
-        this->ClipTriangleByTetrahedron(tet_index, mesh_M, tri_index, surface_N,
-                                        X_MN);
+  // TODO(SeanCurtis-TRI): This redundantly transforms surface mesh vertex
+  //  positions. Specifically, each vertex will be transformed M times (once
+  //  per tetrahedron). Even with broadphase culling, this vertex will get
+  //  transformed once for each tet-tri pair where the tri is incidental
+  //  to the vertex and the tet-tri pair can't be conservatively culled.
+  //  This is O(mn), where m is the number of faces incident to the vertex
+  //  and n is the number of tet BVs that overlap this triangle BV. However,
+  //  if the broadphase culling determines the surface and volume are
+  //  disjoint regions, *no* vertices will be transformed. Unclear what the
+  //  best balance for best average performance.
+  const std::vector<Vector3<T>>& polygon_vertices_M =
+      this->ClipTriangleByTetrahedron(tet_index, vol_mesh_M, tri_index,
+                                      surface_N, X_MN);
 
-    const int poly_vertex_count = static_cast<int>(polygon_vertices_M.size());
-    if (poly_vertex_count < 3) return BvttCallbackResult::Continue;
+  if (polygon_vertices_M.size() < 3) return;
 
-    const int num_previous_vertices = surface_vertices_M.size();
-    if (representation == ContactPolygonRepresentation::kCentroidSubdivision) {
-      // Add the new polygon vertices to the mesh vertices and construct a
-      // polygon from the vertex indices.
-      contact_polygon.clear();
-      for (int i = 0; i < poly_vertex_count; ++i) {
-        contact_polygon.emplace_back(surface_vertices_M.size());
-        surface_vertices_M.emplace_back(polygon_vertices_M[i]);
-      }
-    }
-    const Vector3<T> nhat_M =
-        X_MN.rotation() * surface_N.face_normal(tri_index).cast<T>();
+  // Add the vertices to the builder (with corresponding field values) and
+  // construct index-based polygon representation.
+  polygon_vertex_indices_.clear();
+  for (const auto& p_MV : polygon_vertices_M) {
+    polygon_vertex_indices_.push_back(builder_M->AddVertex(
+        p_MV, volume_field_M.EvaluateCartesian(tet_index, p_MV)));
+  }
 
-    size_t old_count = surface_faces.size();
-    switch (representation) {
-      case ContactPolygonRepresentation::kCentroidSubdivision:
-        AddPolygonToMeshData(contact_polygon, nhat_M, &surface_faces,
-                             &surface_vertices_M);
-        break;
-      case ContactPolygonRepresentation::kSingleTriangle:
-        AddPolygonToMeshDataAsOneTriangle(polygon_vertices_M, nhat_M,
-                                          &surface_faces, &surface_vertices_M);
-        break;
-    }
-    // TODO(SeanCurtis-TRI) Consider rolling this operation into
-    // AddPolygonToMeshData to eliminate the extra pass through triangles.
-    const Vector3<double>& grad_eMi_M =
-        volume_field_M.EvaluateGradient(tet_index);
-    for (size_t i = old_count; i < surface_faces.size(); ++i) {
-      grad_eM_Ms->push_back(grad_eMi_M.cast<T>());
-    }
+  const Vector3<T> nhat_M =
+      X_MN.rotation() * surface_N.face_normal(tri_index).template cast<T>();
+  // The gradient of the field in the volume mesh is *also* the
+  // gradient of the field on the contact surface. That's not
+  // generally true, but is for the special case of compliant-rigid case.
+  // So, we use it both for AddPolygon() as grad_e_MN_M and as grad_e_M when
+  // we store it per-face below.
+  const Vector3<T> grad_e_MN_M = volume_field_M.EvaluateGradient(tet_index);
+  const int num_new_faces =
+      builder_M->AddPolygon(polygon_vertex_indices_, nhat_M, grad_e_MN_M);
 
-    const int num_current_vertices = surface_vertices_M.size();
-    // Calculate values of the pressure field at the new vertices.
-    for (int v = num_previous_vertices; v < num_current_vertices; ++v) {
-      const Vector3<T>& r_MV = surface_vertices_M[v];
-      const T pressure = volume_field_M.EvaluateCartesian(tet_index, r_MV);
-      surface_e.push_back(pressure);
-    }
-    return BvttCallbackResult::Continue;
-  };
-  bvh_M.Collide(bvh_N, X_MN_d, callback);
-
-  DRAKE_DEMAND(surface_vertices_M.size() == surface_e.size());
-  if (surface_faces.empty()) return;
-
-  *surface_MN_M = std::make_unique<TriangleSurfaceMesh<T>>(
-      std::move(surface_faces), std::move(surface_vertices_M));
-  const bool calculate_gradient = false;
-  *e_MN = std::make_unique<TriangleSurfaceMeshFieldLinear<T, T>>(
-      std::move(surface_e), surface_MN_M->get(), calculate_gradient);
+  // TODO(SeanCurtis-TRI) This represents a *second* iteration on the vertices
+  //  of the polygon. Rolling this into the builder would allow us to reduce
+  //  the loops.
+  // Store the constituent gradient values from the volume mesh for
+  // each face in the contact surface.
+  for (int i = 0; i < num_new_faces; ++i) {
+    this->grad_eM_Ms_.push_back(grad_e_MN_M);
+  }
 }
 
 template <typename T>
@@ -404,70 +384,71 @@ ComputeContactSurfaceFromSoftVolumeRigidSurface(
     const TriangleSurfaceMesh<double>& mesh_R,
     const Bvh<Obb, TriangleSurfaceMesh<double>>& bvh_R,
     const math::RigidTransform<T>& X_WR,
-    ContactPolygonRepresentation representation) {
-  // TODO(SeanCurtis-TRI): This function is insufficiently templated. Generally,
-  //  there are three types of scalars: the pose scalar, the mesh field *value*
-  //  scalar, and the mesh vertex-position scalar. However, short term, it is
-  //  probably unnecessary to distinguish all three here. If we assume that this
-  //  function is *only* called to find the contact surface between two declared
-  //  geometries, then the volume mesh values and vertex positions will always
-  //  be in double. However, even dividing between pose and mesh scalars has
-  //  *huge* downstream implications on how the meshes and mesh fields are
-  //  defined. We're deferring this work by simply disallowing invocation of
-  //  this method on AutoDiffXd (see below). It compiles, but throws.
-  //  See issue #14136.
+    HydroelasticContactRepresentation representation) {
+  auto process_intersection =
+      [&X_WS, id_S,
+       id_R](auto&& intersector_in) -> std::unique_ptr<ContactSurface<T>> {
+    if (intersector_in.has_intersection()) {
+      // TODO(DamrongGuoy): Compute the mesh and field with the quantities
+      //  expressed in World frame by construction so that we can delete these
+      //  two transforming methods.
+
+      // Transform the mesh from the S frame to the world frame. This entails:
+      //  1. Transforming the surface's vertices.
+      //  2. Allowing the LinearField e_SR a chance to re-express its cached
+      //     gradient values.
+      //  3. Re-expressing the gradients of the volume-mesh's field
+      //    (grad_eS_S) in the world frame (grad_eS_W).
+      intersector_in.mutable_mesh().TransformVertices(X_WS);
+      intersector_in.mutable_field().Transform(X_WS);
+      std::vector<Vector3<T>>& grad_eS_S = intersector_in.mutable_grad_eM_M();
+      for (auto& grad_eSi_S : grad_eS_S) {
+        grad_eSi_S = X_WS.rotation() * grad_eSi_S;
+      }
+      // The contact surface is documented as having the normals pointing *out*
+      // of the second surface and into the first. This mesh intersection
+      // creates a surface mesh with normals pointing out of the rigid surface,
+      // so we make sure the ids are ordered so that the rigid is the second id.
+      return std::make_unique<ContactSurface<T>>(
+          id_S, id_R, intersector_in.release_mesh(),
+          intersector_in.release_field(),
+          std::make_unique<std::vector<Vector3<T>>>(std::move(grad_eS_S)),
+          nullptr);
+    }
+    return nullptr;
+  };
 
   // Compute the transformation from the rigid frame to the soft frame.
   const math::RigidTransform<T> X_SR = X_WS.InvertAndCompose(X_WR);
 
-  // The mesh will be computed in Frame S and then transformed to the world
-  // frame.
-  std::unique_ptr<TriangleSurfaceMesh<T>> surface_SR;
-  std::unique_ptr<TriangleSurfaceMeshFieldLinear<T, T>> e_SR;
-  std::vector<Vector3<T>> grad_eS_S;
-
-  SurfaceVolumeIntersector<T>().SampleVolumeFieldOnSurface(
-      field_S, bvh_S, mesh_R, bvh_R, X_SR, representation,
-      &surface_SR, &e_SR, &grad_eS_S);
-
-  if (surface_SR == nullptr) return nullptr;
-
-  // TODO(DamrongGuoy): Compute the mesh and field with the quantities
-  //  expressed in World frame by construction so that we can delete these two
-  //  transforming methods.
-
-  // Transform the mesh from the S frame to the world frame. This entails:
-  //  1. Transforming the surface's vertices.
-  //  2. Allowing the LinearField e_SR a chance to re-express its cached
-  //     gradient values.
-  //  3. Re-expressing the gradients of the soft-mesh's pressure field
-  //    (grad_eS_S) in the world frame (grad_eS_W).
-  surface_SR->TransformVertices(X_WS);
-  e_SR->TransformGradients(X_WS);
-  std::unique_ptr<std::vector<Vector3<T>>> grad_eS_W;
-  grad_eS_W = std::make_unique<std::vector<Vector3<T>>>();
-  grad_eS_W->reserve(grad_eS_S.size());
-  for (const auto& grad_eSi_S : grad_eS_S) {
-    grad_eS_W->emplace_back(X_WS.rotation() * grad_eSi_S);
+  if (representation == HydroelasticContactRepresentation::kTriangle) {
+    SurfaceVolumeIntersector<TriMeshBuilder<T>, Obb> intersector;
+    intersector.SampleVolumeFieldOnSurface(field_S, bvh_S, mesh_R, bvh_R, X_SR);
+    return process_intersection(intersector);
+  } else {
+    // Polygon.
+    SurfaceVolumeIntersector<PolyMeshBuilder<T>, Obb> intersector;
+    intersector.SampleVolumeFieldOnSurface(field_S, bvh_S, mesh_R, bvh_R, X_SR);
+    return process_intersection(intersector);
   }
-
-  // The contact surface is documented as having the normals pointing *out* of
-  // the second surface and into the first. This mesh intersection creates a
-  // surface mesh with normals pointing out of the rigid surface, so we make
-  // sure the ids are ordered so that the rigid is the second id.
-  return std::make_unique<ContactSurface<T>>(id_S, id_R, std::move(surface_SR),
-                                             std::move(e_SR),
-                                             std::move(grad_eS_W), nullptr);
 }
 
-DRAKE_DEFINE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS(
-    class SurfaceVolumeIntersector)
+// Hydroelastics use Obb for the bounding volumes of tetrahedra.
+template class SurfaceVolumeIntersector<TriMeshBuilder<double>, Obb>;
+template class SurfaceVolumeIntersector<TriMeshBuilder<AutoDiffXd>, Obb>;
+template class SurfaceVolumeIntersector<PolyMeshBuilder<double>, Obb>;
+template class SurfaceVolumeIntersector<PolyMeshBuilder<AutoDiffXd>, Obb>;
 
-DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS((
-    &ComputeContactSurfaceFromSoftVolumeRigidSurface<T>
-))
+// TODO(xuchenhan-tri): Allow for AutoDiffXd when deformable simulation
+//  supports it in general.
+// Deformables use Aabb for the bounding volumes of deformable tetrahedra.
+template class SurfaceVolumeIntersector<PolyMeshBuilder<double>, Aabb>;
+
+DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS(
+    (&CalcIntersection<T>, &ClipPolygonByHalfSpace<T>,
+     &RemoveNearlyDuplicateVertices<T>,
+     &ComputeContactSurfaceFromSoftVolumeRigidSurface<T>))
 
 }  // namespace internal
 }  // namespace geometry
 }  // namespace drake
-

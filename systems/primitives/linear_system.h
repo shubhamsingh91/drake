@@ -6,13 +6,21 @@
 #include <variant>
 
 #include "drake/common/drake_copyable.h"
-#include "drake/common/symbolic.h"
+#include "drake/common/symbolic/expression.h"
 #include "drake/systems/primitives/affine_system.h"
 
 namespace drake {
 namespace systems {
 
 /// A discrete OR continuous linear system.
+///
+/// @system
+/// name: LinearSystem
+/// input_ports:
+/// - u0
+/// output_ports:
+/// - y0
+/// @endsystem
 ///
 /// If time_period>0.0, then the linear system will have the following discrete-
 /// time state update:
@@ -84,6 +92,14 @@ class LinearSystem : public AffineSystem<T> {
 };
 
 /// Base class for a discrete or continuous linear time-varying (LTV) system.
+///
+/// @system
+/// name: TimeVaryingLinearSystem
+/// input_ports:
+/// - u0
+/// output_ports:
+/// - y0
+/// @endsystem
 ///
 /// If `time_period > 0.0`, the system will have the following discrete-time
 /// state update:

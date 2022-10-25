@@ -15,7 +15,6 @@
 #include "drake/common/drake_throw.h"
 #include "drake/common/eigen_types.h"
 #include "drake/common/never_destroyed.h"
-#include "drake/common/symbolic.h"
 #include "drake/math/fast_pose_composition_functions.h"
 #include "drake/math/roll_pitch_yaw.h"
 
@@ -42,13 +41,12 @@ struct DoNotInitializeMemberFields {};
 /// @note This class does not store the frames associated with a rotation matrix
 /// nor does it enforce strict proper usage of this class with vectors.
 ///
-/// @note When assertions are enabled, several methods in this class
-/// do a validity check and throw an exception (std::exception) if the
-/// rotation matrix is invalid.  When assertions are disabled,
-/// many of these validity checks are skipped (which helps improve speed).
-/// In addition, these validity tests are only performed for scalar types for
-/// which drake::scalar_predicate<T>::is_bool is `true`. For instance, validity
-/// checks are not performed when T is symbolic::Expression.
+/// @note When assertions are enabled, several methods in this class perform a
+/// validity check and throw std::exception if the rotation matrix is invalid.
+/// When assertions are disabled, many of these validity checks are skipped
+/// (which helps improve speed). These validity tests are only performed for
+/// scalar types for which drake::scalar_predicate<T>::is_bool is `true`. For
+/// instance, validity checks are not performed when T is symbolic::Expression.
 ///
 /// @authors Paul Mitiguy (2018) Original author.
 /// @authors Drake team (see https://drake.mit.edu/credits).
@@ -86,7 +84,7 @@ class RotationMatrix {
     // Drake  QuaternionToRotationMatrix() = 12 multiplies, 12 adds.
     // Extra cost for two_over_norm_squared =  4 multiplies,  3 adds, 1 divide.
     // Extra cost if normalized = 4 multiplies, 3 adds, 1 sqrt, 1 divide.
-    const T two_over_norm_squared = T(2) / quaternion.squaredNorm();
+    const T two_over_norm_squared = 2.0 / quaternion.squaredNorm();
     set(QuaternionToRotationMatrix(quaternion, two_over_norm_squared));
   }
 
@@ -295,7 +293,6 @@ class RotationMatrix {
   /// @pre axis_index is 0 or 1 or 2.
   /// @throws std::exception if b_A cannot be made into a unit vector because
   ///   b_A contains a NaN or infinity or |b_A| < 1.0E-10.
-  /// @throws std::exception if the underlying type is symbolic (non-numeric).
   /// @see MakeFromOneUnitVector() if b_A is known to already be unit length.
   /// @retval R_AB the rotation matrix with properties as described above.
   static RotationMatrix<T> MakeFromOneVector(
@@ -313,7 +310,6 @@ class RotationMatrix {
   /// @pre axis_index is 0 or 1 or 2.
   /// @throws std::exception in Debug builds if u_A is not a unit vector, i.e.,
   /// |u_A| is not within a tolerance of 4ε ≈ 8.88E-16 to 1.0.
-  /// @throws std::exception if the underlying type is symbolic (non-numeric).
   /// @note This method is designed for maximum performance and does not verify
   ///  u_A as a unit vector in Release builds.  Consider MakeFromOneVector().
   /// @retval R_AB the rotation matrix whose properties are described in
@@ -559,15 +555,18 @@ class RotationMatrix {
   boolean<T> IsValid() const { return IsValid(matrix()); }
 
   /// Returns `true` if `this` is exactly equal to the identity matrix.
+  /// @see IsNearlyIdentity().
   boolean<T> IsExactlyIdentity() const {
     return matrix() == Matrix3<T>::Identity();
   }
 
-  /// Returns true if `this` is equal to the identity matrix to within the
-  /// threshold of get_internal_tolerance_for_orthonormality().
-  boolean<T> IsIdentityToInternalTolerance() const {
-    return IsNearlyEqualTo(matrix(), Matrix3<T>::Identity(),
-                           get_internal_tolerance_for_orthonormality());
+  /// Returns true if `this` is within tolerance of the identity RigidTransform.
+  /// @param[in] tolerance non-negative number that is generally the default
+  /// value, namely RotationMatrix::get_internal_tolerance_for_orthonormality().
+  /// @see IsExactlyIdentity().
+  boolean<T> IsNearlyIdentity(
+      double tolerance = get_internal_tolerance_for_orthonormality()) const {
+    return IsNearlyEqualTo(matrix(), Matrix3<T>::Identity(), tolerance);
   }
 
   /// Compares each element of `this` to the corresponding element of `other`
@@ -576,6 +575,7 @@ class RotationMatrix {
   /// @param[in] tolerance maximum allowable absolute difference between the
   /// matrix elements in `this` and `other`.
   /// @returns `true` if `‖this - other‖∞ <= tolerance`.
+  /// @see IsExactlyEqualTo().
   boolean<T> IsNearlyEqualTo(const RotationMatrix<T>& other,
                              double tolerance) const {
     return IsNearlyEqualTo(matrix(), other.matrix(), tolerance);
@@ -586,6 +586,7 @@ class RotationMatrix {
   /// @param[in] other %RotationMatrix to compare to `this`.
   /// @returns true if each element of `this` is exactly equal to the
   /// corresponding element in `other`.
+  /// @see IsNearlyEqualTo().
   boolean<T> IsExactlyEqualTo(const RotationMatrix<T>& other) const {
     return matrix() == other.matrix();
   }
@@ -839,23 +840,8 @@ class RotationMatrix {
   // - [Dahleh] "Lectures on Dynamic Systems and Controls: Electrical
   // Engineering and Computer Science, Massachusetts Institute of Technology"
   // https://ocw.mit.edu/courses/electrical-engineering-and-computer-science/6-241j-dynamic-systems-and-control-spring-2011/readings/MIT6_241JS11_chap04.pdf
-  template <typename Derived>
-  static Matrix3<typename Derived::Scalar> ProjectMatrix3ToOrthonormalMatrix3(
-      const Eigen::MatrixBase<Derived>& M, T* quality_factor) {
-    DRAKE_DEMAND(M.rows() == 3 && M.cols() == 3);
-    const auto svd = M.jacobiSvd(Eigen::ComputeFullU | Eigen::ComputeFullV);
-    if (quality_factor != nullptr) {
-      // Singular values are always non-negative and sorted in decreasing order.
-      const auto singular_values = svd.singularValues();
-      const T s_max = singular_values(0);  // maximum singular value.
-      const T s_min = singular_values(2);  // minimum singular value.
-      const T s_f = (s_max != 0.0 && s_min < 1.0/s_max) ? s_min : s_max;
-      const T det = M.determinant();
-      const double sign_det = (det > 0.0) ? 1 : ((det < 0.0) ? -1 : 0);
-      *quality_factor = s_f * sign_det;
-    }
-    return svd.matrixU() * svd.matrixV().transpose();
-  }
+  static Matrix3<T> ProjectMatrix3ToOrthonormalMatrix3(
+      const Matrix3<T>& M, T* quality_factor);
 
   // This is a helper method for RotationMatrix::ToQuaternion that returns a
   // Quaternion that is neither sign-canonicalized nor magnitude-normalized.
@@ -921,33 +907,23 @@ class RotationMatrix {
     const T M10 = M(1, 0); const T M11 = M(1, 1); const T M12 = M(1, 2);
     const T M20 = M(2, 0); const T M21 = M(2, 1); const T M22 = M(2, 2);
     const T trace = M00 + M11 + M22;
-    auto if_then_else_vec4 = [](
-        const boolean<T>& f_cond,
-        const Vector4<T>& e_then,
-        const Vector4<T>& e_else) -> Vector4<T> {
-      return Vector4<T>(
-          if_then_else(f_cond, e_then[0], e_else[0]),
-          if_then_else(f_cond, e_then[1], e_else[1]),
-          if_then_else(f_cond, e_then[2], e_else[2]),
-          if_then_else(f_cond, e_then[3], e_else[3]));
-    };
     const Vector4<T> wxyz =
-        if_then_else_vec4(trace >= M00 && trace >= M11 && trace >= M22, {
+        if_then_else(trace >= M00 && trace >= M11 && trace >= M22, Vector4<T>{
           T(1) + trace,
           M21 - M12,
           M02 - M20,
           M10 - M01,
-        }, if_then_else_vec4(M00 >= M11 && M00 >= M22, {
+        }, if_then_else(M00 >= M11 && M00 >= M22, Vector4<T>{
           M21 - M12,
           T(1) - (trace - 2 * M00),
           M01 + M10,
           M02 + M20,
-        }, if_then_else_vec4(M11 >= M22, {
+        }, if_then_else(M11 >= M22, Vector4<T>{
           M02 - M20,
           M01 + M10,
           T(1) - (trace - 2 * M11),
           M12 + M21,
-        }, /* else */ {
+        }, /* else */ Vector4<T>{
           M10 - M01,
           M02 + M20,
           M12 + M21,
@@ -967,39 +943,11 @@ class RotationMatrix {
   // 12 multiplies.  This method also costs 12 adds and 12 multiplies, but
   // has a provision for an efficient algorithm for always calculating an
   // orthogonal rotation matrix (whereas Eigen's algorithm does not).
+  // @throws std::exception if all the elements of quaternion are zero.
+  // Throws std::exception in debug builds if any of the elements in quaternion
+  // are infinity or NaN.
   static Matrix3<T> QuaternionToRotationMatrix(
-      const Eigen::Quaternion<T>& quaternion, const T& two_over_norm_squared) {
-    Matrix3<T> m;
-
-    const T w = quaternion.w();
-    const T x = quaternion.x();
-    const T y = quaternion.y();
-    const T z = quaternion.z();
-    const T sx  = two_over_norm_squared * x;  // scaled x-value.
-    const T sy  = two_over_norm_squared * y;  // scaled y-value.
-    const T sz  = two_over_norm_squared * z;  // scaled z-value.
-    const T swx = sx * w;
-    const T swy = sy * w;
-    const T swz = sz * w;
-    const T sxx = sx * x;
-    const T sxy = sy * x;
-    const T sxz = sz * x;
-    const T syy = sy * y;
-    const T syz = sz * y;
-    const T szz = sz * z;
-
-    m.coeffRef(0, 0) = T(1) - syy - szz;
-    m.coeffRef(0, 1) = sxy - swz;
-    m.coeffRef(0, 2) = sxz + swy;
-    m.coeffRef(1, 0) = sxy + swz;
-    m.coeffRef(1, 1) = T(1) - sxx - szz;
-    m.coeffRef(1, 2) = syz - swx;
-    m.coeffRef(2, 0) = sxz - swy;
-    m.coeffRef(2, 1) = syz + swx;
-    m.coeffRef(2, 2) = T(1) - sxx - syy;
-
-    return m;
-  }
+      const Eigen::Quaternion<T>& quaternion, const T& two_over_norm_squared);
 
   // Throws an exception if the vector v does not have a measurable magnitude
   // within 4ε of 1 (where machine epsilon ε ≈ 2.22E-16).

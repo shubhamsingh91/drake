@@ -10,8 +10,9 @@ robotlocomotion/director tap
 (https://github.com/RobotLocomotion/homebrew-director) using Homebrew.
 
 Archive naming convention:
-    vtk-<version>[-<rebuild>]-python-<python version>-qt-<qt version>
-        -<platform>-<arch>
+    vtk-<version>-<build_number>-<platform>-<arch>.tar.gz
+
+See also: image/package.sh.
 
 Example:
     WORKSPACE:
@@ -32,7 +33,7 @@ Argument:
 
 load("@drake//tools/workspace:os.bzl", "determine_os")
 
-VTK_MAJOR_MINOR_VERSION = "8.2"
+VTK_MAJOR_MINOR_VERSION = "9.1"
 
 VTK_MAJOR_MINOR_PATCH_VERSION = "{}.0".format(VTK_MAJOR_MINOR_VERSION)
 
@@ -67,7 +68,8 @@ def _vtk_cc_library(
 
     if os_result.is_macos:
         if not header_only:
-            lib_dir = "/usr/local/opt/vtk@{}/lib".format(
+            lib_dir = "{}/opt/vtk@{}/lib".format(
+                os_result.homebrew_prefix,
                 VTK_MAJOR_MINOR_PATCH_VERSION,
             )
             linkopts = linkopts + [
@@ -78,7 +80,7 @@ def _vtk_cc_library(
     elif os_result.is_ubuntu:
         if not header_only:
             srcs = ["lib/lib{}-{}.so.1".format(name, VTK_MAJOR_MINOR_VERSION)]
-    elif os_result.is_manylinux:
+    elif os_result.is_manylinux or os_result.is_macos_wheel:
         if not header_only:
             # TODO(jwnimmer-tri) Ideally, we wouldn't be hard-coding paths when
             # using manylinux.
@@ -110,16 +112,17 @@ def _impl(repository_ctx):
         fail(os_result.error)
 
     if os_result.is_macos:
-        repository_ctx.symlink("/usr/local/opt/vtk@{}/include".format(
+        repository_ctx.symlink("{}/opt/vtk@{}/include".format(
+            os_result.homebrew_prefix,
             VTK_MAJOR_MINOR_PATCH_VERSION,
         ), "include")
     elif os_result.is_ubuntu:
-        if os_result.ubuntu_release == "18.04":
-            archive = "vtk-8.2.0-1-python-3.6.9-qt-5.9.5-bionic-x86_64.tar.gz"
-            sha256 = "d8d8bd13605f065839942d47eb9d556d8aa3f55e5759eb424773d05c46e805ee"  # noqa
-        elif os_result.ubuntu_release == "20.04":
-            archive = "vtk-8.2.0-1-python-3.8.5-qt-5.12.8-focal-x86_64.tar.gz"
-            sha256 = "927811bbecb1537c7d46c2eb73112ee7d46caf5ff765b5b8951b624ddf7d2928"  # noqa
+        if os_result.ubuntu_release == "20.04":
+            archive = "vtk-9.1.0-3-focal-x86_64.tar.gz"
+            sha256 = "0a899323e7927a7b3e09d1be35bf70df9630f4eba56b9af93c59401cefa227c5"  # noqa
+        elif os_result.ubuntu_release == "22.04":
+            archive = "vtk-9.1.0-3-jammy-x86_64.tar.gz"
+            sha256 = "6ec65fa079f1278f759afd7abea8539b9e2f19ba9056267ae6484c681d3debd1"  # noqa
         else:
             fail("Operating system is NOT supported {}".format(os_result))
 
@@ -135,7 +138,7 @@ def _impl(repository_ctx):
             sha256 = sha256,
             type = "tar.gz",
         )
-    elif os_result.is_manylinux:
+    elif os_result.is_manylinux or os_result.is_macos_wheel:
         repository_ctx.symlink("/opt/vtk/include", "include")
     else:
         fail("Operating system is NOT supported {}".format(os_result))
@@ -151,16 +154,69 @@ licenses([
 ])
 """
 
-    # Note that we only create library targets for enough of VTK to support
-    # those used directly or indirectly by Drake.
+    ###########################################################################
+    # VTK "Private" Libraries (See: tools/workspace/vtk/README.md)
+    file_content += _vtk_cc_library(os_result, "vtkfmt")
 
-    # TODO(jamiesnape): Create a script to help generate the targets.
+    # NOTE: see /tools/wheel/image/vtk-args, this is to avoid packaging glew.
+    if os_result.is_manylinux or os_result.is_macos_wheel:
+        file_content += _vtk_cc_library(os_result, "vtkglew")
 
-    # To see what the VTK module dependencies are, you can inspect VTK's source
-    # tree. For example, for vtkIOXML and vtkIOXMLParser:
-    #   VTK/IO/XML/module.cmake
-    #   VTK/IO/XMLParser/module.cmake
+    file_content += _vtk_cc_library(os_result, "vtkkissfft")
 
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkkwiml",
+        hdrs = [
+            "vtk_kwiml.h",
+            "vtkkwiml/abi.h",
+            "vtkkwiml/int.h",
+        ],
+        visibility = ["//visibility:private"],
+        header_only = True,
+    )
+
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtklibharu",
+        deps = [
+            "@libpng",
+            "@zlib",
+        ],
+    )
+
+    if os_result.is_manylinux:
+        file_content += _vtk_cc_library(
+            os_result,
+            "vtkloguru",
+            linkopts = ["-ldl", "-pthread"],
+        )
+    else:
+        file_content += _vtk_cc_library(os_result, "vtkloguru")
+
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkmetaio",
+        deps = ["@zlib"],
+    )
+
+    # NOTE: see homebrew-director, pugixml is installed via brew.
+    if not os_result.is_macos:
+        file_content += _vtk_cc_library(os_result, "vtkpugixml")
+
+    if os_result.is_manylinux:
+        file_content += _vtk_cc_library(
+            os_result,
+            "vtksys",
+            linkopts = ["-ldl"],
+        )
+    else:
+        file_content += _vtk_cc_library(os_result, "vtksys")
+
+    ###########################################################################
+    # VTK "Public" Libraries (See: tools/workspace/vtk/README.md)
+
+    # Indirect dependency: omit headers.
     file_content += _vtk_cc_library(
         os_result,
         "vtkCommonColor",
@@ -170,6 +226,7 @@ licenses([
         ],
     )
 
+    # Indirect dependency: omit headers.
     file_content += _vtk_cc_library(
         os_result,
         "vtkCommonComputationalGeometry",
@@ -184,42 +241,55 @@ licenses([
         "vtkCommonCore",
         hdrs = [
             "vtkABI.h",
-            "vtkAbstractArray.h",
             "vtkAOSDataArrayTemplate.h",
-            "vtkAOSDataArrayTemplate.txx",
-            "vtkArrayIterator.h",
-            "vtkArrayIteratorTemplate.h",
-            "vtkArrayIteratorTemplate.txx",
-            "vtkAtomic.h",
-            "vtkAtomicTypeConcepts.h",
-            "vtkAtomicTypes.h",
+            "vtkAbstractArray.h",
+            "vtkAssume.h",
             "vtkAutoInit.h",
             "vtkBuffer.h",
+            "vtkBuild.h",
             "vtkCollection.h",
             "vtkCommand.h",
             "vtkCommonCoreModule.h",
-            "vtkConfigure.h",
+            "vtkCompiler.h",
             "vtkDataArray.h",
+            "vtkDataArrayAccessor.h",
+            "vtkDataArrayMeta.h",
+            "vtkDataArrayRange.h",
+            "vtkDataArrayTupleRange_AOS.h",
+            "vtkDataArrayTupleRange_Generic.h",
+            "vtkDataArrayValueRange_AOS.h",
+            "vtkDataArrayValueRange_Generic.h",
             "vtkDebugLeaksManager.h",
+            "vtkDebugRangeIterators.h",
+            "vtkDeprecation.h",
+            "vtkFeatures.h",
             "vtkFloatArray.h",
             "vtkGenericDataArray.h",
             "vtkGenericDataArray.txx",
             "vtkGenericDataArrayLookupHelper.h",
+            "vtkIOStream.h",
             "vtkIdList.h",
             "vtkIdTypeArray.h",
             "vtkIndent.h",
             "vtkInformation.h",
             "vtkInformationVector.h",
             "vtkIntArray.h",
-            "vtkIOStream.h",
+            "vtkLegacy.h",
+            "vtkLongArray.h",
+            "vtkLongLongArray.h",
             "vtkMath.h",
             "vtkMathConfigure.h",
+            "vtkMathPrivate.hxx",
+            "vtkMatrixUtilities.h",
+            "vtkMeta.h",
             "vtkNew.h",
+            "vtkOStrStreamWrapper.h",
+            "vtkOStreamWrapper.h",
             "vtkObject.h",
             "vtkObjectBase.h",
             "vtkObjectFactory.h",
-            "vtkOStreamWrapper.h",
-            "vtkOStrStreamWrapper.h",
+            "vtkOptions.h",
+            "vtkPlatform.h",
             "vtkPoints.h",
             "vtkSetGet.h",
             "vtkSmartPointer.h",
@@ -228,9 +298,14 @@ licenses([
             "vtkSystemIncludes.h",
             "vtkTimeStamp.h",
             "vtkType.h",
+            "vtkTypeInt32Array.h",
+            "vtkTypeInt64Array.h",
+            "vtkTypeList.h",
+            "vtkTypeList.txx",
+            "vtkTypeListMacros.h",
             "vtkTypeTraits.h",
-            "vtkUnicodeString.h",
             "vtkUnsignedCharArray.h",
+            "vtkVTK_USE_SCALED_SOA_ARRAYS.h",
             "vtkVariant.h",
             "vtkVariantCast.h",
             "vtkVariantInlineOperators.h",
@@ -244,15 +319,29 @@ licenses([
         ],
         deps = [
             ":vtkkwiml",
+            ":vtkloguru",
             ":vtksys",
         ],
     )
 
+    vtk_common_data_model_deps = [
+        ":vtkCommonCore",
+        ":vtkCommonMath",
+        ":vtkCommonMisc",
+        ":vtkCommonSystem",
+        ":vtkCommonTransforms",
+        ":vtksys",
+    ]
+
+    # pugixml is included with the brew install.
+    if not os_result.is_macos:
+        vtk_common_data_model_deps.append(":vtkpugixml")
     file_content += _vtk_cc_library(
         os_result,
         "vtkCommonDataModel",
         hdrs = [
             "vtkAbstractCellLinks.h",
+            "vtkBoundingBox.h",
             "vtkCell.h",
             "vtkCellArray.h",
             "vtkCellData.h",
@@ -264,23 +353,19 @@ licenses([
             "vtkDataSet.h",
             "vtkDataSetAttributes.h",
             "vtkDataSetAttributesFieldList.h",
+            "vtkEmptyCell.h",
             "vtkFieldData.h",
+            "vtkGenericCell.h",
             "vtkImageData.h",
             "vtkPointData.h",
             "vtkPointSet.h",
             "vtkPolyData.h",
+            "vtkPolyDataInternals.h",
             "vtkRect.h",
             "vtkStructuredData.h",
             "vtkVector.h",
         ],
-        deps = [
-            ":vtkCommonCore",
-            ":vtkCommonMath",
-            ":vtkCommonMisc",
-            ":vtkCommonSystem",
-            ":vtkCommonTransforms",
-            ":vtksys",
-        ],
+        deps = vtk_common_data_model_deps,
     )
 
     file_content += _vtk_cc_library(
@@ -293,6 +378,8 @@ licenses([
             "vtkExecutive.h",
             "vtkImageAlgorithm.h",
             "vtkPolyDataAlgorithm.h",
+            "vtkReaderAlgorithm.h",
+            "vtkSimpleReader.h",
             "vtkStreamingDemandDrivenPipeline.h",
         ],
         deps = [
@@ -311,9 +398,13 @@ licenses([
             "vtkMatrix4x4.h",
             "vtkTuple.h",
         ],
-        deps = [":vtkCommonCore"],
+        deps = [
+            ":vtkCommonCore",
+            ":vtkkissfft",
+        ],
     )
 
+    # Indirect dependency: omit headers.
     file_content += _vtk_cc_library(
         os_result,
         "vtkCommonMisc",
@@ -324,6 +415,7 @@ licenses([
         ],
     )
 
+    # Indirect dependency: omit headers.
     file_content += _vtk_cc_library(
         os_result,
         "vtkCommonSystem",
@@ -346,9 +438,11 @@ licenses([
         deps = [
             ":vtkCommonCore",
             ":vtkCommonMath",
+            ":vtksys",
         ],
     )
 
+    # Indirect dependency: omit headers.
     file_content += _vtk_cc_library(
         os_result,
         "vtkDICOMParser",
@@ -359,10 +453,10 @@ licenses([
         os_result,
         "vtkFiltersCore",
         hdrs = [
-            "vtkCleanPolyData.h",
+            "vtkDecimatePro.h",
             "vtkFiltersCoreModule.h",
+            "vtkTriangleFilter.h",
         ],
-        visibility = ["//visibility:private"],
         deps = [
             ":vtkCommonCore",
             ":vtkCommonDataModel",
@@ -371,17 +465,7 @@ licenses([
             ":vtkCommonMisc",
             ":vtkCommonSystem",
             ":vtkCommonTransforms",
-        ],
-    )
-
-    file_content += _vtk_cc_library(
-        os_result,
-        "vtkFiltersGeometry",
-        deps = [
-            ":vtkCommonCore",
-            ":vtkCommonDataModel",
-            ":vtkCommonExecutionModel",
-            ":vtkFiltersCore",
+            ":vtksys",
         ],
     )
 
@@ -402,6 +486,41 @@ licenses([
             ":vtkCommonSystem",
             ":vtkCommonTransforms",
             ":vtkFiltersCore",
+            ":vtkfmt",
+        ],
+    )
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkFiltersGeometry",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkFiltersCore",
+            ":vtksys",
+        ],
+    )
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkFiltersHybrid",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkCommonMath",
+            ":vtkCommonMisc",
+            ":vtkCommonTransforms",
+            ":vtkFiltersGeometry",
+            ":vtkFiltersCore",
+            ":vtkFiltersGeneral",
+            ":vtkImagingCore",
+            ":vtkImagingSources",
+            ":vtkRenderingCore",
+            ":vtksys",
         ],
     )
 
@@ -409,6 +528,7 @@ licenses([
         os_result,
         "vtkFiltersSources",
         hdrs = [
+            "vtkCapsuleSource.h",
             "vtkCylinderSource.h",
             "vtkFiltersSourcesModule.h",
             "vtkPlaneSource.h",
@@ -423,6 +543,31 @@ licenses([
             ":vtkCommonTransforms",
             ":vtkFiltersCore",
             ":vtkFiltersGeneral",
+        ],
+    )
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkImagingCore",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkCommonMath",
+            ":vtkCommonTransforms",
+        ],
+    )
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkImagingSources",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkImagingCore",
         ],
     )
 
@@ -447,61 +592,31 @@ licenses([
         ],
     )
 
-    # See: VTK/IO/XMLParser/{*.h,module.cmake}
     file_content += _vtk_cc_library(
         os_result,
-        "vtkIOXMLParser",
-        deps = [
-            ":vtkCommonCore",
-            ":vtkCommonDataModel",
-            ":vtkIOCore",
-            ":vtksys",
-            "@expat",
-        ],
-    )
-
-    # See: VTK/IO/XML/{*.h,module.cmake}
-    file_content += _vtk_cc_library(
-        os_result,
-        "vtkIOXML",
+        "vtkIOExport",
         hdrs = [
-            "vtkIOXMLModule.h",
-            "vtkXMLDataReader.h",
-            "vtkXMLPolyDataReader.h",
-            "vtkXMLReader.h",
-            "vtkXMLUnstructuredDataReader.h",
+            "vtkExporter.h",
+            "vtkGLTFExporter.h",
+            "vtkIOExportModule.h",
+            "vtkOBJExporter.h",
         ],
         deps = [
             ":vtkCommonCore",
             ":vtkCommonDataModel",
-            ":vtkCommonExecutionModel",
-            ":vtkCommonMisc",
-            ":vtkCommonSystem",
-            ":vtkIOCore",
-            ":vtkIOXMLParser",
-            ":vtksys",
-        ],
-    )
-
-    file_content += _vtk_cc_library(
-        os_result,
-        "vtkImagingCore",
-        deps = [
-            ":vtkCommonCore",
-            ":vtkCommonDataModel",
-            ":vtkCommonExecutionModel",
             ":vtkCommonMath",
             ":vtkCommonTransforms",
-        ],
-    )
-
-    file_content += _vtk_cc_library(
-        os_result,
-        "vtkImagingMath",
-        deps = [
-            ":vtkCommonCore",
-            ":vtkCommonDataModel",
-            ":vtkCommonExecutionModel",
+            ":vtkFiltersGeometry",
+            ":vtkImagingCore",
+            ":vtkIOCore",
+            ":vtkIOGeometry",
+            ":vtkIOImage",
+            ":vtkIOXML",
+            ":vtkRenderingContext2D",
+            ":vtkRenderingCore",
+            ":vtkRenderingFreeType",
+            ":vtkRenderingVtkJS",
+            ":vtklibharu",
         ],
     )
 
@@ -521,53 +636,67 @@ licenses([
             ":vtkCommonMisc",
             ":vtkCommonSystem",
             ":vtkCommonTransforms",
+            ":vtkFiltersGeneral",
+            ":vtkFiltersHybrid",
+            ":vtkImagingCore",
             ":vtkIOCore",
             ":vtkIOImage",
             ":vtkIOLegacy",
+            ":vtkRenderingCore",
             ":vtksys",
             "@zlib",
         ],
     )
 
+    vtk_io_image_deps = [
+        ":vtkCommonCore",
+        ":vtkCommonDataModel",
+        ":vtkCommonExecutionModel",
+        ":vtkCommonMath",
+        ":vtkCommonMisc",
+        ":vtkCommonSystem",
+        ":vtkCommonTransforms",
+        ":vtkDICOMParser",
+        ":vtkImagingCore",
+        ":vtkmetaio",
+        ":vtksys",
+        "@libjpeg",
+        "@libpng",
+        "@libtiff",
+        "@zlib",
+    ]
+
+    # pugixml is included with the brew install.
+    if not os_result.is_macos:
+        vtk_io_image_deps.append(":vtkpugixml")
     file_content += _vtk_cc_library(
         os_result,
         "vtkIOImage",
         hdrs = [
+            "vtkBMPReader.h",
+            "vtkBMPWriter.h",
+            "vtkIOImageModule.h",
             "vtkImageExport.h",
+            "vtkImageReader.h",
             "vtkImageReader2.h",
             "vtkImageWriter.h",
-            "vtkIOImageModule.h",
             "vtkJPEGReader.h",
+            "vtkJPEGWriter.h",
             "vtkPNGReader.h",
             "vtkPNGWriter.h",
             "vtkTIFFReader.h",
             "vtkTIFFWriter.h",
         ],
-        deps = [
-            ":vtkCommonCore",
-            ":vtkCommonDataModel",
-            ":vtkCommonExecutionModel",
-            ":vtkCommonMath",
-            ":vtkCommonMisc",
-            ":vtkCommonSystem",
-            ":vtkCommonTransforms",
-            ":vtkDICOMParser",
-            ":vtkmetaio",
-            "@libtiff",
-            "@libjpeg",
-            "@libpng",
-            "@liblzma",
-            "@zlib",
-        ],
+        deps = vtk_io_image_deps,
     )
 
     file_content += _vtk_cc_library(
         os_result,
         "vtkIOImport",
         hdrs = [
-            "vtkImporter.h",
+            "vtkGLTFImporter.h",
             "vtkIOImportModule.h",
-            "vtkOBJImporter.h",
+            "vtkImporter.h",
         ],
         deps = [
             ":vtkCommonCore",
@@ -577,6 +706,8 @@ licenses([
             ":vtkCommonTransforms",
             ":vtkFiltersCore",
             ":vtkFiltersSources",
+            ":vtkImagingCore",
+            ":vtkIOGeometry",
             ":vtkIOImage",
             ":vtkRenderingCore",
             ":vtksys",
@@ -586,12 +717,53 @@ licenses([
     file_content += _vtk_cc_library(
         os_result,
         "vtkIOLegacy",
+        hdrs = [
+            "vtkCellIterator.h",
+            "vtkDataReader.h",
+            "vtkIOLegacyModule.h",
+            "vtkUnstructuredGrid.h",
+            "vtkUnstructuredGridBase.h",
+            "vtkUnstructuredGridReader.h",
+        ],
         deps = [
             ":vtkCommonCore",
             ":vtkCommonDataModel",
             ":vtkCommonExecutionModel",
             ":vtkCommonMisc",
             ":vtkIOCore",
+            ":vtksys",
+        ],
+    )
+
+    if os_result.is_manylinux:
+        vtk_expat_libraries = []
+    else:
+        vtk_expat_libraries = ["@expat"]
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkIOXMLParser",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkIOCore",
+            ":vtksys",
+        ] + vtk_expat_libraries,
+    )
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkIOXML",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkCommonMisc",
+            ":vtkCommonSystem",
+            ":vtkIOCore",
+            ":vtkIOXMLParser",
             ":vtksys",
         ],
     )
@@ -612,11 +784,11 @@ licenses([
             "vtkProp3D.h",
             "vtkPropCollection.h",
             "vtkProperty.h",
-            "vtkRenderer.h",
-            "vtkRendererCollection.h",
-            "vtkRenderingCoreModule.h",
-            "vtkRenderPass.h",
             "vtkRenderWindow.h",
+            "vtkRenderer.h",
+            "vtkRenderingCoreModule.h",
+            "vtkShaderProperty.h",
+            "vtkStateStorage.h",
             "vtkTexture.h",
             "vtkViewport.h",
             "vtkVolume.h",
@@ -640,28 +812,11 @@ licenses([
         ],
     )
 
-    if os_result.is_manylinux:
-        vtk_glew_library = ":vtkglew"
-        vtk_opengl_linkopts = ["-lX11", "-lXt", "-lGLX"]
-    else:
-        vtk_glew_library = "@glew"
-        vtk_opengl_linkopts = []
-
     file_content += _vtk_cc_library(
         os_result,
-        "vtkRenderingOpenGL2",
-        visibility = ["//visibility:public"],
+        "vtkRenderingContext2D",
         hdrs = [
-            "vtkOpenGLHelper.h",
-            "vtkOpenGLPolyDataMapper.h",
-            "vtkOpenGLRenderWindow.h",
-            "vtkOpenGLTexture.h",
-            "vtkRenderingOpenGL2Module.h",
-            "vtkRenderingOpenGLConfigure.h",
-            "vtkShader.h",
-            "vtkShaderProgram.h",
-            "vtkStateStorage.h",
-            "vtkTextureObject.h",
+            "vtkRenderingContext2DModule.h",
         ],
         deps = [
             ":vtkCommonCore",
@@ -670,7 +825,105 @@ licenses([
             ":vtkCommonMath",
             ":vtkCommonSystem",
             ":vtkCommonTransforms",
+            ":vtkFiltersGeneral",
             ":vtkRenderingCore",
+            ":vtkRenderingFreeType",
+        ],
+    )
+
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkRenderingFreeType",
+        hdrs = [
+            "vtkRenderingFreeTypeModule.h",
+        ],
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkFiltersGeneral",
+            ":vtkRenderingCore",
+        ],
+    )
+
+    vtk_rendering_ui_hdrs = [
+        "vtkGenericRenderWindowInteractor.h",
+        "vtkRenderingUIModule.h",
+    ]
+    if not os_result.is_macos and not os_result.is_macos_wheel:
+        vtk_rendering_ui_hdrs.append("vtkXRenderWindowInteractor.h")
+
+    if os_result.is_macos_wheel:
+        # Normally this would be a private dependency, but no such thing when
+        # VTK is built static.
+        vtk_ui_linkopts = ["-framework Cocoa"]
+    else:
+        vtk_ui_linkopts = []
+
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkRenderingUI",
+        hdrs = vtk_rendering_ui_hdrs,
+        deps = [
+            ":vtkRenderingCore",
+        ],
+        linkopts = vtk_ui_linkopts,
+    )
+
+    # Indirect dependency: omit headers.
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkRenderingVtkJS",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkRenderingSceneGraph",
+            ":vtkRenderingCore",
+            ":vtkRenderingOpenGL2",
+        ],
+    )
+
+    vtk_rendering_opengl2_hdrs = [
+        "vtkOpenGLHelper.h",
+        "vtkOpenGLPolyDataMapper.h",
+        "vtkOpenGLShaderProperty.h",
+        "vtkOpenGLTexture.h",
+        "vtkRenderingOpenGL2Module.h",
+        "vtkShader.h",
+        "vtkShaderProgram.h",
+    ]
+    if not os_result.is_macos and not os_result.is_macos_wheel:
+        vtk_rendering_opengl2_hdrs.append("vtkXOpenGLRenderWindow.h")
+
+    if os_result.is_manylinux:
+        vtk_glew_library = ":vtkglew"
+
+        # Normally these would be private dependencies, but no such thing when
+        # VTK is built static.
+        vtk_opengl_linkopts = ["-lX11", "-lXt", "-lGLX"]
+    elif os_result.is_macos_wheel:
+        vtk_glew_library = ":vtkglew"
+        vtk_opengl_linkopts = []
+    else:
+        vtk_glew_library = "@glew"
+        vtk_opengl_linkopts = []
+
+    file_content += _vtk_cc_library(
+        os_result,
+        "vtkRenderingOpenGL2",
+        visibility = ["//visibility:public"],
+        hdrs = vtk_rendering_opengl2_hdrs,
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonExecutionModel",
+            ":vtkCommonMath",
+            ":vtkCommonSystem",
+            ":vtkCommonTransforms",
+            ":vtkFiltersGeneral",
+            ":vtkRenderingCore",
+            ":vtkRenderingUI",
             ":vtksys",
             vtk_glew_library,
             "@opengl",
@@ -678,35 +931,17 @@ licenses([
         linkopts = vtk_opengl_linkopts,
     )
 
+    # Indirect dependency: omit headers.
     file_content += _vtk_cc_library(
         os_result,
-        "vtkkwiml",
-        hdrs = [
-            "vtk_kwiml.h",
-            "vtkkwiml/abi.h",
-            "vtkkwiml/int.h",
+        "vtkRenderingSceneGraph",
+        deps = [
+            ":vtkCommonCore",
+            ":vtkCommonDataModel",
+            ":vtkCommonMath",
+            ":vtkRenderingCore",
         ],
-        visibility = ["//visibility:private"],
-        header_only = True,
     )
-
-    file_content += _vtk_cc_library(
-        os_result,
-        "vtkmetaio",
-        deps = ["@zlib"],
-    )
-
-    if os_result.is_manylinux:
-        file_content += _vtk_cc_library(
-            os_result,
-            "vtksys",
-            linkopts = ["-ldl"],
-        )
-
-        file_content += _vtk_cc_library(os_result, "vtkglew")
-
-    else:
-        file_content += _vtk_cc_library(os_result, "vtksys")
 
     # Glob all files for the data dependency of //tools:drake_visualizer.
     file_content += """

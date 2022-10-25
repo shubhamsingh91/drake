@@ -1,5 +1,6 @@
 import pydrake.systems.sensors as mut
 
+import copy
 import gc
 import unittest
 
@@ -17,14 +18,20 @@ from pydrake.geometry.render import (
     DepthRenderCamera,
     RenderCameraCore,
 )
+from pydrake.lcm import DrakeLcm
 from pydrake.math import (
     RigidTransform,
     RollPitchYaw,
-    )
+)
+from pydrake.multibody.plant import (
+    AddMultibodyPlantSceneGraph,
+)
 from pydrake.systems.framework import (
+    DiagramBuilder,
     InputPort,
     OutputPort,
     )
+from pydrake.systems.lcm import LcmBuses
 
 # Shorthand aliases, to reduce verbosity.
 pt = mut.PixelType
@@ -173,6 +180,49 @@ class TestSensors(unittest.TestCase):
             np.testing.assert_array_equal(data, channel_default)
             np.testing.assert_array_equal(mutable_data, channel_default)
 
+    def test_camera_config(self):
+        mut.CameraConfig()
+        config = mut.CameraConfig(
+            width=124, focal=mut.CameraConfig.FocalLength(x=10, y=20))
+        self.assertEqual(config.width, 124)
+        self.assertIn("width", repr(config))
+        copy.copy(config)
+        self.assertEqual(config.focal_x(), 10)
+        self.assertEqual(config.focal_y(), 20)
+        config.principal_point()
+
+        fov = mut.CameraConfig.FovDegrees(x=10, y=20)
+        self.assertIn("x=10", repr(fov))
+        copy.copy(fov)
+
+        focal = mut.CameraConfig.FocalLength(x=10, y=20)
+        self.assertIn("x=10", repr(focal))
+        copy.copy(focal)
+
+        builder = DiagramBuilder()
+        plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
+        system_count = len(builder.GetSystems())
+        lcm = DrakeLcm()
+        mut.ApplyCameraConfig(config=config, plant=plant, builder=builder,
+                              scene_graph=scene_graph, lcm=lcm)
+        # Systems have been added.
+        self.assertGreater(len(builder.GetSystems()), system_count)
+
+    def test_camera_config_lcm_buses(self):
+        builder = DiagramBuilder()
+        plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
+        system_count = len(builder.GetSystems())
+
+        # We'll call the Apply function using lcm_buses= instead of lcm=.
+        lcm_buses = LcmBuses()
+        lcm_buses.Add("fancy", DrakeLcm())
+        config = mut.CameraConfig(lcm_bus="fancy")
+        mut.ApplyCameraConfig(config=config, builder=builder,
+                              lcm_buses=lcm_buses)
+
+        # Check that systems were added.
+        self.assertGreater(len(builder.GetSystems()), system_count)
+
     def test_camera_info(self):
         width = 640
         height = 480
@@ -202,6 +252,8 @@ class TestSensors(unittest.TestCase):
             self.assertEqual(info.focal_y(), focal_y)
             self.assertEqual(info.center_x(), center_x)
             self.assertEqual(info.center_y(), center_y)
+            self.assertIsInstance(info.fov_x(), float)
+            self.assertIsInstance(info.fov_y(), float)
             self.assertTrue(
                 (info.intrinsic_matrix() == intrinsic_matrix).all())
             assert_pickle(self, info, mut.CameraInfo.intrinsic_matrix)
@@ -254,8 +306,6 @@ class TestSensors(unittest.TestCase):
             self.assertIsInstance(system.label_image_output_port(), OutputPort)
             self.assertIsInstance(system.body_pose_in_world_output_port(),
                                   OutputPort)
-            with catch_drake_warnings(expected_count=1):
-                self.assertIsInstance(system.X_WB_output_port(), OutputPort)
 
         # Use HDTV size.
         width = 1280

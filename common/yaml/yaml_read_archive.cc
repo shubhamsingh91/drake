@@ -3,13 +3,14 @@
 #include <algorithm>
 #include <cstring>
 
+#include <drake_vendor/yaml-cpp/yaml.h>
 #include <fmt/ostream.h>
-#include <yaml-cpp/yaml.h>
 
 #include "drake/common/nice_type_name.h"
 
 namespace drake {
 namespace yaml {
+namespace internal {
 namespace {
 
 // The source and destination are both of type Map.  Copy the key-value pairs
@@ -146,19 +147,9 @@ internal::Node ConvertJbederYamlNodeToDrakeYamlNode(
 
 }  // namespace
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-
-YamlReadArchive::YamlReadArchive(const YAML::Node& root)
-    : YamlReadArchive(root, Options{}) {}
-
-YamlReadArchive::YamlReadArchive(const YAML::Node& root, const Options& options)
-    : YamlReadArchive(ConvertJbederYamlNodeToDrakeYamlNode({}, root), options) {
-}
-
-#pragma GCC diagnostic pop
-
-YamlReadArchive::YamlReadArchive(internal::Node root, const Options& options)
+YamlReadArchive::YamlReadArchive(
+    internal::Node root,
+    const LoadYamlOptions& options)
     : owned_root_(std::move(root)),
       root_(&owned_root_.value()),
       mapish_item_key_(nullptr),
@@ -210,41 +201,45 @@ internal::Node YamlReadArchive::LoadStringAsNode(
   }
 }
 
-// TODO(jwnimmer-tri) On 2022-03-01 when the deprecated YAML::Node functions are
-// removed, the header file implementation that calls `convert<>` should move
-// into the cc file here, as an anonymous helper function.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+template <typename T>
+void YamlReadArchive::ParseScalarImpl(const std::string& value, T* result) {
+  DRAKE_DEMAND(result != nullptr);
+  // For the decode-able types, see /usr/include/yaml-cpp/node/convert.h.
+  // Generally, all of the POD types are supported.
+  bool success = YAML::convert<T>::decode(YAML::Node(value), *result);
+  if (!success) {
+    ReportError(fmt::format(
+        "could not parse {} value", drake::NiceTypeName::Get<T>()));
+  }
+}
 
 void YamlReadArchive::ParseScalar(const std::string& value, bool* result) {
-  ParseScalar<bool>(value, result);
+  ParseScalarImpl<bool>(value, result);
 }
 
 void YamlReadArchive::ParseScalar(const std::string& value, float* result) {
-  ParseScalar<float>(value, result);
+  ParseScalarImpl<float>(value, result);
 }
 
 void YamlReadArchive::ParseScalar(const std::string& value, double* result) {
-  ParseScalar<double>(value, result);
+  ParseScalarImpl<double>(value, result);
 }
 
 void YamlReadArchive::ParseScalar(const std::string& value, int32_t* result) {
-  ParseScalar<int32_t>(value, result);
+  ParseScalarImpl<int32_t>(value, result);
 }
 
 void YamlReadArchive::ParseScalar(const std::string& value, uint32_t* result) {
-  ParseScalar<uint32_t>(value, result);
+  ParseScalarImpl<uint32_t>(value, result);
 }
 
 void YamlReadArchive::ParseScalar(const std::string& value, int64_t* result) {
-  ParseScalar<int64_t>(value, result);
+  ParseScalarImpl<int64_t>(value, result);
 }
 
 void YamlReadArchive::ParseScalar(const std::string& value, uint64_t* result) {
-  ParseScalar<uint64_t>(value, result);
+  ParseScalarImpl<uint64_t>(value, result);
 }
-
-#pragma GCC diagnostic pop
 
 void YamlReadArchive::ParseScalar(
     const std::string& value, std::string* result) {
@@ -329,7 +324,7 @@ void YamlReadArchive::CheckAllAccepted() const {
     unused(value);
     if (visited_names_.count(key) == 0) {
       ReportError(fmt::format(
-          "key {} did not match any visited value", key));
+          "key '{}' did not match any visited value", key));
     }
   }
 }
@@ -389,14 +384,6 @@ void YamlReadArchive::PrintVisitNameType(std::ostream& s) const {
              debug_visit_name_);
 }
 
-std::ostream& operator<<(std::ostream& os, const YamlReadArchive::Options& x) {
-  return os << "{.allow_yaml_with_no_cpp = "
-            << x.allow_yaml_with_no_cpp
-            << ", .allow_cpp_with_no_yaml = "
-            << x.allow_cpp_with_no_yaml
-            << ", .retain_map_defaults = "
-            << x.retain_map_defaults << "}";
-}
-
+}  // namespace internal
 }  // namespace yaml
 }  // namespace drake

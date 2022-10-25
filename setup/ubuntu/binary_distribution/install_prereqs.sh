@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Install development and runtime prerequisites for binary distributions of
-# Drake on Ubuntu 18.04 (Bionic) or 20.04 (Focal).
+# Drake on Ubuntu 20.04 (Focal) or 22.04 (Jammy).
 
 set -euo pipefail
 
@@ -31,9 +31,9 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 if [[ "${with_asking}" -eq 0 ]]; then
-  apt_get_install='apt-get install -y'
+  maybe_yes='-y'
 else
-  apt_get_install='apt-get install'
+  maybe_yes=''
 fi
 
 
@@ -62,16 +62,16 @@ EOF
   binary_distribution_called_update=1
 fi
 
-$apt_get_install --no-install-recommends lsb-release
+apt-get install ${maybe_yes} --no-install-recommends lsb-release
 
 codename=$(lsb_release -sc)
 
-if [[ "${codename}" != 'bionic' && "${codename}" != 'focal' ]]; then
-  echo 'ERROR: This script requires Ubuntu 18.04 (Bionic) or 20.04 (Focal)' >&2
+if ! [[ "${codename}" =~ (focal|jammy) ]]; then
+  echo 'ERROR: This script requires Ubuntu 20.04 (Focal) or 22.04 (Jammy)' >&2
   exit 2
 fi
 
-$apt_get_install --no-install-recommends $(cat <<EOF
+apt-get install ${maybe_yes} --no-install-recommends $(cat <<EOF
 build-essential
 cmake
 pkg-config
@@ -79,4 +79,4 @@ EOF
 )
 
 packages=$(cat "${BASH_SOURCE%/*}/packages-${codename}.txt")
-$apt_get_install --no-install-recommends ${packages}
+apt-get install ${maybe_yes} --no-install-recommends ${packages}

@@ -3,14 +3,39 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
+#include "drake/solvers/decision_variable.h"
 #include "drake/solvers/test/mathematical_program_test_util.h"
 
 namespace drake {
 namespace solvers {
 namespace test {
 const double kInf = std::numeric_limits<double>::infinity();
+
+std::ostream& operator<<(std::ostream& os, EllipsoidsSeparationProblem value) {
+  os << "EllipsoidsSeparationProblem::";
+  switch (value) {
+    case EllipsoidsSeparationProblem::kProblem0: {
+      os << "kProblem0";
+      return os;
+    }
+    case EllipsoidsSeparationProblem::kProblem1: {
+      os << "kProblem1";
+      return os;
+    }
+    case EllipsoidsSeparationProblem::kProblem2: {
+      os << "kProblem2";
+      return os;
+    }
+    case EllipsoidsSeparationProblem::kProblem3: {
+      os << "kProblem3";
+      return os;
+    }
+  }
+  DRAKE_UNREACHABLE();
+}
 
 std::vector<EllipsoidsSeparationProblem> GetEllipsoidsSeparationProblems() {
   return {EllipsoidsSeparationProblem::kProblem0,
@@ -74,8 +99,8 @@ TestEllipsoidsSeparation::TestEllipsoidsSeparation() {
   VectorX<symbolic::Expression> lorentz_expr2(1 + R2_.cols());
   lorentz_expr1 << t_(0), R1_.transpose() * a_;
   lorentz_expr2 << t_(1), R2_.transpose() * a_;
-  prog_.AddLorentzConeConstraint(lorentz_expr1).evaluator();
-  prog_.AddLorentzConeConstraint(lorentz_expr2).evaluator();
+  prog_.AddLorentzConeConstraint(lorentz_expr1);
+  prog_.AddLorentzConeConstraint(lorentz_expr2);
   // a'*(x2 - x1) = 1
   prog_.AddLinearEqualityConstraint((x2_ - x1_).transpose(), 1.0, a_);
 
@@ -84,8 +109,10 @@ TestEllipsoidsSeparation::TestEllipsoidsSeparation() {
 }
 
 void TestEllipsoidsSeparation::SolveAndCheckSolution(
-    const SolverInterface& solver, double tol) {
-  MathematicalProgramResult result = RunSolver(prog_, solver);
+    const SolverInterface& solver,
+    const std::optional<SolverOptions>& solver_options, double tol) {
+  MathematicalProgramResult result =
+      RunSolver(prog_, solver, {}, solver_options);
 
   // Check the solution.
   // First check if each constraint is satisfied.
@@ -165,6 +192,21 @@ void TestEllipsoidsSeparation::SolveAndCheckSolution(
     EXPECT_TRUE(CompareMatrices(y_value, x2_ + R2_ * u2_value, tol,
                                 MatrixCompareType::absolute));
   }
+}
+
+std::ostream& operator<<(std::ostream& os, QPasSOCPProblem value) {
+  os << "QPasSOCPProblem::";
+  switch (value) {
+    case QPasSOCPProblem::kProblem0: {
+      os << "kProblem0";
+      return os;
+    }
+    case QPasSOCPProblem::kProblem1: {
+      os << "kProblem1";
+      return os;
+    }
+  }
+  DRAKE_UNREACHABLE();
 }
 
 std::vector<QPasSOCPProblem> GetQPasSOCPProblems() {
@@ -253,6 +295,17 @@ void TestQPasSOCP::SolveAndCheckSolution(
   EXPECT_NEAR(objective_value_qp, objective_value_socp, tol);
 }
 
+std::ostream& operator<<(std::ostream& os, FindSpringEquilibriumProblem value) {
+  os << "FindSpringEquilibriumProblem::";
+  switch (value) {
+    case FindSpringEquilibriumProblem::kProblem0: {
+      os << "kProblem0";
+      return os;
+    }
+  }
+  DRAKE_UNREACHABLE();
+}
+
 std::vector<FindSpringEquilibriumProblem> GetFindSpringEquilibriumProblems() {
   return {FindSpringEquilibriumProblem::kProblem0};
 }
@@ -300,8 +353,10 @@ TestFindSpringEquilibrium::TestFindSpringEquilibrium() {
 }
 
 void TestFindSpringEquilibrium::SolveAndCheckSolution(
-    const SolverInterface& solver, double tol) {
-  const MathematicalProgramResult result = RunSolver(prog_, solver);
+    const SolverInterface& solver,
+    const std::optional<SolverOptions>& solver_options, double tol) {
+  const MathematicalProgramResult result =
+      RunSolver(prog_, solver, {}, solver_options);
 
   const std::optional<SolverId> solver_id = result.get_solver_id();
   ASSERT_TRUE(solver_id);
@@ -354,42 +409,54 @@ void TestFindSpringEquilibrium::SolveAndCheckSolution(
 
 MaximizeGeometricMeanTrivialProblem1::MaximizeGeometricMeanTrivialProblem1()
     : prog_{new MathematicalProgram()},
-      x_{prog_->NewContinuousVariables<1>()(0)} {
+      x_{prog_->NewContinuousVariables<1>()(0)},
+      cost_{nullptr} {
   prog_->AddBoundingBoxConstraint(-kInf, 10, x_);
   Eigen::Vector2d A(2, 3);
   Eigen::Vector2d b(3, 2);
-  prog_->AddMaximizeGeometricMeanCost(A, b, Vector1<symbolic::Variable>(x_));
+  auto cost = prog_->AddMaximizeGeometricMeanCost(
+      A, b, Vector1<symbolic::Variable>(x_));
+  cost_ = std::make_unique<Binding<LinearCost>>(std::move(cost));
 }
 
 void MaximizeGeometricMeanTrivialProblem1::CheckSolution(
     const MathematicalProgramResult& result, double tol) {
   ASSERT_TRUE(result.is_success());
   EXPECT_NEAR(result.GetSolution(x_), 10, tol);
-  EXPECT_NEAR(result.get_optimal_cost(), -std::sqrt(23 * 32), tol);
+  const double cost_expected = -std::sqrt(23.0 * 32);
+  EXPECT_NEAR(result.get_optimal_cost(), cost_expected, tol);
+  EXPECT_NEAR(result.EvalBinding(*cost_)(0), cost_expected, tol);
 }
 
 MaximizeGeometricMeanTrivialProblem2::MaximizeGeometricMeanTrivialProblem2()
     : prog_{new MathematicalProgram()},
-      x_{prog_->NewContinuousVariables<1>()(0)} {
+      x_{prog_->NewContinuousVariables<1>()(0)},
+      cost_{nullptr} {
   prog_->AddBoundingBoxConstraint(-kInf, 10, x_);
   const Eigen::Vector3d A(2, 3, 4);
   const Eigen::Vector3d b(3, 2, 5);
-  prog_->AddMaximizeGeometricMeanCost(A, b, Vector1<symbolic::Variable>(x_));
+  auto cost = prog_->AddMaximizeGeometricMeanCost(
+      A, b, Vector1<symbolic::Variable>(x_));
+  cost_ = std::make_unique<Binding<LinearCost>>(std::move(cost));
 }
 
 void MaximizeGeometricMeanTrivialProblem2::CheckSolution(
     const MathematicalProgramResult& result, double tol) {
   ASSERT_TRUE(result.is_success());
   EXPECT_NEAR(result.GetSolution(x_), 10, tol);
-  EXPECT_NEAR(result.get_optimal_cost(), -std::pow(23 * 32 * 45, 1.0 / 4), tol);
+  const double cost_expected = -std::pow(23 * 32 * 45, 1.0 / 4);
+  EXPECT_NEAR(result.get_optimal_cost(), cost_expected, tol);
+  EXPECT_NEAR(result.EvalBinding(*cost_)(0), cost_expected, tol);
 }
 
 SmallestEllipsoidCoveringProblem::SmallestEllipsoidCoveringProblem(
     const Eigen::Ref<const Eigen::MatrixXd>& p)
     : prog_{new MathematicalProgram()},
       a_{prog_->NewContinuousVariables(p.rows())},
-      p_{p} {
-  prog_->AddMaximizeGeometricMeanCost(a_);
+      p_{p},
+      cost_{nullptr} {
+  auto cost = prog_->AddMaximizeGeometricMeanCost(a_);
+  cost_ = std::make_unique<Binding<LinearCost>>(std::move(cost));
   const Eigen::MatrixXd p_dot_p = (p_.array() * p_.array()).matrix();
   const int num_points = p.cols();
   prog_->AddLinearConstraint(p_dot_p.transpose(),
@@ -415,6 +482,7 @@ void SmallestEllipsoidCoveringProblem::CheckSolution(
   const double cost_expected = -std::pow(
       a_sol.prod(), 1.0 / std::pow(2, (std::ceil(std::log2(a_sol.rows())))));
   EXPECT_NEAR(result.get_optimal_cost(), cost_expected, tol);
+  EXPECT_NEAR(result.EvalBinding(*cost_)(0), cost_expected, tol);
 
   CheckSolutionExtra(result, tol);
 }
@@ -435,11 +503,12 @@ void SmallestEllipsoidCoveringProblem1::CheckSolutionExtra(
 }
 
 void SolveAndCheckSmallestEllipsoidCoveringProblems(
-    const SolverInterface& solver, double tol) {
+    const SolverInterface& solver,
+    const std::optional<SolverOptions>& solver_options, double tol) {
   SmallestEllipsoidCoveringProblem1 prob1;
   if (solver.available()) {
     MathematicalProgramResult result;
-    solver.Solve(prob1.prog(), {}, {}, &result);
+    solver.Solve(prob1.prog(), {}, solver_options, &result);
     prob1.CheckSolution(result, tol);
   }
 
@@ -454,7 +523,7 @@ void SolveAndCheckSmallestEllipsoidCoveringProblems(
   SmallestEllipsoidCoveringProblem prob_3d(points_3d);
   if (solver.available()) {
     MathematicalProgramResult result;
-    solver.Solve(prob_3d.prog(), {}, {}, &result);
+    solver.Solve(prob_3d.prog(), {}, solver_options, &result);
     prob_3d.CheckSolution(result, tol);
   }
 
@@ -469,7 +538,7 @@ void SolveAndCheckSmallestEllipsoidCoveringProblems(
   SmallestEllipsoidCoveringProblem prob_4d(points_4d);
   if (solver.available()) {
     MathematicalProgramResult result;
-    solver.Solve(prob_4d.prog(), {}, {}, &result);
+    solver.Solve(prob_4d.prog(), {}, solver_options, &result);
     prob_4d.CheckSolution(result, tol);
   }
 }

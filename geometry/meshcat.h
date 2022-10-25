@@ -8,6 +8,7 @@
 #include <Eigen/Core>
 
 #include "drake/common/drake_copyable.h"
+#include "drake/common/name_value.h"
 #include "drake/geometry/meshcat_animation.h"
 #include "drake/geometry/proximity/triangle_surface_mesh.h"
 #include "drake/geometry/rgba.h"
@@ -19,6 +20,51 @@
 namespace drake {
 namespace geometry {
 
+/** The set of parameters for configuring Meshcat. */
+struct MeshcatParams {
+  /** Passes this object to an Archive.
+  Refer to @ref yaml_serialization "YAML Serialization" for background. */
+  template <typename Archive>
+  void Serialize(Archive* a) {
+    a->Visit(DRAKE_NVP(host));
+    a->Visit(DRAKE_NVP(port));
+    a->Visit(DRAKE_NVP(web_url_pattern));
+    a->Visit(DRAKE_NVP(show_stats_plot));
+  }
+
+  /** Meshcat will listen only on the given hostname (e.g., "localhost").
+  If "*" is specified, then it will listen on all interfaces.
+  If empty, an appropriate default value will be chosen (currently "*"). */
+  std::string host{"*"};
+
+  /** Meshcat will listen on the given http `port`. If no port is specified,
+  then it will listen on the first available port starting at 7000 (up to 7099).
+  @pre We require `port` >= 1024. */
+  std::optional<int> port{std::nullopt};
+
+  /** The `web_url_pattern` may be used to change the web_url() (and therefore
+  the ws_url()) reported by Meshcat. This may be useful in case %Meshcat sits
+  behind a firewall or proxy.
+
+  The pattern follows the
+  <a href="https://en.cppreference.com/w/cpp/utility/format">std::format</a>
+  specification language, except that `arg-id` substitutions are performed
+  using named arguments instead of positional indices.
+
+  There are two arguments available to the pattern:
+  - `{port}` will be substituted with the %Meshcat server's listen port number;
+  - `{host}` will be substituted with this params structure's `host` field, or
+    else with "localhost" in case the `host` was one of the placeholders for
+    "all interfaces".
+  */
+  std::string web_url_pattern{"http://{host}:{port}"};
+
+  /** Determines whether or not to display the stats plot widget in the Meshcat
+  user interface. This plot including realtime rate and WebGL render
+  statistics. */
+  bool show_stats_plot{true};
+};
+
 /** Provides an interface to %Meshcat (https://github.com/rdeits/meshcat).
 
 Each instance of this class spawns a thread which runs an http/websocket server.
@@ -26,10 +72,10 @@ Users can navigate their browser to the hosted URL to visualize the Meshcat
 scene.  Note that, unlike many visualizers, one cannot open the visualizer until
 this server is running.
 
-In the current implementation, Meshcat methods must be called from the same
-thread where the class instance was constructed.  For example, running multiple
-simulations in parallel using the same Meshcat instance is not yet supported. We
-may generalize this in the future.
+@warning In the current implementation, Meshcat methods must be called from the
+same thread where the class instance was constructed.  For example, running
+multiple simulations in parallel using the same Meshcat instance is not yet
+supported. We may generalize this in the future.
 
 @section meshcat_path Meshcat paths and the scene tree
 
@@ -85,11 +131,14 @@ class Meshcat {
  public:
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(Meshcat)
 
-  /** Constructs the Meshcat instance on `port`. If no port is specified, the it
-  will listen on the first available port starting at 7000 (up to 7099).
+  /** Constructs the %Meshcat instance on `port`. If no port is specified,
+  it will listen on the first available port starting at 7000 (up to 7099).
   @pre We require `port` >= 1024.
   @throws std::exception if no requested `port` is available. */
-  explicit Meshcat(const std::optional<int>& port = std::nullopt);
+  explicit Meshcat(std::optional<int> port = std::nullopt);
+
+  /** Constructs the %Meshcat instance using the given `params`. */
+  explicit Meshcat(const MeshcatParams& params);
 
   ~Meshcat();
 
@@ -102,6 +151,16 @@ class Meshcat {
   /** (Advanced) Returns the ws:// URL for direct connection to the websocket
   interface.  Most users should connect via a browser opened to web_url(). */
   std::string ws_url() const;
+
+  /** (Advanced) Returns the number of currently-open websocket connections. */
+  int GetNumActiveConnections() const;
+
+  /** Blocks the calling thread until all buffered data in the websocket thread
+  has been sent to any connected clients. This can be especially useful when
+  sending many or large mesh files / texture maps, to avoid large "backpressure"
+  and/or simply to make sure that the simulation does not get far ahead of the
+  visualization. */
+  void Flush() const;
 
   /** Sets the 3D object at a given `path` in the scene tree.  Note that
   `path`="/foo" will always set an object in the tree at "/foo/<object>".  See
@@ -189,14 +248,13 @@ class Meshcat {
                        double line_width = 1.0,
                        const Rgba& rgba = Rgba(0.1, 0.1, 0.1, 1.0));
 
-  // TODO(russt): Support per-vertex coloring (maybe rgba as std::variant).
   /** Sets the "object" at `path` in the scene tree to a triangular mesh.
 
   @param path a "/"-delimited string indicating the path in the scene tree. See
               @ref meshcat_path "Meshcat paths" for the semantics.
   @param vertices is a 3-by-N matrix of 3D point defining the vertices of the
                   mesh.
-  @param faces is a 3-by-N integer matrix with each entry denoting an index
+  @param faces is a 3-by-M integer matrix with each entry denoting an index
                into vertices and each column denoting one face (aka
                SurfaceTriangle).
   @param rgba is the mesh face or wireframe color.
@@ -212,6 +270,30 @@ class Meshcat {
                        bool wireframe = false,
                        double wireframe_line_width = 1.0);
 
+  /** Sets the "object" at `path` in the scene tree to a triangular mesh with
+      per-vertex coloring.
+
+  @param path a "/"-delimited string indicating the path in the scene tree. See
+              @ref meshcat_path "Meshcat paths" for the semantics.
+  @param vertices is a 3-by-N matrix of 3D point defining the vertices of the
+                  mesh.
+  @param faces is a 3-by-M integer matrix with each entry denoting an index
+               into vertices and each column denoting one face (aka
+               SurfaceTriangle).
+  @param colors is a 3-by-N matrix of RGB color values, one color per vertex of
+                the mesh. Color values are in the range [0, 1].
+  @param wireframe if "true", then only the triangle edges are visualized, not
+                   the faces.
+  @param wireframe_line_width is the width in pixels.  Due to limitations in
+                              WebGL implementations, the line width may be 1
+                              regardless of the set value. */
+  void SetTriangleColorMesh(std::string_view path,
+                       const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
+                       const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
+                       const Eigen::Ref<const Eigen::Matrix3Xd>& colors,
+                       bool wireframe = false,
+                       double wireframe_line_width = 1.0);
+
   // TODO(russt): Provide a more general SetObject(std::string_view path,
   // msgpack::object object) that would allow users to pass through anything
   // that meshcat.js / three.js can handle.  Possible this could use
@@ -220,6 +302,17 @@ class Meshcat {
   /** Properties for a perspective camera in three.js:
    https://threejs.org/docs/#api/en/cameras/PerspectiveCamera */
   struct PerspectiveCamera {
+    /** Passes this object to an Archive.
+    Refer to @ref yaml_serialization "YAML Serialization" for background. */
+    template <typename Archive>
+    void Serialize(Archive* a) {
+      a->Visit(DRAKE_NVP(fov));
+      a->Visit(DRAKE_NVP(aspect));
+      a->Visit(DRAKE_NVP(near));
+      a->Visit(DRAKE_NVP(far));
+      a->Visit(DRAKE_NVP(zoom));
+    }
+
     double fov{75};    ///< Camera frustum vertical field of view.
     double aspect{1};  ///< Camera frustum aspect ratio.
     double near{.01};  ///< Camera frustum near plane.
@@ -229,13 +322,29 @@ class Meshcat {
 
   /** Sets the Meshcat object on `path` to a perspective camera. We provide a
    default value of `path` corresponding to the default camera object in
-   Meshcat. */
+   Meshcat.
+
+   @pydrake_mkdoc_identifier{perspective}
+   */
   void SetCamera(PerspectiveCamera camera,
                  std::string path = "/Cameras/default/rotated");
 
   /** Properties for an orthographic camera in three.js:
    https://threejs.org/docs/#api/en/cameras/OrthographicCamera */
   struct OrthographicCamera {
+    /** Passes this object to an Archive.
+    Refer to @ref yaml_serialization "YAML Serialization" for background. */
+    template <typename Archive>
+    void Serialize(Archive* a) {
+      a->Visit(DRAKE_NVP(left));
+      a->Visit(DRAKE_NVP(right));
+      a->Visit(DRAKE_NVP(top));
+      a->Visit(DRAKE_NVP(bottom));
+      a->Visit(DRAKE_NVP(near));
+      a->Visit(DRAKE_NVP(far));
+      a->Visit(DRAKE_NVP(zoom));
+    }
+
     double left{-1};     ///< Camera frustum left plane.
     double right{1};     ///< Camera frustum right plane.
     double top{-1};      ///< Camera frustum top plane.
@@ -247,7 +356,10 @@ class Meshcat {
 
   /** Sets the Meshcat object on `path` to an orthographic camera. We provide a
    default value of `path` corresponding to the default camera object in
-   Meshcat. */
+   Meshcat.
+
+   @pydrake_mkdoc_identifier{orthographic}
+   */
   void SetCamera(OrthographicCamera camera,
                  std::string path = "/Cameras/default/rotated");
 
@@ -303,6 +415,16 @@ class Meshcat {
   /** Deletes the object at the given `path` as well as all of its children.
   See @ref meshcat_path for the detailed semantics of deletion. */
   void Delete(std::string_view path = "");
+
+  // TODO(#16486): add low-pass filter to smooth the Realtime plot
+  /** Sets the realtime rate that is displayed in the meshcat visualizer stats
+   strip chart. This rate is the ratio between sim time and real
+   world time. 1 indicates the simulator is the same speed as real time. 2
+   indicates running twice as fast as real time, 0.5 is half speed, etc.
+  @see drake::systems::Simulator::set_target_realtime_rate()
+  @param rate the realtime rate value to be displayed, will be converted to a
+  percentage (multiplied by 100) */
+  void SetRealtimeRate(double rate);
 
   /** Sets a single named property of the object at the given path. For example,
   @verbatim
@@ -377,8 +499,18 @@ class Meshcat {
   //@{
 
   /** Adds a button with the label `name` to the meshcat browser controls GUI.
-   */
-  void AddButton(std::string name);
+   If the optional @p keycode is set to a javascript string key code (such as
+   "KeyG" or "ArrowLeft", see
+   https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values),
+   then a keydown callback is registered in the GUI which will also `click` the
+   button. If the button already existed, then resets its click count to zero;
+   and sets the keycode if no keycode was set before.
+
+   @throws std::exception if `name` has already been added as any other type of
+   control (e.g., slider).
+   @throw std::exception if a button of the same `name` has already been
+   assigned a different keycode. */
+  void AddButton(std::string name, std::string keycode = "");
 
   /** Returns the number of times the button `name` has been clicked in the
    GUI, from the time that it was added to `this`.  If multiple browsers are
@@ -394,9 +526,18 @@ class Meshcat {
    The slider range is given by [`min`, `max`]. `step` is the smallest
    increment by which the slider can change values (and therefore send updates
    back to this Meshcat instance). `value` specifies the initial value; it will
-   be truncated to the slider range and rounded to the nearest increment. */
+   be truncated to the slider range and rounded to the nearest increment. If
+   the optional @p decrement_keycode or @p increment_keycode are set to a
+   javascript string key code (such as "KeyG" or "ArrowLeft", see
+   https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values),
+   then keydown callbacks will be registered in the GUI that will move the
+   slider by @p step (within the limits) when those buttons are pressed.
+
+   @throws std::exception if `name` has already been added as any type of
+   control (e.g., either button or slider). */
   void AddSlider(std::string name, double min, double max, double step,
-                 double value);
+                 double value, std::string decrement_keycode = "",
+                 std::string increment_keycode = "");
 
   /** Sets the current `value` of the slider `name`. `value` will be truncated
    to the slider range and rounded to the nearest increment specified by the
@@ -419,6 +560,15 @@ class Meshcat {
   void DeleteAddedControls();
 
   //@}
+
+  /** Returns an HTML string that can be saved to a file for a snapshot of the
+  visualizer and its contents. The HTML can be viewed in the browser
+  without any connection to a Meshcat "server" (e.g. `this`). This is a great
+  way to save and share your 3D content.
+
+  Note that controls (e.g. sliders and buttons) are not included in the HTML
+  output, because their usefulness relies on a connection to the server. */
+  std::string StaticHtml();
 
   /* These remaining public methods are intended to primarily for testing. These
   calls must safely acquire the data from the websocket thread and will block
@@ -450,10 +600,30 @@ class Meshcat {
   std::string GetPackedProperty(std::string_view path,
                                 std::string property) const;
 
+#ifndef DRAKE_DOXYGEN_CXX
+  /* (Internal use for unit testing only) Causes the websocket worker thread to
+  exit with an error, which will spit out an exception from the next Meshcat
+  main thread function that gets called. The fault_number selects which fault to
+  inject, between 0 and kMaxFaultNumber inclusive; refer to the implementation
+  for details on meaning of each number. */
+  void InjectWebsocketThreadFault(int fault_number);
+
+  /* (Internal use for unit testing only) The max value (inclusive) for
+  fault_number, above. */
+  static constexpr int kMaxFaultNumber = 3;
+#endif
+
  private:
   // Provides PIMPL encapsulation of websocket types.
-  class WebSocketPublisher;
-  std::unique_ptr<WebSocketPublisher> publisher_;
+  class Impl;
+
+  // Safe accessors for the PIMPL object.
+  Impl& impl();
+  const Impl& impl() const;
+
+  // Always a non-nullptr Impl, but stored as void* to enforce that the
+  // impl() accessors are always used.
+  void* const impl_{};
 };
 
 }  // namespace geometry

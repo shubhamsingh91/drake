@@ -317,8 +317,10 @@ void DoScalarIndependentDefinitions(py::module m) {
     constexpr auto& cls_doc = doc.Rgba;
     py::class_<Class> cls(m, "Rgba", cls_doc.doc);
     cls  // BR
+        .def(py::init<>(), cls_doc.ctor.doc_0args)
         .def(py::init<double, double, double, double>(), py::arg("r"),
-            py::arg("g"), py::arg("b"), py::arg("a") = 1., cls_doc.ctor.doc)
+            py::arg("g"), py::arg("b"), py::arg("a") = 1.,
+            cls_doc.ctor.doc_4args)
         .def("r", &Class::r, cls_doc.r.doc)
         .def("g", &Class::g, cls_doc.g.doc)
         .def("b", &Class::b, cls_doc.b.doc)
@@ -362,7 +364,9 @@ void DoScalarIndependentDefinitions(py::module m) {
 
     py::class_<Box, Shape>(m, "Box", doc.Box.doc)
         .def(py::init<double, double, double>(), py::arg("width"),
-            py::arg("depth"), py::arg("height"), doc.Box.ctor.doc)
+            py::arg("depth"), py::arg("height"), doc.Box.ctor.doc_3args)
+        .def(py::init<const Vector3<double>&>(), py::arg("measures"),
+            doc.Box.ctor.doc_1args)
         .def("width", &Box::width, doc.Box.width.doc)
         .def("depth", &Box::depth, doc.Box.depth.doc)
         .def("height", &Box::height, doc.Box.height.doc)
@@ -378,7 +382,9 @@ void DoScalarIndependentDefinitions(py::module m) {
 
     py::class_<Capsule, Shape>(m, "Capsule", doc.Capsule.doc)
         .def(py::init<double, double>(), py::arg("radius"), py::arg("length"),
-            doc.Capsule.ctor.doc)
+            doc.Capsule.ctor.doc_2args)
+        .def(py::init<const Vector2<double>&>(), py::arg("measures"),
+            doc.Capsule.ctor.doc_1args)
         .def("radius", &Capsule::radius, doc.Capsule.radius.doc)
         .def("length", &Capsule::length, doc.Capsule.length.doc)
         .def(py::pickle(
@@ -404,7 +410,9 @@ void DoScalarIndependentDefinitions(py::module m) {
 
     py::class_<Cylinder, Shape>(m, "Cylinder", doc.Cylinder.doc)
         .def(py::init<double, double>(), py::arg("radius"), py::arg("length"),
-            doc.Cylinder.ctor.doc)
+            doc.Cylinder.ctor.doc_2args)
+        .def(py::init<const Vector2<double>&>(), py::arg("measures"),
+            doc.Cylinder.ctor.doc_1args)
         .def("radius", &Cylinder::radius, doc.Cylinder.radius.doc)
         .def("length", &Cylinder::length, doc.Cylinder.length.doc)
         .def(py::pickle(
@@ -417,7 +425,9 @@ void DoScalarIndependentDefinitions(py::module m) {
 
     py::class_<Ellipsoid, Shape>(m, "Ellipsoid", doc.Ellipsoid.doc)
         .def(py::init<double, double, double>(), py::arg("a"), py::arg("b"),
-            py::arg("c"), doc.Ellipsoid.ctor.doc)
+            py::arg("c"), doc.Ellipsoid.ctor.doc_3args)
+        .def(py::init<const Vector3<double>&>(), py::arg("measures"),
+            doc.Ellipsoid.ctor.doc_1args)
         .def("a", &Ellipsoid::a, doc.Ellipsoid.a.doc)
         .def("b", &Ellipsoid::b, doc.Ellipsoid.b.doc)
         .def("c", &Ellipsoid::c, doc.Ellipsoid.c.doc)
@@ -456,7 +466,10 @@ void DoScalarIndependentDefinitions(py::module m) {
 
     py::class_<MeshcatCone, Shape>(m, "MeshcatCone", doc.MeshcatCone.doc)
         .def(py::init<double, double, double>(), py::arg("height"),
-            py::arg("a") = 1.0, py::arg("b") = 1.0, doc.MeshcatCone.ctor.doc)
+            py::arg("a") = 1.0, py::arg("b") = 1.0,
+            doc.MeshcatCone.ctor.doc_3args)
+        .def(py::init<const Vector3<double>&>(), py::arg("measures"),
+            doc.MeshcatCone.ctor.doc_1args)
         .def("height", &MeshcatCone::height, doc.MeshcatCone.height.doc)
         .def("a", &MeshcatCone::a, doc.MeshcatCone.a.doc)
         .def("b", &MeshcatCone::b, doc.MeshcatCone.b.doc)
@@ -469,6 +482,8 @@ void DoScalarIndependentDefinitions(py::module m) {
                   std::get<2>(params));
             }));
   }
+
+  m.def("CalcVolume", &CalcVolume, py::arg("shape"), doc.CalcVolume.doc);
 
   m.def("MakePhongIllustrationProperties", &MakePhongIllustrationProperties,
       py_rvp::reference_internal, py::arg("diffuse"),
@@ -502,15 +517,16 @@ void DefGetPropertyCpp(py::module m) {
 // defined in set of properties. If we ever move HydroelasticType out of
 // internal and bind it, we can eliminate this helper.
 //
-// Return true if the properties indicate soft compliance, false if rigid, and
+// Return true if the properties indicate being compliant, false if rigid, and
 // throws if the property isn't set at all (or set to undefined).
-bool PropertiesIndicateSoftHydro(const geometry::ProximityProperties& props) {
+bool PropertiesIndicateCompliantHydro(
+    const geometry::ProximityProperties& props) {
   using geometry::internal::HydroelasticType;
   const HydroelasticType hydro_type =
       props.GetPropertyOrDefault(geometry::internal::kHydroGroup,
           geometry::internal::kComplianceType, HydroelasticType::kUndefined);
   if (hydro_type == HydroelasticType::kUndefined) {
-    throw std::runtime_error("No specification of rigid or soft");
+    throw std::runtime_error("No specification of rigid or compliant");
   }
   return hydro_type == HydroelasticType::kSoft;
 }
@@ -521,7 +537,7 @@ void def_testing_module(py::module m) {
   const auto constant_id = geometry::FilterId::get_new_id();
   m.def("get_constant_id", [constant_id]() { return constant_id; });
 
-  m.def("PropertiesIndicateSoftHydro", &PropertiesIndicateSoftHydro);
+  m.def("PropertiesIndicateCompliantHydro", &PropertiesIndicateCompliantHydro);
 
   // For use with `test_geometry_properties_cpp_types`.
   DefGetPropertyCpp<std::string>(m);

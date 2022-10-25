@@ -352,14 +352,15 @@ void Diagram<T>::DoCalcImplicitTimeDerivativesResidual(
 }
 
 template <typename T>
-const System<T>& Diagram<T>::GetSubsystemByName(const std::string& name) const {
+const System<T>& Diagram<T>::GetSubsystemByName(std::string_view name) const {
   for (const auto& child : registered_systems_) {
     if (child->get_name() == name) {
       return *child;
     }
   }
-  throw std::logic_error("System " + this->GetSystemName() +
-                         " does not have a subsystem named " + name);
+  throw std::logic_error(fmt::format(
+      "System {} does not have a subsystem named {}",
+      this->GetSystemName(), name));
 }
 
 template <typename T>
@@ -625,11 +626,10 @@ void Diagram<T>::AddTriggeredWitnessFunctionToCompositeEventCollection(
     CompositeEventCollection<T>* events) const {
   DRAKE_DEMAND(events != nullptr);
   DRAKE_DEMAND(event != nullptr);
-  DRAKE_DEMAND(event->get_event_data() != nullptr);
 
   // Get the event data- it will need to be modified.
-  auto data = dynamic_cast<WitnessTriggeredEventData<T>*>(
-      event->get_mutable_event_data());
+  WitnessTriggeredEventData<T>* data =
+      event->template get_mutable_event_data<WitnessTriggeredEventData<T>>();
   DRAKE_DEMAND(data != nullptr);
 
   // Get the vector of events corresponding to the subsystem.
@@ -913,6 +913,33 @@ void Diagram<T>::DoCalcNextUpdateTime(const Context<T>& context,
     if (event_times_buffer[i] > *next_update_time)
       info->get_mutable_subevent_collection(i).Clear();
   }
+}
+
+template <typename T>
+std::string Diagram<T>::GetUnsupportedScalarConversionMessage(
+    const std::type_info& source_type,
+    const std::type_info& destination_type) const {
+  // Start with the default message for this system.
+  std::stringstream result;
+  result << SystemBase::GetUnsupportedScalarConversionMessage(
+      source_type, destination_type);
+
+  // Append extra details, if we are able to.
+  std::vector<std::string> causes;
+  for (const auto& system : registered_systems_) {
+    const auto& converter = system->get_system_scalar_converter();
+    if (converter.IsConvertible(destination_type, source_type)) {
+      continue;
+    }
+    causes.push_back(internal::DiagramSystemBaseAttorney::
+        GetUnsupportedScalarConversionMessage(
+            *system, source_type, destination_type));
+  }
+  if (!causes.empty()) {
+    result << fmt::format(" (because {})", fmt::join(causes, " and "));
+  }
+
+  return result.str();
 }
 
 template <typename T>
@@ -1310,7 +1337,7 @@ Diagram<T>::ConvertScalarType() const {
   // Make all the inputs, preserving index assignments.
   for (int k = 0; k < this->num_input_ports(); k++) {
     const auto name = this->get_input_port(k).get_name();
-    for (const auto id : GetInputPortLocators(InputPortIndex(k))) {
+    for (const auto& id : GetInputPortLocators(InputPortIndex(k))) {
       const System<NewType>* new_system = old_to_new_map[id.first];
       const InputPortIndex port = id.second;
       blueprint->input_port_ids.emplace_back(new_system, port);

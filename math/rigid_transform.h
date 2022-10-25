@@ -394,25 +394,25 @@ class RigidTransform {
   }
 
   /// Returns `true` if `this` is exactly the identity %RigidTransform.
-  /// @see IsIdentityToEpsilon().
+  /// @see IsNearlyIdentity().
   boolean<T> IsExactlyIdentity() const {
     const boolean<T> is_position_zero = (translation() == Vector3<T>::Zero());
     return is_position_zero && rotation().IsExactlyIdentity();
   }
 
-  /// Return true if `this` is within tolerance of the identity %RigidTransform.
-  /// @returns `true` if the RotationMatrix portion of `this` satisfies
-  /// RotationMatrix::IsIdentityToInternalTolerance() and if the position vector
-  /// portion of `this` is equal to zero vector within `translation_tolerance`.
+  /// Returns true if `this` is within tolerance of the identity RigidTransform.
   /// @param[in] translation_tolerance a non-negative number.  One way to choose
   /// `translation_tolerance` is to multiply a characteristic length
   /// (e.g., the magnitude of a characteristic position vector) by an epsilon
   /// (e.g., RotationMatrix::get_internal_tolerance_for_orthonormality()).
+  /// @returns `true` if the RotationMatrix portion of `this` satisfies
+  /// RotationMatrix::IsNearlyIdentity() and if the position vector portion of
+  /// `this` is equal to zero vector within `translation_tolerance`.
   /// @see IsExactlyIdentity().
-  boolean<T> IsIdentityToEpsilon(double translation_tolerance) const {
+  boolean<T> IsNearlyIdentity(double translation_tolerance) const {
     const T max_component = translation().template lpNorm<Eigen::Infinity>();
     return max_component <= translation_tolerance &&
-        rotation().IsIdentityToInternalTolerance();
+        rotation().IsNearlyIdentity();
   }
 
   /// Returns X_BA = X_AB⁻¹, the inverse of `this` %RigidTransform.
@@ -511,6 +511,28 @@ class RigidTransform {
   /// @retval p_AoQ_A position vector from Ao to Q, expressed in frame A.
   Vector3<T> operator*(const Vector3<T>& p_BoQ_B) const {
     return p_AoBo_A_ + R_AB_ * p_BoQ_B;
+  }
+
+  /// Multiplies `this` %RigidTransform `X_AB` by the 4-element vector
+  /// `vec_B`, equivalent to `X_AB.GetAsMatrix4() * vec_B`.
+  /// @param[in] vec_B 4-element vector whose first 3 elements are the position
+  /// vector p_BoQ_B from Bo (frame B's origin) to an arbitrary point Q,
+  /// expressed in frame B and whose 4ᵗʰ element is 1 𝐨𝐫 whose first 3 elements
+  /// are a vector (maybe unrelated to Bo or Q) and whose 4ᵗʰ element is 0.
+  /// @retval vec_A 4-element vector whose first 3 elements are the position
+  /// vector p_AoQ_A from Ao (frame A's origin) to Q, expressed in frame A and
+  /// whose 4ᵗʰ element is 1 𝐨𝐫 whose first 3 elements are a vector (maybe
+  /// unrelated to Bo and Q) and whose 4ᵗʰ element is 0.
+  /// @throws std::exception if the 4ᵗʰ element of vec_B is not 0 or 1.
+  Vector4<T> operator*(const Vector4<T>& vec_B) const {
+    if (vec_B(3) == 1 || vec_B(3) == 0) {
+      Vector4<T> vec_A;
+      vec_A.head(3) = (p_AoBo_A_ * vec_B(3)) + (R_AB_ * vec_B.head(3));
+      vec_A(3) = vec_B(3);
+      return vec_A;
+    } else {
+      ThrowInvalidMultiplyVector4(vec_B);
+    }
   }
 
   /// Multiplies `this` %RigidTransform `X_AB` by the n position vectors
@@ -633,6 +655,10 @@ class RigidTransform {
           "Error: Bottom row of 4x4 matrix differs from [0, 0, 0, 1]"));
     }
   }
+
+  // Throw an exception that the last element of the Vector4 provided to
+  // RigidTransform * Vector4 is not 0 or 1.
+  [[noreturn]] static void ThrowInvalidMultiplyVector4(const Vector4<T>& vec_B);
 
   // Rotation matrix relating two frames, e.g. frame A and frame B.
   // The default constructor for R_AB_ is an identity matrix.

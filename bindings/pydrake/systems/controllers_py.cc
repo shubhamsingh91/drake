@@ -113,7 +113,11 @@ PYBIND11_MODULE(controllers, m) {
       .def("get_output_port_control",
           &InverseDynamicsController<double>::get_output_port_control,
           py_rvp::reference_internal,
-          doc.InverseDynamicsController.get_output_port_control.doc);
+          doc.InverseDynamicsController.get_output_port_control.doc)
+      .def("get_multibody_plant_for_control",
+          &InverseDynamicsController<double>::get_multibody_plant_for_control,
+          py_rvp::reference_internal,
+          doc.InverseDynamicsController.get_multibody_plant_for_control.doc);
 
   py::class_<PidControlledSystem<double>, Diagram<double>>(
       m, "PidControlledSystem", doc.PidControlledSystem.doc)
@@ -213,13 +217,15 @@ PYBIND11_MODULE(controllers, m) {
           const Eigen::Ref<const Eigen::MatrixXd>& B,
           const Eigen::Ref<const Eigen::MatrixXd>& Q,
           const Eigen::Ref<const Eigen::MatrixXd>& R,
-          const Eigen::Ref<const Eigen::MatrixXd>& N) {
-        auto result = LinearQuadraticRegulator(A, B, Q, R, N);
+          const Eigen::Ref<const Eigen::MatrixXd>& N,
+          const Eigen::Ref<const Eigen::MatrixXd>& F) {
+        auto result = LinearQuadraticRegulator(A, B, Q, R, N, F);
         return std::make_pair(result.K, result.S);
       },
       py::arg("A"), py::arg("B"), py::arg("Q"), py::arg("R"),
       py::arg("N") = Eigen::Matrix<double, 0, 0>::Zero(),
-      doc.LinearQuadraticRegulator.doc_5args);
+      py::arg("F") = Eigen::Matrix<double, 0, 0>::Zero(),
+      doc.LinearQuadraticRegulator.doc_AB);
 
   m.def(
       "DiscreteTimeLinearQuadraticRegulator",
@@ -240,7 +246,7 @@ PYBIND11_MODULE(controllers, m) {
           const Eigen::Ref<const Eigen::MatrixXd>&>(&LinearQuadraticRegulator),
       py::arg("system"), py::arg("Q"), py::arg("R"),
       py::arg("N") = Eigen::Matrix<double, 0, 0>::Zero(),
-      doc.LinearQuadraticRegulator.doc_4args);
+      doc.LinearQuadraticRegulator.doc_system);
 
   m.def("LinearQuadraticRegulator",
       py::overload_cast<const systems::System<double>&,
@@ -251,7 +257,8 @@ PYBIND11_MODULE(controllers, m) {
           &LinearQuadraticRegulator),
       py::arg("system"), py::arg("context"), py::arg("Q"), py::arg("R"),
       py::arg("N") = Eigen::Matrix<double, 0, 0>::Zero(),
-      py::arg("input_port_index") = 0, doc.LinearQuadraticRegulator.doc_6args);
+      py::arg("input_port_index") = 0,
+      doc.LinearQuadraticRegulator.doc_linearize_at_context);
 
   py::class_<FiniteHorizonLinearQuadraticRegulatorOptions> fhlqr_options(m,
       "FiniteHorizonLinearQuadraticRegulatorOptions",
@@ -266,14 +273,20 @@ PYBIND11_MODULE(controllers, m) {
       .def_readwrite("input_port_index",
           &FiniteHorizonLinearQuadraticRegulatorOptions::input_port_index,
           doc.FiniteHorizonLinearQuadraticRegulatorOptions.input_port_index.doc)
+      .def_readwrite("use_square_root_method",
+          &FiniteHorizonLinearQuadraticRegulatorOptions::use_square_root_method,
+          doc.FiniteHorizonLinearQuadraticRegulatorOptions
+              .use_square_root_method.doc)
       .def("__repr__",
           [](const FiniteHorizonLinearQuadraticRegulatorOptions& self) {
             return py::str(
                 "FiniteHorizonLinearQuadraticRegulatorOptions("
                 "Qf={}, "
                 "N={}, "
-                "input_port_index={})")
-                .format(self.Qf, self.N, self.input_port_index);
+                "input_port_index={}, "
+                "use_square_root_method={})")
+                .format(self.Qf, self.N, self.input_port_index,
+                    self.use_square_root_method);
           });
 
   DefReadWriteKeepAlive(&fhlqr_options, "x0",

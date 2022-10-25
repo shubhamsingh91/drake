@@ -28,14 +28,15 @@ output ports could be evaluated via other connections.
 name: PortSwitch
 input_ports:
 - port_selector
-- value0 (with assigned port name)
+- (user assigned port name)
 - ...
-- valueN (with assigned port name)
+- (user assigned port name)
 output_ports:
 - value
 @endsystem
 
 @tparam_default_scalar
+@ingroup primitive_systems
 */
 template <typename T>
 class PortSwitch final : public LeafSystem<T> {
@@ -49,7 +50,8 @@ class PortSwitch final : public LeafSystem<T> {
 
   /** Constructs a %PortSwitch using the type of `model_value` as the model for
   the output port.  All input ports declared via DeclareInputPort() will be
-  abstract-valued ports using the same `model_value`. */
+  abstract-valued ports using the same `model_value`.
+  @exclude_from_pydrake_mkdoc{not bound in pydrake} */
   template <typename OutputType>
   explicit PortSwitch(const OutputType& model_value)
       : PortSwitch(-1, AbstractValue::Make<OutputType>(model_value), nullptr,
@@ -59,7 +61,8 @@ class PortSwitch final : public LeafSystem<T> {
   the output port.  This version provides support for input/output values
   that are templated on scalar type; the scalar type on the port is kept
   consistent with the scalar type of the System (even through scalar
-  conversion). The type of `dummy_value` must be default constructible.  */
+  conversion). The type of `dummy_value` must be default constructible.
+  @exclude_from_pydrake_mkdoc{not bound in pydrake} */
   template <template <typename> class OutputType>
   explicit PortSwitch(const OutputType<T>& dummy_value)
       : PortSwitch(
@@ -75,6 +78,8 @@ class PortSwitch final : public LeafSystem<T> {
   template <typename U>
   explicit PortSwitch(const PortSwitch<U>& other);
 
+  /** Returns the port-selector input port, which is an abstract-valued port of
+  type InputPortIndex. */
   const InputPort<T>& get_port_selector_input_port() const {
     return this->get_input_port(0);
   }

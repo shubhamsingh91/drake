@@ -2,6 +2,7 @@
 
 #include <unistd.h>
 
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
@@ -15,7 +16,6 @@
 #include <vtkTIFFReader.h>
 
 #include "drake/common/drake_copyable.h"
-#include "drake/common/filesystem.h"
 #include "drake/common/temp_directory.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/systems/framework/event_collection.h"
@@ -23,6 +23,8 @@
 namespace drake {
 namespace systems {
 namespace sensors {
+
+namespace fs = std::filesystem;
 
 // Friend class to get access to ImageWriter private functions for testing.
 class ImageWriterTester {
@@ -169,11 +171,11 @@ class ImageWriterTest : public ::testing::Test {
 
   static void TearDownTestCase() {
     for (const auto& file_name : files_) {
-      if (filesystem::exists({file_name})) {
+      if (fs::exists({file_name})) {
         // We'll consider a failure to delete a temporary file as a test
         // failure.
         unlink(file_name.c_str());
-        EXPECT_FALSE(filesystem::exists({file_name}))
+        EXPECT_FALSE(fs::exists({file_name}))
             << "Failed to delete temporary test file: " << file_name;
       }
     }
@@ -187,12 +189,12 @@ class ImageWriterTest : public ::testing::Test {
   // examined at tear down for deletion. When it comes to writing images, all
   // names should come from here.
   static std::string temp_name() {
-    filesystem::path temp_path;
+    fs::path temp_path;
     do {
       temp_path = temp_dir();
       temp_path.append("image_writer_test_" + std::to_string(++img_count_) +
                        ".png");
-    } while (filesystem::exists(temp_path));
+    } while (fs::exists(temp_path));
     files_.insert(temp_path.string());
     return temp_path.string();
   }
@@ -207,8 +209,8 @@ class ImageWriterTest : public ::testing::Test {
   template <PixelType kPixelType>
   static ::testing::AssertionResult ReadImage(const std::string& image_name,
                                               Image<kPixelType>* image) {
-    filesystem::path image_path(image_name);
-    if (filesystem::exists(image_path)) {
+    fs::path image_path(image_name);
+    if (fs::exists(image_path)) {
       vtkSmartPointer<vtkImageReader2> reader;
       switch (kPixelType) {
         case PixelType::kRgba8U:
@@ -281,7 +283,7 @@ class ImageWriterTest : public ::testing::Test {
     const double period = 1 / 10.0;  // 10 Hz.
     const double start_time = 0.25;
     const std::string port_name = "port";
-    filesystem::path path(temp_dir());
+    fs::path path(temp_dir());
     path.append("{image_type}_{time_usec}");
 
     Image<kPixelType> image = test_image<kPixelType>();
@@ -296,10 +298,10 @@ class ImageWriterTest : public ::testing::Test {
     const std::string expected_name = tester.MakeFileName(
         tester.port_format(port.get_index()), kPixelType, context->get_time(),
         port_name, tester.port_count(port.get_index()));
-    filesystem::path expected_file(expected_name);
-    EXPECT_FALSE(filesystem::exists(expected_file));
+    fs::path expected_file(expected_name);
+    EXPECT_FALSE(fs::exists(expected_file));
     writer.Publish(*context, events->get_publish_events());
-    EXPECT_TRUE(filesystem::exists(expected_file));
+    EXPECT_TRUE(fs::exists(expected_file));
     EXPECT_EQ(1, tester.port_count(port.get_index()));
     add_file_for_cleanup(expected_file.string());
 
@@ -350,14 +352,12 @@ TEST_F(ImageWriterTest, DirectoryFromFormat) {
 
   DRAKE_EXPECT_THROWS_MESSAGE(
       tester.DirectoryFromFormat("", "port_name", PixelType::kRgba8U),
-      std::logic_error,
       ".*empty.*");
   EXPECT_EQ("",
             tester.DirectoryFromFormat("/root", "port_name",
                                        PixelType::kRgba8U));
   DRAKE_EXPECT_THROWS_MESSAGE(
       tester.DirectoryFromFormat("/root/", "port_name", PixelType::kRgba8U),
-      std::logic_error,
       ".*cannot end with a '/'");
   EXPECT_EQ(
       "/root",
@@ -378,22 +378,18 @@ TEST_F(ImageWriterTest, DirectoryFromFormat) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       tester.DirectoryFromFormat("/root/{count}/file", "port",
                                  PixelType::kRgba8U),
-      std::logic_error,
       ".*The directory path cannot include time or image count");
   DRAKE_EXPECT_THROWS_MESSAGE(
       tester.DirectoryFromFormat("/root/{time_double}/file", "port",
                                  PixelType::kRgba8U),
-      std::logic_error,
       ".*The directory path cannot include time or image count");
   DRAKE_EXPECT_THROWS_MESSAGE(
       tester.DirectoryFromFormat("/root/{time_usec}/file", "port",
                                  PixelType::kRgba8U),
-      std::logic_error,
       ".*The directory path cannot include time or image count");
   DRAKE_EXPECT_THROWS_MESSAGE(
       tester.DirectoryFromFormat("/root/{time_msec}/file", "port",
                                  PixelType::kRgba8U),
-      std::logic_error,
       ".*The directory path cannot include time or image count");
 
   // Make sure it's not fooled by strings that are *almost* format arguments.
@@ -483,11 +479,10 @@ TEST_F(ImageWriterTest, ValidateDirectory) {
       ImageWriterTester::DirectoryIsMissing("this/path/does/not_exist"));
 
   // Case: No write permissions (assuming that this isn't run as root).
-  filesystem::path path(temp_dir());
+  fs::path path(temp_dir());
   path.append("unwritable");
-  filesystem::create_directory(path);
-  filesystem::permissions(path, filesystem::perms::owner_write,
-                          filesystem::perm_options::remove);
+  fs::create_directory(path);
+  fs::permissions(path, fs::perms::owner_write, fs::perm_options::remove);
   EXPECT_TRUE(ImageWriterTester::DirectoryIsUnwritable(path));
 
   // Case: the path is to a file.
@@ -504,7 +499,6 @@ TEST_F(ImageWriterTest, ConfigureInputPortErrors) {
   // Bad publish period.
   DRAKE_EXPECT_THROWS_MESSAGE(writer.DeclareImageInputPort<PixelType::kRgba8U>(
                                   "port", "format", -0.1, 0),
-                              std::logic_error,
                               ".* publish period must be positive");
 
   // Invalid directory -- relies on tested correctness of ValidateDirectory()
@@ -512,12 +506,11 @@ TEST_F(ImageWriterTest, ConfigureInputPortErrors) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       writer.DeclareImageInputPort<PixelType::kRgba8U>("port", "/root/name",
                                                        0.1, 0),
-      std::logic_error,
       ".*The format string .* implied the invalid directory.*");
 
   // Now test a port with the same name -- can only happen if one port has
   // been successfully declared.
-  filesystem::path path(temp_dir());
+  fs::path path(temp_dir());
   path.append("file_{count:3}");
   const auto& port = writer.DeclareImageInputPort<PixelType::kRgba8U>(
       "port", path.string(), 0.1, 0);
@@ -529,11 +522,10 @@ TEST_F(ImageWriterTest, ConfigureInputPortErrors) {
     EXPECT_TRUE(events->HasEvents());
   }
 
-  filesystem::path path2(temp_dir());
+  fs::path path2(temp_dir());
   path2.append("alt_file_{count:3}");
   DRAKE_EXPECT_THROWS_MESSAGE(writer.DeclareImageInputPort<PixelType::kRgba8U>(
                                   "port", path2.string(), 0.1, 0),
-                              std::logic_error,
                               "System .* already has an input port named .*");
 }
 
@@ -545,7 +537,7 @@ void TestPixelExtension(const std::string& folder, ImageWriter* writer,
 
   ImageWriterTester tester(*writer);
 
-  filesystem::path format(folder);
+  fs::path format(folder);
   format.append("file");
   const auto& port = writer->DeclareImageInputPort<kPixelType>(
       "port" + to_string(++(*count)), format.string(), 1, 1);
@@ -574,7 +566,7 @@ TEST_F(ImageWriterTest, FileExtension) {
   ImageWriterTester tester(writer);
   // Case: Format string with correct extension remains unchanged.
   {
-    filesystem::path format(temp_dir());
+    fs::path format(temp_dir());
     format.append("file.png");
     const auto& port = writer.DeclareImageInputPort<PixelType::kRgba8U>(
         "port" + to_string(++count), format.string(), 1, 1);
@@ -584,7 +576,7 @@ TEST_F(ImageWriterTest, FileExtension) {
 
   // Case: wrong extension gets correct extension appended.
   {
-    filesystem::path format(temp_dir());
+    fs::path format(temp_dir());
     format.append("file.txt");
     const auto& port = writer.DeclareImageInputPort<PixelType::kRgba8U>(
         "port" + to_string(++count), format.string(), 1, 1);
@@ -612,7 +604,7 @@ TEST_F(ImageWriterTest, SingleConfiguredPort) {
   const double start_time = 0.25;
   const std::string port_name{"single_color_port"};
   const PixelType pixel_type = PixelType::kRgba8U;
-  filesystem::path path(temp_dir());
+  fs::path path(temp_dir());
   path.append("single_port_{time_usec}");
 
   const auto& port = writer.DeclareImageInputPort<PixelType::kRgba8U>(
@@ -650,7 +642,7 @@ TEST_F(ImageWriterTest, SingleConfiguredPort) {
       // in an error.
       DRAKE_EXPECT_THROWS_MESSAGE(
           writer.Publish(*context, events->get_publish_events()),
-          std::logic_error, ".*InputPort.* is not connected");
+          ".*InputPort.* is not connected");
 
       // Confirms that a valid publish increments the counter.
       port.FixValue(context.get(), test_image<PixelType::kRgba8U>());
@@ -658,10 +650,10 @@ TEST_F(ImageWriterTest, SingleConfiguredPort) {
       const std::string expected_name = tester.MakeFileName(
           tester.port_format(port.get_index()), pixel_type, context->get_time(),
           port_name, tester.port_count(port.get_index()));
-      filesystem::path expected_file(expected_name);
-      EXPECT_FALSE(filesystem::exists(expected_file));
+      fs::path expected_file(expected_name);
+      EXPECT_FALSE(fs::exists(expected_file));
       writer.Publish(*context, events->get_publish_events());
-      EXPECT_TRUE(filesystem::exists(expected_file));
+      EXPECT_TRUE(fs::exists(expected_file));
       EXPECT_EQ(1, tester.port_count(port.get_index()));
       add_file_for_cleanup(expected_file.string());
     }

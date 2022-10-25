@@ -2,6 +2,8 @@
 
 #include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
+#include "drake/bindings/pydrake/common/deprecation_pybind.h"
+#include "drake/bindings/pydrake/common/serialize_pybind.h"
 #include "drake/bindings/pydrake/common/wrap_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
@@ -11,6 +13,7 @@
 #include "drake/systems/analysis/runge_kutta2_integrator.h"
 #include "drake/systems/analysis/runge_kutta3_integrator.h"
 #include "drake/systems/analysis/simulator.h"
+#include "drake/systems/analysis/simulator_config.h"
 #include "drake/systems/analysis/simulator_config_functions.h"
 #include "drake/systems/analysis/simulator_print_stats.h"
 
@@ -26,6 +29,17 @@ PYBIND11_MODULE(analysis, m) {
   m.doc() = "Bindings for the analysis portion of the Systems framework.";
 
   py::module::import("pydrake.systems.framework");
+
+  {
+    using Class = SimulatorConfig;
+    constexpr auto& cls_doc = pydrake_doc.drake.systems.SimulatorConfig;
+    py::class_<Class> cls(m, "SimulatorConfig", cls_doc.doc);
+    cls  // BR
+        .def(ParamInit<Class>());
+    DefAttributesUsingSerialize(&cls, cls_doc);
+    DefReprUsingSerialize(&cls);
+    DefCopyAndDeepCopy(&cls);
+  }
 
   {
     constexpr auto& doc = pydrake_doc.drake.systems;
@@ -60,15 +74,12 @@ PYBIND11_MODULE(analysis, m) {
   {
     constexpr auto& cls_doc = pydrake_doc.drake.systems.InitializeParams;
     using Class = InitializeParams;
-    py::class_<Class>(m, "InitializeParams", cls_doc.doc)
-        .def(ParamInit<Class>())
-        .def_readwrite("suppress_initialization_events",
-            &Class::suppress_initialization_events,
-            cls_doc.suppress_initialization_events.doc)
-        .def("__repr__", [](const Class& self) {
-          return py::str("InitializeParams(suppress_initialization_events={})")
-              .format(self.suppress_initialization_events);
-        });
+    py::class_<Class> cls(m, "InitializeParams", cls_doc.doc);
+    cls  // BR
+        .def(ParamInit<Class>());
+    DefAttributesUsingSerialize(&cls, cls_doc);
+    DefReprUsingSerialize(&cls);
+    DefCopyAndDeepCopy(&cls);
   }
 
   auto bind_scalar_types = [m](auto dummy) {
@@ -120,7 +131,7 @@ PYBIND11_MODULE(analysis, m) {
   };
   type_visit(bind_scalar_types, CommonScalarPack{});
 
-  auto bind_nonsymbolic_scalar_types = [m](auto dummy) {
+  auto bind_nonsymbolic_scalar_types = [&m](auto dummy) {
     constexpr auto& doc = pydrake_doc.drake.systems;
     using T = decltype(dummy);
 
@@ -173,10 +184,13 @@ PYBIND11_MODULE(analysis, m) {
         // TODO(eric.cousineau): Bind `release_context` once some form of the
         // PR RobotLocomotion/pybind11#33 lands. Presently, it fails.
         .def("set_publish_every_time_step",
-            &Simulator<T>::set_publish_every_time_step,
+            &Simulator<T>::set_publish_every_time_step, py::arg("publish"),
             doc.Simulator.set_publish_every_time_step.doc)
+        .def("set_publish_at_initialization",
+            &Simulator<T>::set_publish_at_initialization, py::arg("publish"),
+            doc.Simulator.set_publish_at_initialization.doc)
         .def("set_target_realtime_rate",
-            &Simulator<T>::set_target_realtime_rate,
+            &Simulator<T>::set_target_realtime_rate, py::arg("realtime_rate"),
             doc.Simulator.set_target_realtime_rate.doc)
         .def("get_target_realtime_rate",
             &Simulator<T>::get_target_realtime_rate,
@@ -188,6 +202,26 @@ PYBIND11_MODULE(analysis, m) {
             doc.Simulator.ResetStatistics.doc)
         .def("get_system", &Simulator<T>::get_system, py_rvp::reference,
             doc.Simulator.get_system.doc);
+
+    m  // BR
+        .def("ApplySimulatorConfig",
+            py::overload_cast<const SimulatorConfig&,
+                drake::systems::Simulator<T>*>(&ApplySimulatorConfig<T>),
+            py::arg("config"), py::arg("simulator"),
+            pydrake_doc.drake.systems.ApplySimulatorConfig.doc_config_sim)
+        .def("ExtractSimulatorConfig", &ExtractSimulatorConfig<T>,
+            py::arg("simulator"),
+            pydrake_doc.drake.systems.ExtractSimulatorConfig.doc);
+    m  // BR
+        .def("ApplySimulatorConfig",
+            WrapDeprecated(
+                pydrake_doc.drake.systems.ApplySimulatorConfig.doc_deprecated,
+                [](drake::systems::Simulator<T>* simulator,
+                    const SimulatorConfig& config) {
+                  ApplySimulatorConfig(config, simulator);
+                }),
+            py::arg("simulator"), py::arg("config"),
+            pydrake_doc.drake.systems.ApplySimulatorConfig.doc_deprecated);
   };
   type_visit(bind_nonsymbolic_scalar_types, NonSymbolicScalarPack{});
 
@@ -221,6 +255,7 @@ PYBIND11_MODULE(analysis, m) {
           pydrake_doc.drake.systems.ResetIntegratorFromFlags.doc)
       .def("GetIntegrationSchemes", &GetIntegrationSchemes,
           pydrake_doc.drake.systems.GetIntegrationSchemes.doc);
+
   // Print Simulator Statistics
   m  // BR
       .def("PrintSimulatorStatistics", &PrintSimulatorStatistics<double>,
@@ -275,13 +310,19 @@ PYBIND11_MODULE(analysis, m) {
             doc.RegionOfAttractionOptions.lyapunov_candidate.doc)
         .def_readwrite("state_variables",
             &RegionOfAttractionOptions::state_variables,
-            doc.RegionOfAttractionOptions.state_variables.doc)
+            // dtype = object arrays must be copied, and cannot be referenced.
+            py_rvp::copy, doc.RegionOfAttractionOptions.state_variables.doc)
+        .def_readwrite("use_implicit_dynamics",
+            &RegionOfAttractionOptions::use_implicit_dynamics,
+            doc.RegionOfAttractionOptions.use_implicit_dynamics.doc)
         .def("__repr__", [](const RegionOfAttractionOptions& self) {
           return py::str(
               "RegionOfAttractionOptions("
               "lyapunov_candidate={}, "
-              "state_variables={})")
-              .format(self.lyapunov_candidate, self.state_variables);
+              "state_variables={}, "
+              "use_implicit_dynamics={})")
+              .format(self.lyapunov_candidate, self.state_variables,
+                  self.use_implicit_dynamics);
         });
 
     m.def("RegionOfAttraction", &RegionOfAttraction, py::arg("system"),

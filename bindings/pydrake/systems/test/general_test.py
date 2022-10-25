@@ -3,6 +3,7 @@
 import pydrake.systems.framework as mut
 
 import copy
+import gc
 from textwrap import dedent
 import warnings
 
@@ -14,8 +15,7 @@ from pydrake.common import RandomGenerator
 from pydrake.common.test_utilities import numpy_compare
 from pydrake.common.test_utilities.deprecation import catch_drake_warnings
 from pydrake.common.value import AbstractValue, Value
-from pydrake.examples.pendulum import PendulumPlant
-from pydrake.examples.rimless_wheel import RimlessWheel
+from pydrake.examples import PendulumPlant, RimlessWheel
 from pydrake.symbolic import Expression
 from pydrake.systems.analysis import (
     GetIntegrationSchemes,
@@ -39,10 +39,12 @@ from pydrake.systems.framework import (
     EventStatus,
     GenerateHtml,
     InputPort, InputPort_,
+    InputPortIndex,
     kUseDefaultName,
     LeafContext, LeafContext_,
     LeafSystem, LeafSystem_,
     OutputPort, OutputPort_,
+    OutputPortIndex,
     Parameters, Parameters_,
     PeriodicEventData,
     PublishEvent, PublishEvent_,
@@ -50,6 +52,7 @@ from pydrake.systems.framework import (
     Subvector, Subvector_,
     Supervector, Supervector_,
     System, System_,
+    SystemVisitor, SystemVisitor_,
     SystemBase,
     SystemOutput, SystemOutput_,
     VectorBase, VectorBase_,
@@ -64,7 +67,6 @@ from pydrake.systems.primitives import (
     Integrator,
     LinearSystem,
     PassThrough, PassThrough_,
-    SignalLogger,
     ZeroOrderHold,
     )
 
@@ -110,6 +112,10 @@ class TestGeneral(unittest.TestCase):
         self.assertEqual(system.GetSystemPathname(), "::adder")
         self.assertEqual(system.num_input_ports(), 3)
         self.assertEqual(system.num_output_ports(), 1)
+        self.assertEqual(system.num_continuous_states(), 0)
+        self.assertEqual(system.num_discrete_state_groups(), 0)
+        self.assertEqual(system.num_abstract_states(), 0)
+        self.assertEqual(system.implicit_time_derivatives_residual_size(), 0)
         u1 = system.GetInputPort("u1")
         self.assertEqual(u1.get_name(), "u1")
         self.assertIn("u1", u1.GetFullDescription())
@@ -284,9 +290,9 @@ class TestGeneral(unittest.TestCase):
         system1 = LinearSystem(A=[1], B=[1], C=[1], D=[1], time_period=0.1)
         periodic_data = system1.GetUniquePeriodicDiscreteUpdateAttribute()
         self.assertIsInstance(periodic_data, PeriodicEventData)
-        self.assertIsInstance(periodic_data.Clone(), PeriodicEventData)
         periodic_data.period_sec()
         periodic_data.offset_sec()
+        self.assertTrue(copy.copy(periodic_data) is not periodic_data)
         is_diff_eq, period = system1.IsDifferenceEquationSystem()
         self.assertTrue(is_diff_eq)
         self.assertEqual(period, periodic_data.period_sec())
@@ -493,6 +499,7 @@ class TestGeneral(unittest.TestCase):
             self.assertEqual(repr(params), "".join([
                 "InitializeParams("
                 "suppress_initialization_events=True)"]))
+            copy.copy(params)
 
     def test_copy(self):
         # Copy a context using `deepcopy` or `clone`.
@@ -897,7 +904,7 @@ class TestGeneral(unittest.TestCase):
 
     def test_diagram_fan_out(self):
         builder = DiagramBuilder()
-        adder = builder.AddSystem(Adder(6, 1))
+        adder = builder.AddSystem(Adder(7, 1))
         adder.set_name("adder")
         builder.ExportOutput(adder.get_output_port())
         in0_index = builder.ExportInput(adder.get_input_port(0), "in0")
@@ -911,6 +918,8 @@ class TestGeneral(unittest.TestCase):
                              input=adder.get_input_port(4))
         builder.ConnectInput(diagram_port_index=in1_index,
                              input=adder.get_input_port(5))
+        builder.ConnectToSame(exemplar=adder.get_input_port(2),
+                              dest=adder.get_input_port(6))
 
         diagram = builder.Build()
         diagram.set_name("fan_out_diagram")
@@ -923,6 +932,50 @@ class TestGeneral(unittest.TestCase):
         self.assertRegex(graph, "_u1 -> .*:u3")
         self.assertRegex(graph, "_u0 -> .*:u4")
         self.assertRegex(graph, "_u1 -> .*:u5")
+        self.assertRegex(graph, "_u0 -> .*:u6")
+
+    def test_diagram_api(self):
+        def make_diagram():
+            builder = DiagramBuilder()
+            adder1 = builder.AddNamedSystem("adder1", Adder(2, 2))
+            adder2 = builder.AddNamedSystem("adder2", Adder(1, 2))
+            builder.Connect(adder1.get_output_port(), adder2.get_input_port())
+            builder.ExportInput(adder1.get_input_port(0), "in0")
+            builder.ExportInput(adder1.get_input_port(1), "in1")
+            builder.ExportOutput(adder2.get_output_port(), "out")
+            builder.GetSubsystemByName(name="adder1")
+            builder.GetMutableSubsystemByName(name="adder2")
+            self.assertEqual(len(builder.connection_map()), 1)
+            diagram = builder.Build()
+            return adder1, adder2, diagram
+
+        adder1, adder2, diagram = make_diagram()
+        connections = diagram.connection_map()
+        self.assertIn((adder2, InputPortIndex(0)), connections)
+        self.assertEqual(connections[(adder2, InputPortIndex(0))],
+                         (adder1, OutputPortIndex(0)))
+        del adder1, adder2, diagram  # To test keep-alive logic
+        gc.collect()
+        self.assertEqual(list(connections.keys())[0][0].get_name(), "adder2")
+
+        adder1, adder2, diagram = make_diagram()
+        in0_locators = diagram.GetInputPortLocators(
+            port_index=InputPortIndex(0))
+        in1_locators = diagram.GetInputPortLocators(
+            port_index=InputPortIndex(1))
+        self.assertEqual(in0_locators, [(adder1, InputPortIndex(0))])
+        self.assertEqual(in1_locators, [(adder1, InputPortIndex(1))])
+        del adder1, adder2, diagram  # To test keep-alive logic
+        gc.collect()
+        self.assertEqual(in0_locators[0][0].get_name(), "adder1")
+
+        adder1, adder2, diagram = make_diagram()
+        out_locators = diagram.get_output_port_locator(
+            port_index=OutputPortIndex(0))
+        self.assertEqual(out_locators, (adder2, OutputPortIndex(0)))
+        del adder1, adder2, diagram  # To test keep-alive logic
+        gc.collect()
+        self.assertEqual(out_locators[0].get_name(), "adder2")
 
     def test_add_named_system(self):
         builder = DiagramBuilder()
@@ -933,3 +986,27 @@ class TestGeneral(unittest.TestCase):
 
     def test_module_constants(self):
         self.assertEqual(repr(kUseDefaultName), "kUseDefaultName")
+
+    def test_system_visitor(self):
+        builder = DiagramBuilder()
+        builder.AddNamedSystem("adder1", Adder(2, 2))
+        builder.AddNamedSystem("adder2", Adder(2, 2))
+        system = builder.Build()
+        system.set_name("diagram")
+
+        visited_systems = []
+        visited_diagrams = []
+
+        class MyVisitor(SystemVisitor):
+            def VisitSystem(self, system):
+                visited_systems.append(system.get_name())
+
+            def VisitDiagram(self, diagram):
+                visited_diagrams.append(diagram.get_name())
+                for sys in diagram.GetSystems():
+                    sys.Accept(self)
+
+        visitor = MyVisitor()
+        system.Accept(v=visitor)
+        self.assertEqual(visited_systems, ["adder1", "adder2"])
+        self.assertEqual(visited_diagrams, ["diagram"])

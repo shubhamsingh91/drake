@@ -53,16 +53,9 @@ class MultibodyPlantDiscreteUpdateManagerAttorney {
     return plant.EvalContactJacobians(context);
   }
 
-  static const std::vector<internal::DiscreteContactPair<T>>&
-  EvalDiscreteContactPairs(const MultibodyPlant<T>& plant,
-                           const systems::Context<T>& context) {
-    return plant.EvalDiscreteContactPairs(context);
-  }
-
-  static std::vector<CoulombFriction<double>> CalcCombinedFrictionCoefficients(
-      const MultibodyPlant<T>& plant, const systems::Context<T>& context,
-      const std::vector<internal::DiscreteContactPair<T>>& contact_pairs) {
-    return plant.CalcCombinedFrictionCoefficients(context, contact_pairs);
+  static const std::vector<geometry::ContactSurface<T>>& EvalContactSurfaces(
+      const MultibodyPlant<T>& plant, const systems::Context<T>& context) {
+    return plant.EvalContactSurfaces(context);
   }
 
   static void AddInForcesFromInputPorts(const MultibodyPlant<T>& plant,
@@ -71,9 +64,22 @@ class MultibodyPlantDiscreteUpdateManagerAttorney {
     plant.AddInForcesFromInputPorts(context, forces);
   }
 
-  static const std::vector<geometry::ContactSurface<T>>& EvalContactSurfaces(
-      const MultibodyPlant<T>& plant, const systems::Context<T>& context) {
-    return plant.EvalContactSurfaces(context);
+  static void CalcNonContactForces(const MultibodyPlant<T>& plant,
+                            const drake::systems::Context<T>& context,
+                            MultibodyForces<T>* forces) {
+    return plant.CalcNonContactForces(context, true /* is discrete */, forces);
+  }
+
+  [[nodiscard]] static ScopeExit ThrowIfNonContactForceInProgress(
+      const MultibodyPlant<T>& plant,
+      const drake::systems::Context<T>& context) {
+    return plant.ThrowIfNonContactForceInProgress(context);
+  }
+
+  static void CalcForceElementsContribution(
+      const MultibodyPlant<T>& plant, const drake::systems::Context<T>& context,
+      MultibodyForces<T>* forces) {
+    return plant.CalcForceElementsContribution(context, forces);
   }
 
   // TODO(xuchenhan-tri): Remove this when SceneGraph takes control of all
@@ -96,6 +102,11 @@ class MultibodyPlantDiscreteUpdateManagerAttorney {
   static const std::unordered_map<geometry::GeometryId, BodyIndex>&
   geometry_id_to_body_index(const MultibodyPlant<T>& plant) {
     return plant.geometry_id_to_body_index_;
+  }
+
+  static const std::vector<internal::CouplerConstraintSpecs<T>>&
+  coupler_constraints_specs(const MultibodyPlant<T>& plant) {
+    return plant.coupler_constraints_specs_;
   }
 };
 }  // namespace internal

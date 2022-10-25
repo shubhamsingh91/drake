@@ -7,6 +7,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <unsupported/Eigen/AutoDiff>
 
 #include "drake/common/autodiff.h"
 #include "drake/common/drake_assert.h"
@@ -860,7 +861,7 @@ GTEST_TEST(SimulatorTest, ContextAccess) {
   EXPECT_TRUE(simulator.has_context());
   simulator.release_context();
   EXPECT_FALSE(simulator.has_context());
-  DRAKE_EXPECT_THROWS_MESSAGE(simulator.Initialize(), std::logic_error,
+  DRAKE_EXPECT_THROWS_MESSAGE(simulator.Initialize(),
       ".*Initialize.*Context.*not.*set.*");
 
   // Create another context.
@@ -2317,7 +2318,7 @@ GTEST_TEST(SimulatorTest, MonitorFunctionAndStatusReturn) {
   };
   simulator.set_monitor(bad_monitor);
   DRAKE_EXPECT_THROWS_MESSAGE(
-      simulator.AdvanceTo(10.), std::runtime_error,
+      simulator.AdvanceTo(10.),
       ".*Simulator stopped at time 6.*because.*"
       "SpringMassSystem.*my_spring_mass.*"
       "failed with message.*Something terrible happened.*");

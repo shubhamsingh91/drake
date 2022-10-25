@@ -1,11 +1,11 @@
 #include "drake/solvers/gurobi_solver.h"
 
+#include <filesystem>
 #include <limits>
 #include <thread>
 
 #include <gtest/gtest.h>
 
-#include "drake/common/filesystem.h"
 #include "drake/common/temp_directory.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
@@ -39,7 +39,7 @@ TEST_F(InfeasibleLinearProgramTest0, TestGurobiInfeasible) {
     prog_->SetSolverOption(GurobiSolver::id(), "DualReductions", 1);
     auto result = solver.Solve(*prog_, {}, {});
     EXPECT_EQ(result.get_solution_result(),
-              SolutionResult::kInfeasible_Or_Unbounded);
+              SolutionResult::kInfeasibleOrUnbounded);
     EXPECT_TRUE(std::isnan(result.get_optimal_cost()));
     prog_->SetSolverOption(GurobiSolver::id(), "DualReductions", 0);
     result = solver.Solve(*prog_, {}, {});
@@ -60,9 +60,9 @@ TEST_F(UnboundedLinearProgramTest0, TestGurobiUnbounded) {
     auto result = solver.Solve(*prog_, {}, solver_options);
     EXPECT_FALSE(result.is_success());
     EXPECT_EQ(result.get_solution_result(),
-              SolutionResult::kInfeasible_Or_Unbounded);
+              SolutionResult::kInfeasibleOrUnbounded);
     // This code is defined in
-    // https://www.gurobi.com/documentation/9.0/refman/optimization_status_codes.html
+    // https://www.gurobi.com/documentation/9.5/refman/optimization_status_codes.html
     const int GRB_INF_OR_UNBD = 4;
     EXPECT_EQ(result.get_solver_details<GurobiSolver>().optimization_status,
               GRB_INF_OR_UNBD);
@@ -72,7 +72,7 @@ TEST_F(UnboundedLinearProgramTest0, TestGurobiUnbounded) {
     EXPECT_FALSE(result.is_success());
     EXPECT_EQ(result.get_solution_result(), SolutionResult::kUnbounded);
     // This code is defined in
-    // https://www.gurobi.com/documentation/9.0/refman/optimization_status_codes.html
+    // https://www.gurobi.com/documentation/9.5/refman/optimization_status_codes.html
     const int GRB_UNBOUNDED = 5;
     EXPECT_EQ(result.get_solver_details<GurobiSolver>().optimization_status,
               GRB_UNBOUNDED);
@@ -231,7 +231,7 @@ GTEST_TEST(GurobiTest, TestCallbacks) {
 TEST_P(TestEllipsoidsSeparation, TestSOCP) {
   GurobiSolver gurobi_solver;
   if (gurobi_solver.available()) {
-    SolveAndCheckSolution(gurobi_solver, 1.1E-8);
+    SolveAndCheckSolution(gurobi_solver, {}, 1.1E-8);
   }
 }
 
@@ -251,7 +251,7 @@ INSTANTIATE_TEST_SUITE_P(GurobiTest, TestQPasSOCP,
 TEST_P(TestFindSpringEquilibrium, TestSOCP) {
   GurobiSolver gurobi_solver;
   if (gurobi_solver.available()) {
-    SolveAndCheckSolution(gurobi_solver, 2E-2);
+    SolveAndCheckSolution(gurobi_solver, {}, 2E-2);
   }
 }
 
@@ -282,7 +282,7 @@ GTEST_TEST(TestSOCP, MaximizeGeometricMeanTrivialProblem2) {
 
 GTEST_TEST(TestSOCP, SmallestEllipsoidCoveringProblem) {
   GurobiSolver solver;
-  SolveAndCheckSmallestEllipsoidCoveringProblems(solver, 1E-6);
+  SolveAndCheckSmallestEllipsoidCoveringProblems(solver, {}, 1E-6);
 }
 
 GTEST_TEST(GurobiTest, MultipleThreadsSharingEnvironment) {
@@ -358,16 +358,29 @@ GTEST_TEST(GurobiTest, GurobiErrorCode) {
 
   GurobiSolver solver;
   if (solver.available()) {
-    SolverOptions solver_options1;
     // Report error when we set an unknown attribute to Gurobi.
+    SolverOptions solver_options1;
     solver_options1.SetOption(solver.solver_id(), "Foo", 1);
     DRAKE_EXPECT_THROWS_MESSAGE(solver.Solve(prog, {}, solver_options1),
                                 ".* 'Foo' is an unknown parameter in Gurobi.*");
+
     // Report error when we pass an incorect value to a valid Gurobi parameter
     SolverOptions solver_options2;
     solver_options2.SetOption(solver.solver_id(), "FeasibilityTol", 1E10);
     DRAKE_EXPECT_THROWS_MESSAGE(solver.Solve(prog, {}, solver_options2),
                                 ".* is outside the parameter Feasibility.*");
+
+    // It is NOT an error to pass a float option using an int.
+    // Drake will promote the int to a float automatically.
+    SolverOptions solver_options3;
+    solver_options3.SetOption(solver.solver_id(), "TimeLimit", 3);
+    EXPECT_NO_THROW(solver.Solve(prog, {}, solver_options3));
+
+    // But it IS an error to pass a numeric option using a string.
+    SolverOptions solver_options4;
+    solver_options4.SetOption(solver.solver_id(), "Quad", "0");
+    DRAKE_EXPECT_THROWS_MESSAGE(solver.Solve(prog, {}, solver_options4),
+                                ".*Quad.*integer.*not.*string.*");
   }
 }
 
@@ -385,10 +398,10 @@ GTEST_TEST(GurobiTest, LogFile) {
     {
       SolverOptions solver_options;
       const std::string log_file = temp_directory() + "/gurobi.log";
-      EXPECT_FALSE(filesystem::exists({log_file}));
+      EXPECT_FALSE(std::filesystem::exists({log_file}));
       solver_options.SetOption(solver.id(), "LogFile", log_file);
       auto result = solver.Solve(prog, {}, solver_options);
-      EXPECT_TRUE(filesystem::exists({log_file}));
+      EXPECT_TRUE(std::filesystem::exists({log_file}));
     }
 
     // Set log file through CommonSolverOptions.
@@ -396,11 +409,11 @@ GTEST_TEST(GurobiTest, LogFile) {
       SolverOptions solver_options;
       const std::string log_file_common =
           temp_directory() + "/gurobi_common.log";
-      EXPECT_FALSE(filesystem::exists({log_file_common}));
+      EXPECT_FALSE(std::filesystem::exists({log_file_common}));
       solver_options.SetOption(CommonSolverOption::kPrintFileName,
                                log_file_common);
       solver.Solve(prog, {}, solver_options);
-      EXPECT_TRUE(filesystem::exists({log_file_common}));
+      EXPECT_TRUE(std::filesystem::exists({log_file_common}));
     }
 
     // Also set to log to console. We can't test the console output but this
@@ -423,11 +436,11 @@ GTEST_TEST(GurobiTest, LogFile) {
                                log_file_common);
       const std::string log_file = temp_directory() + "/gurobi2.log";
       solver_options.SetOption(solver.id(), "LogFile", log_file);
-      EXPECT_FALSE(filesystem::exists({log_file}));
-      EXPECT_FALSE(filesystem::exists({log_file_common}));
+      EXPECT_FALSE(std::filesystem::exists({log_file}));
+      EXPECT_FALSE(std::filesystem::exists({log_file_common}));
       auto result = solver.Solve(prog, {}, solver_options);
-      EXPECT_TRUE(filesystem::exists({log_file}));
-      EXPECT_FALSE(filesystem::exists({log_file_common}));
+      EXPECT_TRUE(std::filesystem::exists({log_file}));
+      EXPECT_FALSE(std::filesystem::exists({log_file_common}));
     }
   }
 }
@@ -447,9 +460,9 @@ GTEST_TEST(GurobiTest, WriteModel) {
     // Setting GRBwrite to "" and make sure calling Solve doesn't cause error.
     solver.Solve(prog, {}, options);
     options.SetOption(solver.id(), "GRBwrite", model_file);
-    EXPECT_FALSE(filesystem::exists({model_file}));
+    EXPECT_FALSE(std::filesystem::exists({model_file}));
     const auto result = solver.Solve(prog, {}, options);
-    EXPECT_TRUE(filesystem::exists({model_file}));
+    EXPECT_TRUE(std::filesystem::exists({model_file}));
     options.SetOption(solver.id(), "GRBwrite", "foo.wrong_extension");
     DRAKE_EXPECT_THROWS_MESSAGE(solver.Solve(prog, {}, options),
                                 ".* setting GRBwrite to foo.wrong_extension.*");
@@ -469,9 +482,9 @@ GTEST_TEST(GurobiTest, ComputeIIS) {
     options.SetOption(solver.id(), "GRBcomputeIIS", 1);
     const std::string ilp_file = temp_directory() + "/gurobi_model.ilp";
     options.SetOption(solver.id(), "GRBwrite", ilp_file);
-    EXPECT_FALSE(filesystem::exists({ilp_file}));
+    EXPECT_FALSE(std::filesystem::exists({ilp_file}));
     auto result = solver.Solve(prog, {}, options);
-    EXPECT_TRUE(filesystem::exists({ilp_file}));
+    EXPECT_TRUE(std::filesystem::exists({ilp_file}));
     // Set GRBcomputeIIS to a wrong value.
     options.SetOption(solver.id(), "GRBcomputeIIS", 100);
     DRAKE_EXPECT_THROWS_MESSAGE(
@@ -573,7 +586,7 @@ GTEST_TEST(GurobiTest, SOCPDualSolution1) {
     // By default the dual solution for second order cone is not computed.
     MathematicalProgramResult result = solver.Solve(prog);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        result.GetDualSolution(constraint1), std::invalid_argument,
+        result.GetDualSolution(constraint1),
         "You used Gurobi to solve this optimization problem.*");
     SolverOptions options;
     options.SetOption(solver.id(), "QCPDual", 1);
@@ -591,7 +604,7 @@ GTEST_TEST(GurobiTest, SOCPDualSolution1) {
     options.SetOption(solver.id(), "QCPDual", 0);
     result = solver.Solve(prog, std::nullopt, options);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        result.GetDualSolution(bb_con), std::invalid_argument,
+        result.GetDualSolution(bb_con),
         "You used Gurobi to solve this optimization problem.*");
     // Now set QCPDual = 1, we should be able to retrieve the dual solution to
     // the bounding box constraint.

@@ -1,7 +1,8 @@
+import copy
 import unittest
 
 from pydrake.common.test_utilities.deprecation import catch_drake_warnings
-from pydrake.lcm import DrakeLcm, DrakeLcmInterface, DrakeMockLcm, Subscriber
+from pydrake.lcm import DrakeLcm, DrakeLcmInterface, DrakeLcmParams, Subscriber
 
 from drake import lcmt_quaternion
 
@@ -18,26 +19,26 @@ class TestLcm(unittest.TestCase):
     def test_lcm(self):
         dut = DrakeLcm()
         self.assertIsInstance(dut, DrakeLcmInterface)
+        dut.get_lcm_url()
         DrakeLcm(lcm_url="")
-        DrakeLcm(lcm_url="", defer_initialization=True)
         # Test virtual function names.
         dut.Publish
         dut.HandleSubscriptions
+
+    def test_params(self):
+        dut = DrakeLcmParams()
+        dut.lcm_url = "memq://123"
+        dut.channel_suffix = "_foo"
+        dut.defer_initialization = True
+        instance = DrakeLcm(params=dut)
+        self.assertTrue(instance.get_lcm_url(), "memq://123")
+        self.assertIn("lcm_url", repr(dut))
+        copy.copy(dut)
 
     def _handler(self, raw):
         quat = lcmt_quaternion.decode(raw)
         self.assertTupleEqual((quat.w, quat.x, quat.y, quat.z), self.wxyz)
         self.count += 1
-
-    def test_mock_lcm_roundtrip(self):
-        with catch_drake_warnings(expected_count=1):
-            dut = DrakeMockLcm()
-        self.assertIsInstance(dut, DrakeLcmInterface)
-        dut.Subscribe(channel="TEST_CHANNEL", handler=self._handler)
-        dut.Publish(channel="TEST_CHANNEL", buffer=self.quat.encode())
-        self.assertEqual(self.count, 0)
-        dut.HandleSubscriptions(0)
-        self.assertEqual(self.count, 1)
 
     def test_subscriber(self):
         lcm = DrakeLcm()

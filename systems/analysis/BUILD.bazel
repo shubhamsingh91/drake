@@ -27,6 +27,7 @@ drake_cc_package_library(
         ":implicit_euler_integrator",
         ":implicit_integrator",
         ":initial_value_problem",
+        ":instantaneous_realtime_rate_calculator",
         ":integrator_base",
         ":lyapunov",
         ":monte_carlo",
@@ -138,7 +139,6 @@ drake_cc_library(
     hdrs = ["hermitian_dense_output.h"],
     deps = [
         ":stepwise_dense_output",
-        "//common:autodiff",
         "//common:default_scalars",
         "//common:essential",
         "//common:extract_double",
@@ -223,9 +223,11 @@ drake_cc_library(
     deps = [
         "//math:continuous_lyapunov_equation",
         "//math:matrix_util",
+        "//math:quadratic_form",
         "//solvers:mathematical_program",
         "//solvers:solve",
         "//systems/framework",
+        "//systems/primitives:linear_system",
     ],
 )
 
@@ -293,6 +295,17 @@ drake_cc_library(
     deps = [
         ":integrator_base",
         "//math:gradient",
+    ],
+)
+
+drake_cc_library(
+    name = "instantaneous_realtime_rate_calculator",
+    srcs = ["instantaneous_realtime_rate_calculator.cc"],
+    hdrs = [
+        "instantaneous_realtime_rate_calculator.h",
+    ],
+    deps = [
+        "//common:timer",
     ],
 )
 
@@ -407,6 +420,7 @@ drake_cc_library(
         ":simulator_config",
         ":simulator_status",
         "//common:extract_double",
+        "//common:name_value",
         "//systems/framework:context",
         "//systems/framework:system",
     ],
@@ -561,6 +575,13 @@ drake_cc_googletest(
         ":integrator_base",
         "//common/test_utilities:expect_throws_message",
         "//systems/analysis/test_utilities:spring_mass_system",
+    ],
+)
+
+drake_cc_googletest(
+    name = "instantaneous_realtime_rate_calculator_test",
+    deps = [
+        ":instantaneous_realtime_rate_calculator",
     ],
 )
 

@@ -3,19 +3,21 @@ Utilities for arithmetic on AutoDiffScalar. */
 
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 #include <Eigen/Dense>
+#include <unsupported/Eigen/AutoDiff>
 
 #include "drake/common/autodiff.h"
-#include "drake/common/drake_deprecated.h"
+#include "drake/common/eigen_types.h"
 #include "drake/common/unused.h"
 
 namespace drake {
 namespace math {
-
 
 /** Extracts the `value()` portion from a matrix of AutoDiffScalar entries.
 (Each entry contains a value and some derivatives.)
@@ -40,13 +42,10 @@ zero. drake::ExtractDoubleOrThrow() has many specializations, including one for
 
 @see DiscardGradient(), drake::ExtractDoubleOrThrow() */
 template <typename Derived>
-Eigen::Matrix<typename Derived::Scalar::Scalar,
-              Derived::RowsAtCompileTime, Derived::ColsAtCompileTime>
+MatrixLikewise<typename Derived::Scalar::Scalar, Derived>
 ExtractValue(const Eigen::MatrixBase<Derived>& auto_diff_matrix) {
-  Eigen::Matrix<typename Derived::Scalar::Scalar,
-                Derived::RowsAtCompileTime, Derived::ColsAtCompileTime>
-      value(auto_diff_matrix.rows(), auto_diff_matrix.cols());
-
+  MatrixLikewise<typename Derived::Scalar::Scalar, Derived> value(
+      auto_diff_matrix.rows(), auto_diff_matrix.cols());
   for (int i = 0; i < auto_diff_matrix.rows(); ++i) {
     for (int j = 0; j < auto_diff_matrix.cols(); ++j) {
       value(i, j) = auto_diff_matrix(i, j).value();
@@ -54,26 +53,6 @@ ExtractValue(const Eigen::MatrixBase<Derived>& auto_diff_matrix) {
   }
   return value;
 }
-
-template <typename Derived>
-struct DRAKE_DEPRECATED("2022-02-01", "Used only in deprecated functions.")
-    AutoDiffToValueMatrix {
-  typedef typename Eigen::Matrix<typename Derived::Scalar::Scalar,
-                                 Derived::RowsAtCompileTime,
-                                 Derived::ColsAtCompileTime>
-      type;
-};
-
-// This deprecated function uses the above deprecated struct.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-template <typename Derived>
-DRAKE_DEPRECATED("2022-02-01", "Use ExtractValue() instead")
-typename AutoDiffToValueMatrix<Derived>::type
-    autoDiffToValueMatrix(const Eigen::MatrixBase<Derived>& autodiff_matrix) {
-  return ExtractValue(autodiff_matrix);
-}
-#pragma GCC diagnostic pop
 
 /** `B = DiscardGradient(A)` enables casting from a matrix of AutoDiffScalars
 to AutoDiffScalar::Scalar type, explicitly throwing away any gradient
@@ -83,55 +62,20 @@ comparable operation
 should (and does) fail to compile.  Use `DiscardGradient(A)` if you want to
 force the cast (and explicitly declare that information is lost).
 
-This method is overloaded to permit the user to call it for double types and
-AutoDiffScalar types (to avoid the calling function having to handle the
-two cases differently).
+When called with a matrix that is already of type `double`, this function
+returns a _reference_ to the argument without any copying. This efficiently
+avoids extra copying, but be careful about reference lifetimes!
 
 See ExtractValue() for a note on similar Drake functions.
 
 @see ExtractValue(), DiscardZeroGradient() */
 template <typename Derived>
-typename std::enable_if_t<
-    !std::is_same_v<typename Derived::Scalar, double>,
-    Eigen::Matrix<typename Derived::Scalar::Scalar, Derived::RowsAtCompileTime,
-                  Derived::ColsAtCompileTime, 0, Derived::MaxRowsAtCompileTime,
-                  Derived::MaxColsAtCompileTime>>
-DiscardGradient(const Eigen::MatrixBase<Derived>& auto_diff_matrix) {
-  return ExtractValue(auto_diff_matrix);
-}
-
-/** @see DiscardGradient(). */
-template <typename Derived>
-typename std::enable_if_t<
-    std::is_same_v<typename Derived::Scalar, double>,
-    const Eigen::MatrixBase<Derived>&>
-DiscardGradient(const Eigen::MatrixBase<Derived>& matrix) {
-  return matrix;
-}
-
-template <typename _Scalar, int _Dim, int _Mode, int _Options>
-DRAKE_DEPRECATED("2021-12-01",
-    "Apparently unused. File a Drake issue on GitHub"
-    " if you need this specialization.")
-typename std::enable_if_t<
-    !std::is_same_v<_Scalar, double>,
-    Eigen::Transform<typename _Scalar::Scalar, _Dim, _Mode, _Options>>
-DiscardGradient(const Eigen::Transform<_Scalar, _Dim, _Mode, _Options>&
-                    auto_diff_transform) {
-  return Eigen::Transform<typename _Scalar::Scalar, _Dim, _Mode, _Options>(
-      ExtractValue(auto_diff_transform.matrix()));
-}
-
-template <typename _Scalar, int _Dim, int _Mode, int _Options>
-DRAKE_DEPRECATED("2021-12-01",
-    "Apparently unused. File a Drake issue on GitHub"
-    " if you need this specialization.")
-typename std::enable_if_t<std::is_same_v<_Scalar, double>,
-                          const Eigen::Transform<_Scalar, _Dim, _Mode,
-    _Options>&>
-DiscardGradient(
-    const Eigen::Transform<_Scalar, _Dim, _Mode, _Options>& transform) {
-  return transform;
+decltype(auto) DiscardGradient(const Eigen::MatrixBase<Derived>& matrix) {
+  if constexpr (std::is_same_v<typename Derived::Scalar, double>) {
+    return matrix;
+  } else {
+    return ExtractValue(matrix);
+  }
 }
 
 /** Initializes a single AutoDiff matrix given the corresponding value matrix.
@@ -141,6 +85,11 @@ to `value`, and for each element i of `auto_diff_matrix`, resizes the
 derivatives vector to `num_derivatives` and sets derivative number
 `deriv_num_start` + i to one (all other elements of the derivative vector set
 to zero).
+
+When `value` and `auto_diff_matrix` are matrices (rather than just vectors)
+note in particular that the derivative numbers count up using the _storage
+order_ of `value(i)` and `autodiff_matrix(i)` and so the ColMajor vs RowMajor
+storage order of the two must match.
 
 @param[in] value a 'regular' matrix of values
 @param[in] num_derivatives (Optional) size of the derivatives vector
@@ -166,6 +115,9 @@ void InitializeAutoDiff(const Eigen::MatrixBase<Derived>& value,
   static_assert(static_cast<int>(Derived::ColsAtCompileTime) ==
                     static_cast<int>(DerivedAutoDiff::ColsAtCompileTime),
                 "auto diff matrix has wrong number of columns at compile time");
+  static_assert(static_cast<int>(Derived::IsRowMajor) ==
+                    static_cast<int>(DerivedAutoDiff::IsRowMajor),
+                "auto diff matrix has wrong storage order at compile time");
 
   DRAKE_DEMAND(auto_diff_matrix != nullptr);
   if (!num_derivatives.has_value()) num_derivatives = value.size();
@@ -189,27 +141,12 @@ void InitializeAutoDiff(
   InitializeAutoDiff(value, {}, {}, auto_diff_matrix);
 }
 
-template <typename Derived, typename DerivedAutoDiff>
-DRAKE_DEPRECATED("2022-02-01", "Use InitializeAutoDiff() instead")
-void initializeAutoDiff(const Eigen::MatrixBase<Derived>& value,
-                        // NOLINTNEXTLINE(runtime/references).
-                        Eigen::MatrixBase<DerivedAutoDiff>& auto_diff_matrix,
-                        Eigen::DenseIndex num_derivatives = Eigen::Dynamic,
-                        Eigen::DenseIndex deriv_num_start = 0) {
-  InitializeAutoDiff(value,
-                     num_derivatives == Eigen::Dynamic
-                         ? std::nullopt
-                         : std::optional<int>(num_derivatives),
-                     static_cast<int>(deriv_num_start), &auto_diff_matrix);
-}
-
 /** The appropriate AutoDiffScalar matrix type given the value type and the
 number of derivatives at compile time. */
 template <typename Derived, int nq>
-using AutoDiffMatrixType = Eigen::Matrix<
-    Eigen::AutoDiffScalar<Eigen::Matrix<typename Derived::Scalar, nq, 1>>,
-    Derived::RowsAtCompileTime, Derived::ColsAtCompileTime, 0,
-    Derived::MaxRowsAtCompileTime, Derived::MaxColsAtCompileTime>;
+using AutoDiffMatrixType = MatrixLikewise<
+    Eigen::AutoDiffScalar<Vector<typename Derived::Scalar, nq>>,
+    Derived>;
 
 /** Initializes a single AutoDiff matrix given the corresponding value matrix.
 
@@ -218,6 +155,10 @@ of compile time size `nq` and runtime size `num_derivatives`. Sets its values to
 be equal to `value`, and for each element i of `auto_diff_matrix`, sets
 derivative number `deriv_num_start` + i to one (all other derivatives set to
 zero).
+
+When `value` is a matrix (rather than just a vector) note in particular that
+the return value will use the same storage order (ColMajor vs RowMajor) and
+that the derivative numbers count up using the _storage order_ of `value(i)`.
 
 @param[in] value 'regular' matrix of values
 @param[in] num_derivatives (Optional) size of the derivatives vector
@@ -240,137 +181,6 @@ AutoDiffMatrixType<Derived, nq> InitializeAutoDiff(
   return auto_diff_matrix;
 }
 
-template <int nq = Eigen::Dynamic, typename Derived>
-DRAKE_DEPRECATED("2022-02-01", "Use InitializeAutoDiff() instead")
-AutoDiffMatrixType<Derived, nq> initializeAutoDiff(
-    const Eigen::MatrixBase<Derived>& mat,
-    Eigen::DenseIndex num_derivatives = -1,
-    Eigen::DenseIndex deriv_num_start = 0) {
-  return InitializeAutoDiff<nq, Derived>(
-      mat,
-      num_derivatives == -1 ? std::nullopt
-                            : std::optional<int>(num_derivatives),
-      static_cast<int>(deriv_num_start));
-}
-
-// TODO(sherm1) DRAKE_DEPRECATED("2021-12-01") Remove this internal:: block when
-//  resizeDerivativesToMatchScalar() below is removed.
-namespace internal {
-template <typename Derived, typename Scalar>
-struct ResizeDerivativesToMatchScalarImpl {
-  static void run(const Scalar&, Eigen::MatrixBase<Derived>*) {}
-};
-
-template <typename Derived, typename DerivType>
-struct ResizeDerivativesToMatchScalarImpl<Derived,
-                                          Eigen::AutoDiffScalar<DerivType>> {
-  using Scalar = Eigen::AutoDiffScalar<DerivType>;
-  static void run(const Scalar& scalar, Eigen::MatrixBase<Derived>* mat) {
-    for (int i = 0; i < mat->size(); ++i) {
-      auto& derivs = (*mat)(i).derivatives();
-      if (derivs.size() == 0) {
-        derivs.resize(scalar.derivatives().size());
-        derivs.setZero();
-      }
-    }
-  }
-};
-}  // namespace internal
-
-/** Resize derivatives vector of each element of a matrix to match the size
- * of the derivatives vector of a given scalar.
- * \brief If the mat and scalar inputs are AutoDiffScalars, resize the
- * derivatives vector of each element of the matrix mat to match
- * the number of derivatives of the scalar. This is useful in functions that
- * return matrices that do not depend on an AutoDiffScalar
- * argument (e.g. a function with a constant output), while it is desired that
- * information about the number of derivatives is preserved.
- * \param mat matrix, for which the derivative vectors of the elements will be
- * resized
- * \param scalar scalar to match the derivative size vector against.
- */
-template <typename Derived>
-DRAKE_DEPRECATED("2021-12-01",
-    "Apparently unused. File a Drake issue on GitHub if you need this method.")
-// NOLINTNEXTLINE(runtime/references).
-void resizeDerivativesToMatchScalar(Eigen::MatrixBase<Derived>& matrix,
-                                    const typename Derived::Scalar& scalar) {
-  internal::ResizeDerivativesToMatchScalarImpl<
-      Derived, typename Derived::Scalar>::run(scalar, &matrix);
-}
-
-namespace internal {
-/* Helper for total_size_at_compile_time() (recursive). */
-template <typename Head, typename... Tail>
-struct TotalSizeAtCompileTimeHelper {
-  static constexpr int eval() {
-    return Head::SizeAtCompileTime == Eigen::Dynamic ||
-                   TotalSizeAtCompileTimeHelper<Tail...>::eval() ==
-                       Eigen::Dynamic
-               ? Eigen::Dynamic
-               : Head::SizeAtCompileTime +
-                     TotalSizeAtCompileTimeHelper<Tail...>::eval();
-  }
-};
-
-/* Helper for total_size_at_compile_time() (base case). */
-template <typename Head>
-struct TotalSizeAtCompileTimeHelper<Head> {
-  static constexpr int eval() { return Head::SizeAtCompileTime; }
-};
-
-/* Determines the total size at compile time of a number of arguments
-based on their SizeAtCompileTime static members. Returns Eigen::Dynamic if
-total size can't be determined at compile time. */
-template <typename... Args>
-constexpr int total_size_at_compile_time() {
-  return TotalSizeAtCompileTimeHelper<Args...>::eval();
-}
-
-/* Determines the total size at runtime of a number of arguments using
-their size() methods (base case). */
-constexpr Eigen::DenseIndex total_size_at_run_time() { return 0; }
-
-/* Determines the total size at runtime of a number of arguments using
-their size() methods (recursive). */
-template <typename Head, typename... Tail>
-Eigen::DenseIndex total_size_at_run_time(const Eigen::MatrixBase<Head>& head,
-                                         const Tail&... tail) {
-  return head.size() + total_size_at_run_time(tail...);
-}
-
-/* Helper for InitializeAutoDiffTuple() (recursive). */
-template <size_t index>
-struct InitializeAutoDiffTupleHelper {
-  template <typename... ValueTypes, typename... AutoDiffTypes>
-  static void run(const std::tuple<ValueTypes...>& values,
-                  Eigen::DenseIndex num_derivatives,
-                  Eigen::DenseIndex deriv_num_start,
-                  std::tuple<AutoDiffTypes...>* auto_diffs) {
-    DRAKE_DEMAND(auto_diffs != nullptr);
-    constexpr size_t tuple_index = sizeof...(AutoDiffTypes) - index;
-    const auto& value = std::get<tuple_index>(values);
-    auto& auto_diff = std::get<tuple_index>(*auto_diffs);
-    auto_diff.resize(value.rows(), value.cols());
-    InitializeAutoDiff(value, num_derivatives, deriv_num_start, &auto_diff);
-    InitializeAutoDiffTupleHelper<index - 1>::run(
-        values, num_derivatives, deriv_num_start + value.size(), auto_diffs);
-  }
-};
-
-/* Helper for InitializeAutoDiffTuple() (base case). */
-template <>
-struct InitializeAutoDiffTupleHelper<0> {
-  template <typename... ValueTypes, typename... AutoDiffTypes>
-  static void run(const std::tuple<ValueTypes...>& values,
-                  Eigen::DenseIndex num_derivatives,
-                  Eigen::DenseIndex deriv_num_start,
-                  const std::tuple<AutoDiffTypes...>* auto_diffs) {
-    unused(values, num_derivatives, deriv_num_start, auto_diffs);
-  }
-};
-}  // namespace internal
-
 /* Given a series of Eigen matrices, creates a tuple of corresponding
 AutoDiff matrices with values equal to the input matrices and properly
 initialized derivative vectors.
@@ -383,36 +193,46 @@ the sizes at compile time of all of the input arguments), otherwise the
 derivative vectors will have dynamic size. The 0th element of the derivative
 vectors will correspond to the derivative with respect to the 0th element of the
 first argument. Subsequent derivative vector elements correspond first to
-subsequent elements of the first input argument (traversed first by row, then by
-column), and so on for subsequent arguments.
+subsequent elements of the first input argument (traversed in the same order as
+InitializeAutoDiff() for that matrix), and so on for subsequent arguments.
 
 @param args a series of Eigen matrices
 @returns a tuple of properly initialized AutoDiff matrices corresponding to
     `args` */
 template <typename... Deriveds>
-std::tuple<AutoDiffMatrixType<
-    Deriveds, internal::total_size_at_compile_time<Deriveds...>()>...>
-InitializeAutoDiffTuple(const Eigen::MatrixBase<Deriveds>&... args) {
-  constexpr int compile_num_derivs =
-      internal::total_size_at_compile_time<Deriveds...>();
-  const Eigen::DenseIndex dynamic_num_derivs =
-      internal::total_size_at_run_time(args...);
+auto InitializeAutoDiffTuple(const Eigen::MatrixBase<Deriveds>&... args) {
+  // Compute the total compile-time size of all args (or Dynamic, if unknown).
+  // Refer to https://en.cppreference.com/w/cpp/language/fold for the syntax.
+  constexpr int nq =
+      ((Deriveds::SizeAtCompileTime != Eigen::Dynamic) && ...)
+          ? (static_cast<int>(Deriveds::SizeAtCompileTime) + ...)
+          : Eigen::Dynamic;
 
-  std::tuple<AutoDiffMatrixType<Deriveds, compile_num_derivs>...> result(
-      AutoDiffMatrixType<Deriveds, compile_num_derivs>(args.rows(),
-                                                       args.cols())...);
-  auto values = std::forward_as_tuple(args...);
-  internal::InitializeAutoDiffTupleHelper<sizeof...(args)>::run(
-      values, dynamic_num_derivs, 0, &result);
+  // Compute each deriv_num_start value and then the total runtime size.
+  constexpr size_t N = sizeof...(args);
+  const std::array<int, N> sizes{static_cast<int>(args.size())...};
+  std::array<int, N + 1> deriv_num_starts = {0};
+  for (size_t i = 1; i <= N; ++i) {
+    deriv_num_starts[i] = deriv_num_starts[i - 1] + sizes[i - 1];
+  }
+  const int num_derivatives = deriv_num_starts.back();
+
+  // Allocate the result.
+  std::tuple<AutoDiffMatrixType<Deriveds, nq>...> result(
+      AutoDiffMatrixType<Deriveds, nq>(args.rows(), args.cols())...);
+
+  // Set the values and gradients of the result using InitializeAutoDiff from
+  // each Matrix in 'args...'. This is a "constexpr for" loop for 0 <= I < N.
+  auto args_tuple = std::forward_as_tuple(args...);
+  [&]<size_t... I>(std::integer_sequence<size_t, I...>&&) {
+    (InitializeAutoDiff(
+        std::get<I>(args_tuple),
+        num_derivatives,
+        std::get<I>(deriv_num_starts),
+        &std::get<I>(result)), ...);
+  }(std::make_index_sequence<N>{});
+
   return result;
-}
-
-template <typename... Deriveds>
-DRAKE_DEPRECATED("2022-02-01", "Use InitializeAutoDiffTuple() instead")
-std::tuple<AutoDiffMatrixType<
-    Deriveds, internal::total_size_at_compile_time<Deriveds...>()>...>
-initializeAutoDiffTuple(const Eigen::MatrixBase<Deriveds>&... args) {
-  return InitializeAutoDiffTuple(args...);
 }
 
 }  // namespace math

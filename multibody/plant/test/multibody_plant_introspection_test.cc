@@ -63,13 +63,13 @@ GTEST_TEST(MultibodyPlantIntrospection, FloatingBodies) {
   // Introspection of the underlying mathematical model is not available until
   // we call Finalize().
   DRAKE_EXPECT_THROWS_MESSAGE(
-      mug.is_floating(), std::runtime_error,
+      mug.is_floating(),
       ".*The model to which this body belongs must be finalized.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      mug.has_quaternion_dofs(), std::runtime_error,
+      mug.has_quaternion_dofs(),
       ".*The model to which this body belongs must be finalized.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
-      plant.GetFloatingBaseBodies(), std::logic_error,
+      plant.GetFloatingBaseBodies(),
       "Pre-finalize calls to 'GetFloatingBaseBodies\\(\\)' are not allowed.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
       plant.GetUniqueFreeBaseBodyOrThrow(robot_table_model),
@@ -148,8 +148,9 @@ GTEST_TEST(MultibodyPlantIntrospection, NonUniqueBaseBody) {
   MultibodyPlant<double> plant(0.0);
   // Add two objects to the same (default) model instance and let one of them be
   // free.
+  // To avoid unnecessary warnings/errors, use a non-zero spatial inertia.
   plant.AddRigidBody("free_body", default_model_instance(),
-                     SpatialInertia<double>());
+      SpatialInertia<double>::MakeUnitary());
   const Body<double>& fixed_body = plant.AddRigidBody(
       "fixed_body", default_model_instance(), SpatialInertia<double>());
   plant.WeldFrames(plant.world_frame(), fixed_body.body_frame());

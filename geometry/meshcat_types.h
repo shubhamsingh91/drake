@@ -367,6 +367,24 @@ struct SetTransformData {
   MSGPACK_DEFINE_MAP(type, path, matrix);
 };
 
+// Note that this struct is unique to Drake's integration of meshcat; it is not
+// part of upstream meshcat.js. We handle it directly within meshcat.html,
+// without ever feeding it into meshcat.js.
+struct RealtimeRateData {
+  std::string type{"realtime_rate"};
+  double rate{};
+  MSGPACK_DEFINE_MAP(type, rate);
+};
+
+// Note that this struct is unique to Drake's integration of meshcat; it is not
+// part of upstream meshcat.js. We handle it directly within meshcat.html,
+// without ever feeding it into meshcat.js.
+struct ShowRealtimeRate {
+  std::string type{"show_realtime_rate"};
+  bool show{true};
+  MSGPACK_DEFINE_MAP(type, show);
+};
+
 struct DeleteData {
   std::string type{"delete"};
   std::string path;
@@ -387,7 +405,8 @@ struct SetButtonControl {
   int num_clicks{0};
   std::string name;
   std::string callback;
-  MSGPACK_DEFINE_MAP(type, name, callback);
+  std::string keycode1{};
+  MSGPACK_DEFINE_MAP(type, name, callback, keycode1);
 };
 
 struct SetSliderControl {
@@ -398,7 +417,10 @@ struct SetSliderControl {
   double min{};
   double max{};
   double step{};
-  MSGPACK_DEFINE_MAP(type, name, callback, value, min, max, step);
+  std::string keycode1{};
+  std::string keycode2{};
+  MSGPACK_DEFINE_MAP(type, name, callback, value, min, max, step, keycode1,
+                     keycode2);
 };
 
 struct SetSliderValue {
@@ -429,6 +451,8 @@ struct UserInterfaceEvent {
 }  // namespace internal
 }  // namespace geometry
 }  // namespace drake
+
+#ifndef DRAKE_DOXYGEN_CXX
 
 MSGPACK_ADD_ENUM(drake::geometry::internal::ThreeSide);
 MSGPACK_ADD_ENUM(drake::geometry::MeshcatAnimation::LoopMode);
@@ -547,3 +571,5 @@ struct pack<drake::geometry::Meshcat::PerspectiveCamera> {
 }  // namespace adaptor
 }  // namespace MSGPACK_API_VERSION_NAMESPACE(MSGPACK_DEFAULT_API_NS)
 }  // namespace msgpack
+
+#endif  // DRAKE_DOXYGEN_CXX

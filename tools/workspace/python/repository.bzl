@@ -31,25 +31,31 @@ Arguments:
         //tools/py_toolchain:interpreter_paths.bzl.
     macos_interpreter_path: Optional interpreter path for the Python runtime in
         the registered Python toolchain on the @platforms//os:osx (macOS)
-        platform. Defaults to the value of MACOS_INTERPRETER_PATH in
-        //tools/py_toolchain:interpreter_paths.bzl.
+        platform. Defaults to the value of MACOS_{I386,ARM64}_INTERPRETER_PATH
+        in //tools/py_toolchain:interpreter_paths.bzl.
 """
 
 load(
     "@drake//tools/py_toolchain:interpreter_paths.bzl",
     "LINUX_INTERPRETER_PATH",
-    "MACOS_INTERPRETER_PATH",
+    "MACOS_ARM64_INTERPRETER_PATH",
+    "MACOS_I386_INTERPRETER_PATH",
 )
 load("@drake//tools/workspace:execute.bzl", "execute_or_fail", "which")
 load("@drake//tools/workspace:os.bzl", "determine_os")
 
 # The supported Python versions should match those listed in both the root
-# CMakeLists.txt and doc/developers.rst.
+# CMakeLists.txt and doc/_pages/from_source.md, except for the "manylinux"
+# matrix which should match tools/wheel/build-wheels list of targets=().
 _VERSION_SUPPORT_MATRIX = {
-    "ubuntu:18.04": ["3.6"],
     "ubuntu:20.04": ["3.8"],
-    "macos": ["3.9"],
-    "manylinux": ["3.6"],
+    "ubuntu:22.04": ["3.10"],
+    "macos": ["3.10"],
+    # NOTE: when updating supported wheel python versions:
+    # - Update URLs on doc/_pages/pip.md (`cpXY-cpXY` components), and
+    # - Tables on from_source.md and installation.md (python version number).
+    "macos_wheel": ["3.10"],
+    "manylinux": ["3.8", "3.9", "3.10"],
 }
 
 def repository_python_info(repository_ctx):
@@ -63,22 +69,26 @@ def repository_python_info(repository_ctx):
     os_result = determine_os(repository_ctx)
     if os_result.error != None:
         fail(os_result.error)
-    if os_result.is_macos:
-        os_key = os_result.distribution
-    elif os_result.is_ubuntu:
-        os_key = os_result.distribution + ":" + os_result.ubuntu_release
-    else:
-        os_key = "manylinux"
+    os_key = os_result.target
+    if os_result.is_ubuntu:
+        os_key += ":" + os_result.ubuntu_release
     versions_supported = _VERSION_SUPPORT_MATRIX[os_key]
 
-    if os_result.is_macos:
+    if os_result.is_macos or os_result.is_macos_wheel:
         # This value must match the interpreter_path in
         # @drake//tools/py_toolchain:macos_py3_runtime
         python = repository_ctx.attr.macos_interpreter_path
+        if not python:
+            if os_result.macos_arch_result == "arm64":
+                python = MACOS_ARM64_INTERPRETER_PATH
+            else:
+                python = MACOS_I386_INTERPRETER_PATH
     else:
         # This value must match the interpreter_path in
         # @drake//tools/py_toolchain:linux_py3_runtime
         python = repository_ctx.attr.linux_interpreter_path
+        if not python:
+            python = LINUX_INTERPRETER_PATH
 
     version = execute_or_fail(
         repository_ctx,
@@ -185,7 +195,7 @@ def _impl(repository_ctx):
 
     linkopts_direct_link = list(linkopts)
 
-    # python3.9-config --libs is missing the python3.9 library.
+    # python3.10-config --libs is missing the python3.10 library.
     has_direct_link = False
     libpy = "python" + py_info.version
     for i in reversed(range(len(linkopts))):
@@ -273,11 +283,11 @@ interpreter_path_attrs = {
     # The value of this argument should match the interpreter_path for
     # the py_runtime in the registered Python toolchain on the
     # @platforms//os:linux platform.
-    "linux_interpreter_path": attr.string(default = LINUX_INTERPRETER_PATH),
+    "linux_interpreter_path": attr.string(),
     # The value of this argument should match the interpreter_path for
     # the py_runtime in the registered Python toolchain on the
     # @platforms//os:osx platform.
-    "macos_interpreter_path": attr.string(default = MACOS_INTERPRETER_PATH),
+    "macos_interpreter_path": attr.string(),
 }
 
 python_repository = repository_rule(

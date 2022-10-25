@@ -3,7 +3,6 @@
 #include "pybind11/stl.h"
 
 #include "drake/bindings/pydrake/autodiff_types_pybind.h"
-#include "drake/bindings/pydrake/common/deprecation_pybind.h"
 #include "drake/bindings/pydrake/common/text_logging_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
@@ -94,6 +93,10 @@ PYBIND11_MODULE(_module_py, m) {
   m.doc() = "Bindings for //common:common";
   constexpr auto& doc = pydrake_doc.drake;
 
+  // Morph any DRAKE_ASSERT and DRAKE_DEMAND failures into SystemExit exceptions
+  // instead of process aborts.  See RobotLocomotion/drake#5268.
+  drake_set_assertion_failure_to_throw_exception();
+
   // WARNING: Deprecations for this module can be *weird* because of stupid
   // cyclic dependencies (#7912). If you need functions that immediately import
   // `pydrake.common.deprecation` (e.g. DeprecateAttribute, WrapDeprecated),
@@ -101,10 +104,11 @@ PYBIND11_MODULE(_module_py, m) {
 
   m.attr("_HAVE_SPDLOG") = logging::kHaveSpdlog;
 
-  m.def("set_log_level", &logging::set_log_level, py::arg("level"),
+  // Python users should not touch the C++ level; thus, we bind this privately.
+  m.def("_set_log_level", &logging::set_log_level, py::arg("level"),
       doc.logging.set_log_level.doc);
 
-  internal::RedirectPythonLogging();
+  internal::MaybeRedirectPythonLogging();
 
   py::enum_<drake::ToleranceType>(m, "ToleranceType", doc.ToleranceType.doc)
       .value("kAbsolute", drake::ToleranceType::kAbsolute,
@@ -147,12 +151,10 @@ discussion), use e.g.
 
 )""")
           .c_str());
-  random_generator_cls
-      .def(py::init<>(),
-          "Default constructor. Seeds the engine with the default_seed.")
-      .def(py::init<RandomGenerator::result_type>(),
-          "Constructs the engine and initializes the state with a given "
-          "value.")
+  random_generator_cls  // BR
+      .def(py::init<>(), doc.RandomGenerator.ctor.doc_0args)
+      .def(py::init<RandomGenerator::result_type>(), py::arg("seed"),
+          doc.RandomGenerator.ctor.doc_1args)
       .def(
           "__call__", [](RandomGenerator& self) { return self(); },
           "Generates a pseudo-random value.");
@@ -199,9 +201,6 @@ discussion), use e.g.
       },
       doc.MaybeGetDrakePath.doc);
   // These are meant to be called internally by pydrake; not by users.
-  m.def("set_assertion_failure_to_throw_exception",
-      &drake_set_assertion_failure_to_throw_exception,
-      "Set Drake's assertion failure mechanism to be exceptions");
   m.def("trigger_an_assertion_failure", &trigger_an_assertion_failure,
       "Trigger a Drake C++ assertion failure");
 

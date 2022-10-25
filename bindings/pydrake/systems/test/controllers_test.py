@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from pydrake.common import FindResourceOrThrow
-from pydrake.examples.pendulum import PendulumPlant
+from pydrake.examples import PendulumPlant
 from pydrake.multibody.tree import MultibodyForces
 from pydrake.multibody.plant import MultibodyPlant
 from pydrake.multibody.parsing import Parser
@@ -158,6 +158,8 @@ class TestControllers(unittest.TestCase):
         self.assertEqual(estimated_state_port.size(), kStateSize)
         self.assertEqual(desired_state_port.size(), kStateSize)
         self.assertEqual(control_port.size(), kNumVelocities)
+        self.assertIsInstance(controller.get_multibody_plant_for_control(),
+                              MultibodyPlant)
 
         # Current state.
         q = np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3])
@@ -301,12 +303,22 @@ class TestControllers(unittest.TestCase):
         np.testing.assert_almost_equal(K, K_expected)
         np.testing.assert_almost_equal(S, S_expected)
 
+        # Test with N and F.
+        (K, S) = LinearQuadraticRegulator(
+            A=A, B=B, Q=Q, R=R,
+            N=np.array([[0.1], [0.2]]), F=np.array([[1, 2.]]))
+
         controller = LinearQuadraticRegulator(double_integrator, Q, R)
         np.testing.assert_almost_equal(controller.D(), -K_expected)
 
         context = double_integrator.CreateDefaultContext()
         double_integrator.get_input_port(0).FixValue(context, [0])
-        controller = LinearQuadraticRegulator(double_integrator, context, Q, R)
+        controller = LinearQuadraticRegulator(
+            double_integrator,
+            context,
+            Q,
+            R,
+            input_port_index=double_integrator.get_input_port().get_index())
         np.testing.assert_almost_equal(controller.D(), -K_expected)
 
     def test_discrete_time_linear_quadratic_regulator(self):
@@ -330,6 +342,7 @@ class TestControllers(unittest.TestCase):
 
         options = FiniteHorizonLinearQuadraticRegulatorOptions()
         options.Qf = Q
+        options.use_square_root_method = False
         self.assertIsNone(options.N)
         self.assertIsNone(options.x0)
         self.assertIsNone(options.u0)
@@ -343,7 +356,8 @@ class TestControllers(unittest.TestCase):
             r"Qf=\[\[ *1\. *0\.\]\s*\[ *0\. *1\.\]\], "
             r"N=None, ",
             r"input_port_index=",
-            r"InputPortSelection.kUseFirstInputIfItExists\)"]))
+            r"InputPortSelection.kUseFirstInputIfItExists, ",
+            r"use_square_root_method=False\)"]))
 
         context = double_integrator.CreateDefaultContext()
         double_integrator.get_input_port(0).FixValue(context, 0.0)

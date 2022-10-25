@@ -11,6 +11,7 @@
 
 #include "drake/common/default_scalars.h"
 #include "drake/common/drake_copyable.h"
+#include "drake/common/pointer_cast.h"
 #include "drake/systems/framework/diagram.h"
 #include "drake/systems/framework/system.h"
 
@@ -29,11 +30,47 @@ namespace systems {
 /// A system must be added to the DiagramBuilder with AddSystem or
 /// AddNamedSystem before it can be wired up in any way. Every system must have
 /// a unique, non-empty name.
+///
+/// @anchor DiagramBuilder_feedthrough
+/// <h2>Building large Diagrams</h2>
+///
+/// When building large Diagrams with many added systems and input-output port
+/// connections, the runtime performance of DiagramBuilder::Build() might become
+/// relevant.
+///
+/// As part of its correctness checks, the DiagramBuilder::Build() function
+/// performs a graph search of the diagram's dependencies. In the graph, the
+/// nodes are the child systems that have been added to the diagram, and the
+/// edges are the diagram connections from one child's output port to another
+/// child's input port(s). The builder must confirm that the graph is acyclic;
+/// a cycle would imply an infinite loop in an output calculation function.
+/// With a large graph, this check can be computationally expensive. To speed
+/// it up, ensure that your output ports do not gratuitously depend on
+/// irrelevant input ports.
+///
+/// The dependencies are supplied via the `prerequisites_of_calc` argument to
+/// DeclareOutputPort family of functions.  If the default value is used (i.e.,
+/// when no prerequisites are provided), the default is to assume the output
+/// port value is dependent on all possible sources.
+///
+/// Refer to the
+/// @ref DeclareLeafOutputPort_feedthrough "Direct feedthrough"
+/// documentation for additional details and examples.  In particular, the
+/// SystemBase::all_sources_except_input_ports_ticket() is a convenient
+/// shortcut for outputs that do not depend on any inputs.
 template <typename T>
 class DiagramBuilder {
  public:
   // DiagramBuilder objects are neither copyable nor moveable.
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(DiagramBuilder)
+
+  /// A designator for a "system + input port" pair, to uniquely refer to
+  /// some input port on one of this builder's subsystems.
+  using InputPortLocator = typename Diagram<T>::InputPortLocator;
+
+  /// A designator for a "system + output port" pair, to uniquely refer to
+  /// some output port on one of this builder's subsystems.
+  using OutputPortLocator = typename Diagram<T>::OutputPortLocator;
 
   DiagramBuilder();
   virtual ~DiagramBuilder();
@@ -212,13 +249,66 @@ class DiagramBuilder {
     return registered_systems_.empty();
   }
 
+  /// Returns true iff Build() or BuildInto() has been called on this Builder,
+  /// in which case it's an error to call any member function other than the
+  /// the destructor.
+  bool already_built() const {
+    return already_built_;
+  }
+
   /// Returns the list of contained Systems.
-  /// See also GetMutableSystems().
+  /// @see GetSubsystemByName()
+  /// @see GetMutableSystems()
   std::vector<const System<T>*> GetSystems() const;
 
   /// Returns the list of contained Systems.
-  /// See also GetSystems().
+  /// @see GetMutableSubsystemByName()
+  /// @see GetSystems()
   std::vector<System<T>*> GetMutableSystems();
+
+  /// Retrieves a const reference to the subsystem with name @p name returned
+  /// by get_name().
+  /// @throws std::exception if a unique match cannot be found.
+  /// @see System<T>::get_name()
+  /// @see GetMutableSubsystemByName()
+  /// @see GetDowncastSubsystemByName()
+  const System<T>& GetSubsystemByName(std::string_view name) const;
+
+  /// Retrieves a mutable reference to the subsystem with name @p name returned
+  /// by get_name().
+  /// @throws std::exception if a unique match cannot be found.
+  /// @see System<T>::get_name()
+  /// @see GetSubsystemByName()
+  /// @see GetMutableDowncastSubsystemByName()
+  System<T>& GetMutableSubsystemByName(std::string_view name);
+
+  /// Retrieves a const reference to the subsystem with name @p name returned
+  /// by get_name(), downcast to the type provided as a template argument.
+  /// @tparam MySystem is the downcast type, e.g., drake::systems::Adder
+  /// @throws std::exception if a unique match cannot be found.
+  /// @see GetMutableDowncastSubsystemByName()
+  /// @see GetSubsystemByName()
+  template <template <typename> class MySystem>
+  const MySystem<T>& GetDowncastSubsystemByName(std::string_view name) const {
+    const System<T>& subsystem = this->GetSubsystemByName(name);
+    return *dynamic_pointer_cast_or_throw<const MySystem<T>>(&subsystem);
+  }
+
+  /// Retrieves a mutable reference to the subsystem with name @p name returned
+  /// by get_name(), downcast to the type provided as a template argument.
+  /// @tparam MySystem is the downcast type, e.g., drake::systems::Adder
+  /// @throws std::exception if a unique match cannot be found.
+  /// @see GetDowncastSubsystemByName()
+  /// @see GetMutableSubsystemByName()
+  template <template <typename> class MySystem>
+  MySystem<T>& GetMutableDowncastSubsystemByName(std::string_view name) {
+    System<T>& subsystem = this->GetMutableSubsystemByName(name);
+    return *dynamic_pointer_cast_or_throw<MySystem<T>>(&subsystem);
+  }
+
+  /// (Advanced) Returns a reference to the map of connections between Systems.
+  /// The reference becomes invalid upon any call to Build or BuildInto.
+  const std::map<InputPortLocator, OutputPortLocator>& connection_map() const;
 
   /// Declares that input port @p dest is connected to output port @p src.
   /// @note The connection created between @p src and @p dest via a call to
@@ -279,6 +369,20 @@ class DiagramBuilder {
   void ConnectInput(
       InputPortIndex diagram_port_index, const InputPort<T>& input);
 
+  /// Connects @p dest to the same source as @p exemplar is connected to.
+  ///
+  /// If @p exemplar was connected to an output port, then @p dest is connected
+  /// to that same output. Or, if @p exemplar was exported as an input of this
+  /// diagram, then @p dest will be connected to that same diagram input. Or,
+  /// if @p exemplar was neither connected or exported, then this function is
+  /// a no-op.
+  ///
+  /// Both @p exemplar and @p dest must be ports of constituent systems that
+  /// have already been added to this diagram.
+  ///
+  /// @return True iff any connection or was made; or false when a no-op.
+  bool ConnectToSame(const InputPort<T>& exemplar, const InputPort<T>& dest);
+
   /// Declares that the given @p output port of a constituent system is an
   /// output of the entire diagram.  @p name is an optional name for the output
   /// port; if it is unspecified, then a default name will be provided.
@@ -291,6 +395,9 @@ class DiagramBuilder {
   /// Builds the Diagram that has been described by the calls to Connect,
   /// ExportInput, and ExportOutput.
   /// @throws std::exception if the graph is not buildable.
+  ///
+  /// See @ref DiagramBuilder_feedthrough "Building large Diagrams" for tips
+  /// on improving runtime performance of this function.
   std::unique_ptr<Diagram<T>> Build();
 
   /// Configures @p target to have the topology that has been described by
@@ -306,9 +413,6 @@ class DiagramBuilder {
   bool IsConnectedOrExported(const InputPort<T>& port) const;
 
  private:
-  using InputPortLocator = typename Diagram<T>::InputPortLocator;
-  using OutputPortLocator = typename Diagram<T>::OutputPortLocator;
-
   // Declares a new input to the entire Diagram, using @p model_input to
   // supply the data type. @p name is an optional name for the input port; if
   // it is unspecified, then a default name will be provided.

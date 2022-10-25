@@ -7,7 +7,7 @@ title: Getting Help
 If you need help with Drake, please first review the documentation on this
 website for things such as [installation](/installation.html),
 the [C++ API](https://drake.mit.edu/doxygen_cxx/index.html), or
-[Python bindings](/python_bindings.html).
+[Using Drake from Python](/python_bindings.html).
 
 Please also briefly review
 [Drake's open and closed GitHub issues](https://github.com/RobotLocomotion/drake/issues?q=is%3Aissue)
@@ -39,14 +39,14 @@ If you wish to contribute a patch, please see how to [submit a pull request](/de
 When reporting an issue, please consider providing the following information
 (``helper command in monospace``):
 
-* Operating system (e.g., Ubuntu 18.04 or macOS Monterey)
+* Operating system (e.g., Ubuntu Focal 20.04 or macOS Monterey)
 * Installation method (e.g., pip, apt, binary tar.gz, docker image, or
   rebuilding from source)
 * Language you are using (C++ or [Python](/python_bindings.html))
     * If using C++:
-      * C++ compiler (e.g., GCC 7.5.0, GCC 9.3.0, Clang 6.0.0)
+      * C++ compiler (e.g., GCC 9.3.0, Clang 6.0.0)
     * If using Python:
-      * Python version (e.g., Python 3.6.7)
+      * Python version (e.g., Python 3.8)
       * Python distribution (e.g., Ubuntu apt, macOS homebrew)
 * If building from source:
     * Build system (Bazel or CMake)
@@ -55,12 +55,13 @@ When reporting an issue, please consider providing the following information
         * CMake version (``which cmake; cmake --version``)
         * CMake C++ compiler (``cmake -LA <path_to_source_dir> | grep 'CMAKE_.*_COMPILER'``)
     * Git revision (``git rev-parse --short HEAD``)
-    * [Building Drake](/from_source.html) vs. downstream project (like [drake_bazel_external](https://github.com/RobotLocomotion/drake-external-examples/tree/master/drake_bazel_external), [drake_cmake_external](https://github.com/RobotLocomotion/drake-external-examples/tree/master/drake_cmake_external))
+    * [Building Drake from source](/from_source.html) vs. downstream project
+    (like [drake_bazel_external](https://github.com/RobotLocomotion/drake-external-examples/tree/master/drake_bazel_external), [drake_cmake_external](https://github.com/RobotLocomotion/drake-external-examples/tree/master/drake_cmake_external))
 * If using binary release:
     * Download URL
     * Contents of ``drake/share/doc/drake/VERSION.TXT``
     * Building downstream project ([drake_cmake_installed](https://github.com/RobotLocomotion/drake-external-examples/tree/master/drake_cmake_installed))
-* If using Binder or Google Colaboratory:
+* If using Deepnote, Google Colaboratory, or Binder:
     * A version of your notebook that we can access. Please check this by
       re-visiting your URL in a private browsing window. (You can add
       notebooks to public GitHub Gists.)

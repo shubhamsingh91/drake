@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <ostream>
 #include <tuple>
 #include <vector>
 
@@ -76,7 +78,7 @@ class LinearProgram1 : public OptimizationProgram {
 };
 
 // Test a simple linear programming problem
-// Adapted from https://docs.mosek.com/9.2/capi/tutorial-lo-shared.html
+// Adapted from https://docs.mosek.com/10.0/capi/tutorial-lo-shared.html
 // min -3x0 - x1 - 5x2 - x3
 // s.t     3x0 +  x1 + 2x2        = 30
 //   15 <= 2x0 +  x1 + 3x2 +  x3 <= inf
@@ -136,6 +138,8 @@ enum class LinearProblems {
   kLinearProgram3 = 4,
 };
 
+std::ostream& operator<<(std::ostream& os, LinearProblems value);
+
 class LinearProgramTest
     : public ::testing::TestWithParam<
         std::tuple<CostForm, ConstraintForm, LinearProblems>> {
@@ -185,6 +189,7 @@ class UnboundedLinearProgramTest0 : public ::testing::Test {
 
  protected:
   std::unique_ptr<MathematicalProgram> prog_;
+  Vector2<symbolic::Variable> x_;
 };
 
 /**
@@ -222,6 +227,28 @@ void TestLPDualSolution2Scaled(const SolverInterface& solver,
 
 /** This LP has only bounding box constraints. */
 void TestLPDualSolution3(const SolverInterface& solver, double tol = 1e-6);
+
+/** This test confirms that the solver can solve problems with poorly scaled
+ * data. See github issue https://github.com/RobotLocomotion/drake/issues/15341
+ * for more discussion. Mathematically this program finds the point with the
+ * smallest infinity norm to (0.99, 1.99). The point is within the convex hull
+ * of four points (eps, eps), (1, 1), (eps, 2), (1, 2).
+ */
+void TestLPPoorScaling1(
+    const SolverInterface& solver, bool expect_success = true,
+    double tol = 1E-12,
+    const std::optional<SolverOptions>& options = std::nullopt);
+
+/** This test confirms that the solver can solve problems with poorly scaled
+ * data. See github issue https://github.com/RobotLocomotion/drake/issues/15341
+ * for more discussion.
+ * The optimal solution isn't computed analytically, hence we take a loose
+ * tolerance.
+ */
+void TestLPPoorScaling2(
+    const SolverInterface& solver, bool expect_success = true,
+    double tol = 1E-4,
+    const std::optional<SolverOptions>& options = std::nullopt);
 }  // namespace test
 }  // namespace solvers
 }  // namespace drake

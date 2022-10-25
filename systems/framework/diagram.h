@@ -9,6 +9,7 @@
 
 #include "drake/common/default_scalars.h"
 #include "drake/common/drake_copyable.h"
+#include "drake/common/pointer_cast.h"
 #include "drake/systems/framework/diagram_context.h"
 #include "drake/systems/framework/diagram_continuous_state.h"
 #include "drake/systems/framework/diagram_discrete_values.h"
@@ -72,7 +73,12 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
   // Diagram objects are neither copyable nor moveable.
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(Diagram)
 
+  /// A designator for a "system + input port" pair, to uniquely refer to
+  /// some input port on one of this diagram's subsystems.
   using InputPortLocator = std::pair<const System<T>*, InputPortIndex>;
+
+  /// A designator for a "system + output port" pair, to uniquely refer to
+  /// some output port on one of this diagram's subsystems.
   using OutputPortLocator = std::pair<const System<T>*, OutputPortIndex>;
 
   /// Scalar-converting copy constructor.  See @ref system_scalar_conversion.
@@ -133,11 +139,24 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
 
   std::unique_ptr<DiscreteValues<T>> AllocateDiscreteVariables() const final;
 
-  /// Retrieves a reference to the subsystem with name @p name returned by
-  /// get_name().
+  /// Retrieves a const reference to the subsystem with name @p name returned
+  /// by get_name().
   /// @throws std::exception if a match cannot be found.
+  /// @see GetDowncastSubsystemByName()
   /// @see System<T>::get_name()
-  const System<T>& GetSubsystemByName(const std::string& name) const;
+  const System<T>& GetSubsystemByName(std::string_view name) const;
+
+  /// Retrieves a const reference to the subsystem with name @p name returned
+  /// by get_name(), downcast to the type provided as a template argument.
+  /// @tparam MySystem is the downcast type, e.g., drake::systems::Adder
+  /// @throws std::exception if a match cannot be found.
+  /// @see GetSubsystemByName()
+  /// @see System<T>::get_name()
+  template <template <typename> class MySystem>
+  const MySystem<T>& GetDowncastSubsystemByName(std::string_view name) const {
+    const System<T>& subsystem = this->GetSubsystemByName(name);
+    return *dynamic_pointer_cast_or_throw<const MySystem<T>>(&subsystem);
+  }
 
   /// Retrieves the state derivatives for a particular subsystem from the
   /// derivatives for the entire diagram. Aborts if @p subsystem is not
@@ -314,6 +333,10 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
   void DoCalcNextUpdateTime(const Context<T>& context,
                             CompositeEventCollection<T>* event_info,
                             T* time) const override;
+
+  std::string GetUnsupportedScalarConversionMessage(
+      const std::type_info& source_type,
+      const std::type_info& destination_type) const final;
 
  private:
   std::unique_ptr<AbstractValue> DoAllocateInput(

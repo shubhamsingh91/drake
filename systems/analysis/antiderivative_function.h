@@ -59,117 +59,48 @@ class AntiderivativeFunction {
   /// @return The function value f(@p x; @p k).
   using IntegrableFunction = std::function<T(const T& x, const VectorX<T>& k)>;
 
-  /// The set of values that, along with the function being integrated,
-  /// partially specify the definite integral i.e. providing the lower
-  /// integration bound v and the parameter vector 𝐤, leaving the upper
-  /// integration bound u to be specified on evaluation.
-  struct IntegrableFunctionContext {
-    /// Default constructor that leaves all values unspecified.
-    IntegrableFunctionContext() = default;
-
-    /// Constructor that specifies all values.
-    /// @param v_in Specified lower integration bound v.
-    /// @param k_in Specified parameter vector 𝐤.
-    IntegrableFunctionContext(const std::optional<T>& v_in,
-                              const std::optional<VectorX<T>>& k_in)
-        : v(v_in), k(k_in) {}
-
-    std::optional<T> v;           ///< The lower integration bound v.
-    std::optional<VectorX<T>> k;  ///< The parameter vector 𝐤.
-  };
-
   /// Constructs the antiderivative function of the given
-  /// @p integrable_function, using @p default_values.v as lower integration
-  /// bound if given (0 if not) and parameterized with @p default_values.k if
-  /// given (an empty vector if not) by default.
+  /// @p integrable_function, parameterized with @p k.
   ///
   /// @param integrable_function The function f(x; 𝐤) to be integrated.
-  /// @param default_values The values specified by default for this function,
-  ///                       i.e. default lower integration bound v ∈ ℝ  and
-  ///                       default parameter vector 𝐤 ∈ ℝᵐ.
+  /// @param 𝐤 ∈ ℝᵐ is the vector of parameters.  The default is the empty
+  /// vector (indicating no parameters).
   AntiderivativeFunction(const IntegrableFunction& integrable_function,
-                         const IntegrableFunctionContext& default_values = {}) {
-    // Expresses the scalar integral to be solved as an ODE.
-    typename ScalarInitialValueProblem<T>::ScalarOdeFunction
-        scalar_ode_function = [integrable_function](const T& t, const T& x,
-                                                    const VectorX<T>& k) -> T {
-      unused(x);
-      return integrable_function(t, k);
-    };
-
-    typename ScalarInitialValueProblem<T>::ScalarOdeContext
-        scalar_ivp_default_values;
-    // Default initial time for the scalar ODE form falls back
-    // to 0 if no lower integration bound is specified.
-    scalar_ivp_default_values.t0 =
-        default_values.v.value_or(static_cast<T>(0.0));
-    // Default initial state for the scalar ODE form is set to 0.
-    scalar_ivp_default_values.x0 = static_cast<T>(0.0);
-    // Default parameter vector for the scalar ODE falls back to
-    // the empty vector if none is given.
-    scalar_ivp_default_values.k = default_values.k.value_or(VectorX<T>());
-
-    // Instantiates the scalar initial value problem.
-    scalar_ivp_ = std::make_unique<ScalarInitialValueProblem<T>>(
-        scalar_ode_function, scalar_ivp_default_values);
-  }
+                         const Eigen::Ref<const VectorX<T>>& k = Vector0<T>{});
 
   /// Evaluates the definite integral F(u; 𝐤) = ∫ᵥᵘ f(x; 𝐤) dx from the lower
-  /// integration bound v (see definition in class documentation) to @p u using
-  /// the parameter vector 𝐤 (see definition in class documentation) if present
-  /// in @p values, falling back to the ones given on construction if missing.
+  /// integration bound @p v to @p u using the parameter vector 𝐤 specified in
+  /// the constructor (see definition in class documentation).
   ///
+  /// @param v The lower integration bound.
   /// @param u The upper integration bound.
-  /// @param values The specified values for the integration.
   /// @returns The value of the definite integral.
-  /// @pre The given upper integration bound @p u must be larger than or equal
-  ///      to the lower integration bound v.
-  /// @pre If given, the dimension of the parameter vector @p values.k
-  ///      must match that of the parameter vector 𝐤 in the default specified
-  ///      values given on construction.
-  /// @throws std::exception if any of the preconditions is not met.
-  T Evaluate(const T& u, const IntegrableFunctionContext& values = {}) const {
-    typename ScalarInitialValueProblem<T>::ScalarOdeContext scalar_ivp_values(
-        values.v, {}, values.k);
-    return scalar_ivp_->Solve(u, scalar_ivp_values);
-  }
+  /// @throws std::exception if v > u.
+  T Evaluate(const T& v, const T& u) const;
 
   /// Evaluates and yields an approximation of the definite integral
   /// F(u; 𝐤) = ∫ᵥᵘ f(x; 𝐤) dx for v ≤ u ≤ w, i.e. the closed interval
-  /// that goes from the lower integration bound v (see definition in
-  /// class documentation) to the uppermost integration bound @p w, using
-  /// the parameter vector 𝐤 (see definition in class documentation) if
-  /// present in @p values, falling back to the ones given on construction
-  /// if missing.
+  /// that goes from the lower integration bound @p v to the uppermost
+  /// integration bound @p w, using the parameter vector 𝐤 specified in the
+  /// constructor (see definition in class documentation).
   ///
   /// To this end, the wrapped IntegratorBase instance solves the integral
-  /// from v to @p w (i.e. advances the state x of its differential form
-  /// x'(t) = f(x; 𝐤) from v to @p w), creating a scalar dense output over
-  /// that [v, @p w] interval along the way.
+  /// from @p v to @p w (i.e. advances the state x of its differential form
+  /// x'(t) = f(x; 𝐤) from @p v to @p w), creating a scalar dense output over
+  /// that [@p v, @p w] interval along the way.
   ///
-  /// @param w The uppermost integration bound. Usually, v < @p w as an empty
-  ///          dense output would result if v = @p w.
-  /// @param values The specified values for the integration.
+  /// @param v The lower integration bound.
+  /// @param w The uppermost integration bound. Usually, @p v < @p w as an empty
+  ///          dense output would result if @p v = @p w.
   /// @returns A dense approximation to F(u; 𝐤) (that is, a function), defined
-  ///          for v ≤ u ≤ w.
+  ///          for @p v ≤ u ≤ @p w.
   /// @note The larger the given @p w value is, the larger the approximated
   ///       interval will be. See documentation of the specific dense output
-  ///       technique in use for reference on performance impact as this
-  ///       interval grows.
-  /// @pre The given uppermost integration bound @p w must be larger than or
-  ///      equal to the lower integration bound v.
-  /// @pre If given, the dimension of the parameter vector @p values.k
-  ///      must match that of the parameter vector 𝐤 in the default specified
-  ///      values given on construction.
-  /// @throws std::exception if any of the preconditions is not met.
-  std::unique_ptr<ScalarDenseOutput<T>> MakeDenseEvalFunction(
-      const T& w, const IntegrableFunctionContext& values = {}) const {
-    // Delegates request to the scalar IVP used for computations, by putting
-    // specified values in scalar IVP terms.
-    typename ScalarInitialValueProblem<T>::ScalarOdeContext scalar_ivp_values(
-        values.v, {}, values.k);
-    return this->scalar_ivp_->DenseSolve(w, scalar_ivp_values);
-  }
+  ///       technique used by the internally held IntegratorBase subclass
+  ///       instance for more details.
+  /// @throws std::exception if v > w.
+  std::unique_ptr<ScalarDenseOutput<T>> MakeDenseEvalFunction(const T& v,
+                                                              const T& w) const;
 
   /// Resets the internal integrator instance.
   ///

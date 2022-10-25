@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
-#include "drake/examples/multibody/rolling_sphere/make_rolling_sphere_plant.h"
+#include "drake/examples/multibody/rolling_sphere/populate_ball_plant.h"
 #include "drake/geometry/scene_graph.h"
 #include "drake/math/autodiff.h"
 #include "drake/multibody/plant/multibody_plant.h"
@@ -38,28 +38,16 @@ class HydroelasticContactResultsOutputTester : public ::testing::Test {
 
     // Create the plant.
     systems::DiagramBuilder<double> builder;
-    geometry::SceneGraph<double>& scene_graph =
-        *builder.AddSystem<geometry::SceneGraph<double>>();
-    scene_graph.set_name("scene_graph");
+    plant_ = &AddMultibodyPlantSceneGraph(&builder, 0.0 /* time_step */).plant;
+
     // TODO(SeanCurtis-TRI): This should _not_ be using code from the examples/
     //  directory. Examples code shouldn't feed back into other code.
-    plant_ = builder.AddSystem(
-        examples::multibody::bouncing_ball::MakeBouncingBallPlant(
-            0.0 /* mbp_dt */, radius, mass, hydroelastic_modulus, dissipation,
+    examples::multibody::bouncing_ball::PopulateBallPlant(
+            radius, mass, hydroelastic_modulus, dissipation,
             friction, gravity_W, false /* rigid_sphere */,
-            false /* soft_ground */, &scene_graph));
+            false /* compliant_ground */, plant_);
     plant_->set_contact_model(ContactModel::kHydroelastic);
     plant_->Finalize();
-
-    // Sanity check on the availability of the optional source id before using
-    // it.
-    DRAKE_DEMAND(plant_->get_source_id().has_value());
-
-    builder.Connect(scene_graph.get_query_output_port(),
-                    plant_->get_geometry_query_input_port());
-    builder.Connect(
-        plant_->get_geometry_poses_output_port(),
-        scene_graph.get_source_pose_port(plant_->get_source_id().value()));
 
     diagram_ = builder.Build();
 
@@ -86,6 +74,7 @@ class HydroelasticContactResultsOutputTester : public ::testing::Test {
     const ContactResults<double>& contact_results =
         plant_->get_contact_results_output_port().Eval<ContactResults<double>>(
             *plant_context_);
+    DRAKE_DEMAND(contact_results.plant() == plant_);
     DRAKE_DEMAND(contact_results.num_hydroelastic_contacts() == 1);
     return contact_results.hydroelastic_contact_info(0);
   }
@@ -108,7 +97,8 @@ TEST_F(HydroelasticContactResultsOutputTester, ContactSurfaceEquivalent) {
   // Compute the contact surface using the hydroelastic engine.
   ASSERT_FALSE(plant_->is_discrete());
   std::vector<geometry::ContactSurface<double>> contact_surfaces =
-      query_object.ComputeContactSurfaces();
+      query_object.ComputeContactSurfaces(
+          geometry::HydroelasticContactRepresentation::kTriangle);
 
   // Check that the two contact surfaces are equivalent.
   ASSERT_EQ(contact_surfaces.size(), 1);
@@ -124,7 +114,7 @@ TEST_F(HydroelasticContactResultsOutputTester, SpatialForceAtCentroid) {
 
   // The following crude quadrature process relies upon there being three
   // quadrature points per triangle.
-  ASSERT_EQ(results.contact_surface().mesh_W().num_triangles() * 3,
+  ASSERT_EQ(results.contact_surface().num_faces() * 3,
             results.quadrature_point_data().size());
 
   // Sanity check that geometry ID is consistent with direction of spatial
@@ -150,7 +140,7 @@ TEST_F(HydroelasticContactResultsOutputTester, SpatialForceAtCentroid) {
   for (const HydroelasticQuadraturePointData<double>& datum :
        results.quadrature_point_data()) {
     F_Ac_W_expected.translational() +=
-        results.contact_surface().mesh_W().area(datum.face_index) * 1.0 / 3 *
+        results.contact_surface().area(datum.face_index) * 1.0 / 3 *
         datum.traction_Aq_W;
   }
 
@@ -210,10 +200,10 @@ TEST_F(HydroelasticContactResultsOutputTester, Traction) {
   for (const auto& quadrature_point_datum : quadrature_point_data) {
     // Convert the quadrature point to barycentric coordinates.
     const Vector3d p_barycentric =
-        results.contact_surface().mesh_W().CalcBarycentric(
+        results.contact_surface().tri_mesh_W().CalcBarycentric(
             quadrature_point_datum.p_WQ, quadrature_point_datum.face_index);
 
-    const double pressure = results.contact_surface().e_MN().Evaluate(
+    const double pressure = results.contact_surface().tri_e_MN().Evaluate(
         quadrature_point_datum.face_index, p_barycentric);
 
     // The conversion from Cartesian to barycentric coordinates introduces some
@@ -264,13 +254,14 @@ TEST_F(HydroelasticContactResultsOutputTester, AutoDiffXdSupport) {
   // as a reality check; make sure that the underlying contact surface has
   // derivatives as expected.
   std::vector<geometry::ContactSurface<AutoDiffXd>> contact_surfaces =
-      query_object.ComputeContactSurfaces();
+      query_object.ComputeContactSurfaces(
+          geometry::HydroelasticContactRepresentation::kTriangle);
 
   ASSERT_EQ(contact_surfaces.size(), 1);
   // Contact surface documents the surface normal as pointing "out of N and into
   // M". So, if the ball maps to id_N, the normal points out of the ball and
   // into the half space. We exploit the knowledge that the ball body is named
-  // "Ball" by MakeBouncingBallPlant(). So,
+  // "Ball" by PopulateBallPlant(). So,
   //   id_N = the Ball body
   //     -> body A in the force results is half space
   //     -> f_Ac_W points *into* the half space.
@@ -280,7 +271,7 @@ TEST_F(HydroelasticContactResultsOutputTester, AutoDiffXdSupport) {
 
   // The area has derivatives (three) and the area only changes magnitude based
   // on p_WBo.z.
-  const AutoDiffXd area = contact_surfaces[0].mesh_W().total_area();
+  const AutoDiffXd area = contact_surfaces[0].total_area();
   ASSERT_EQ(area.derivatives().size(), 3);
   ASSERT_NEAR(area.derivatives()[0], 0, 1e-15);
   ASSERT_NEAR(area.derivatives()[1], 0, 1e-15);

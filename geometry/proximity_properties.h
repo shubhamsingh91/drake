@@ -35,6 +35,8 @@ extern const char* const kFriction;        ///< Friction coefficients property
                                            ///< name.
 extern const char* const kHcDissipation;   ///< Hunt-Crossley dissipation
                                            ///< property name.
+extern const char* const kRelaxationTime;  ///< Linear dissipation
+                                           ///< property name.
 extern const char* const kPointStiffness;  ///< Point stiffness property
                                            ///< name.
 
@@ -51,12 +53,11 @@ extern const char* const kPointStiffness;  ///< Point stiffness property
    - string constants to read and write the indicated properties, and
    - utility functions for declaring consistent hydroelastic properties
      including
-       - differentiating between a rigid and soft geometry
+       - differentiating between a rigid and compliant geometry
        - accounting for differences between tessellated meshes and half spaces.
 
- @todo Add reference to discussion of hydroelastic proximity properties along
- the lines of "For the full discussion of preparing geometry for use in the
- hydroelastic contact model, see `@ref MODULE_NOT_WRITTEN_YET`.
+ For the full discussion of preparing geometry for use in the hydroelastic
+ contact model, see @ref creating_hydro_reps.
  */
 //@{
 
@@ -72,8 +73,8 @@ extern const char* const kSlabThickness;    ///< Slab thickness property name
 
 // TODO(SeanCurtis-TRI): Update this to have an additional classification: kBoth
 //  when we have the need from the algorithm. For example: when we have two
-//  very stiff objects, we'd want to process them as soft. But when one
-//  very stiff and one very soft object interact, it might make sense to
+//  very stiff objects, we'd want to process them as compliant. But when one
+//  very stiff and one very compliant object interact, it might make sense to
 //  consider the stiff object as effectively rigid and simplify the computation.
 //  In this case, the object would get two representations.
 /* Classification of the type of representation a shape has for the
@@ -116,10 +117,9 @@ void AddContactMaterial(
                               parameter that guides the level of mesh
                               refinement. It has length units (in meters) and
                               roughly corresponds to a typical edge length in
-                              the resulting mesh.
-                              See @ref MODULE_NOT_WRITTEN_YET. This will be
-                              ignored for geometry types that don't require
-                              tessellation.
+                              the resulting mesh.  See @ref hug_properties.
+                              This will be ignored for geometry types that don't
+                              require tessellation.
  @param[in,out] properties    The properties will be added to this property set.
  @throws std::exception       If `properties` already has properties with the
                               names that this function would need to add.
@@ -129,48 +129,49 @@ void AddRigidHydroelasticProperties(double resolution_hint,
 
 /** Overload, intended for shapes that don't get tessellated in their
  hydroelastic representation (e.g., HalfSpace and Mesh).
- See @ref MODULE_NOT_WRITTEN_YET.  */
+ See @ref hug_properties.  */
 void AddRigidHydroelasticProperties(ProximityProperties* properties);
 
-// TODO(SeanCurtis-TRI): Add module that explains resolution hint and reference
-//  it in the documentation below.
 /** Adds properties to the given set of proximity properties sufficient to cause
- the associated geometry to generate a soft hydroelastic representation. The
- geometry's pressure field will be the function p(e) = Ee, where E is the
- elastic modulus stored in the given `properties`.
+ the associated geometry to generate a compliant hydroelastic representation.
+ The geometry's pressure field will be the function p(e) = Ee, where E is the
+ hydroelastic modulus stored in the given `properties`.
 
- @param resolution_hint       If the geometry is to be tessellated, it is the
-                              parameter that guides the level of mesh
-                              refinement. It has length units (in meters) and
-                              roughly corresponds to a typical edge length in
-                              the resulting mesh. This will be ignored for
-                              geometry types that don't require tessellation.
- @param hydroelastic_modulus  A multiplier that maps penetration to pressure.
- @param[in,out] properties    The properties will be added to this property set.
- @throws std::exception       If `properties` already has properties with the
-                              names that this function would need to add.
+ @param resolution_hint      If the geometry is to be tessellated, it is the
+                             parameter that guides the level of mesh
+                             refinement. It has length units (in meters) and
+                             roughly corresponds to a typical edge length in
+                             the resulting mesh.  See @ref hug_properties.
+                             This will be ignored for geometry types that don't
+                             require tessellation.
+ @param hydroelastic_modulus A multiplier that maps penetration to pressure. See
+                             @ref hug_properties.
+ @param[in,out] properties   The properties will be added to this property set.
+ @throws std::exception      If `properties` already has properties with the
+                             names that this function would need to add.
  @pre 0 < `resolution_hint` < ∞, 0 < `hydroelastic_modulus`, and `properties`
       is not nullptr. */
-void AddSoftHydroelasticProperties(double resolution_hint,
-                                   double hydroelastic_modulus,
-                                   ProximityProperties* properties);
+void AddCompliantHydroelasticProperties(double resolution_hint,
+                                        double hydroelastic_modulus,
+                                        ProximityProperties* properties);
 
-/** Soft half spaces are handled as a special case; they do not get tessellated.
- Instead, they are treated as infinite slabs with a finite thickness. This
- variant is required for hydroelastic half spaces.
+/** Compliant half spaces are handled as a special case; they do not get
+ tessellated. Instead, they are treated as infinite slabs with a finite
+ thickness. This variant is required for hydroelastic half spaces.
 
  @param slab_thickness       The distance from the half space boundary to its
                              rigid core (this helps define the extent field of
                              the half space).
- @param hydroelastic_modulus A multiplier that maps penetration to pressure.
+ @param hydroelastic_modulus A multiplier that maps penetration to pressure. See
+                             @ref hug_properties.
  @param[out] properties      The properties will be added to this property set.
  @throws std::exception If `properties` already has properties with the names
                         that this function would need to add.
  @pre 0 < `slab_thickness` < ∞, 0 < `hydroelastic_modulus`, and `properties`
       is not nullptr. */
-void AddSoftHydroelasticPropertiesForHalfSpace(double slab_thickness,
-                                               double hydroelastic_modulus,
-                                               ProximityProperties* properties);
+void AddCompliantHydroelasticPropertiesForHalfSpace(
+    double slab_thickness, double hydroelastic_modulus,
+    ProximityProperties* properties);
 
 //@}
 

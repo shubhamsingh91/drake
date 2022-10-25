@@ -13,17 +13,18 @@ def drake_py_library(
     py_library(
         name = name,
         deps = deps,
+        srcs_version = "PY3",
         **kwargs
     )
 
-def _disable_test_impl(ctx):
+def _redirect_test_impl(ctx):
     info = dict(
         bad_target = ctx.attr.bad_target,
         good_target = ctx.attr.good_target,
     )
     content = """#!/bin/bash
-echo "ERROR: Please use '{good_target}'; the label '{bad_target}'" \
-     "has been removed." >&2
+echo "ERROR: Please use\n    {good_target}\n  The label\n    {bad_target}\n" \
+     " does not exist." >&2
 exit 1
 """.format(**info)
     ctx.actions.write(
@@ -33,15 +34,15 @@ exit 1
     return [DefaultInfo()]
 
 # Defines a test which will fail when run via `bazel run` or `bazel test`,
-# pointing the user to the correct binary to use. This should typically have
+# redirecting the user to the correct binary to use. This should typically have
 # a "manual" tag.
-_disable_test = rule(
+_redirect_test = rule(
     attrs = {
         "bad_target": attr.string(mandatory = True),
         "good_target": attr.string(mandatory = True),
     },
     test = True,
-    implementation = _disable_test_impl,
+    implementation = _redirect_test_impl,
 )
 
 def _py_target_isolated(
@@ -58,10 +59,10 @@ def _py_target_isolated(
     if py_target == None:
         fail("Must supply macro function for defining `py_target`.")
 
-    # Do not isolate targets that are already isolated. This generally happens
-    # when linting tests (which are isolated) are invoked for isolated Python
-    # targets. Without this check, the actual test turns into
-    # `py/py/{name}`.
+    # Targets that are already isolated (with a `py/` prefix) don't require any
+    # additional work. This can happen when linting tests (isolated by
+    # definition) are invoked for isolated Python targets. Otherwise, they get
+    # "doubly isolated" as `py/py/{name}`.
     prefix = "py/"
     if isolate and not name.startswith(prefix):
         actual = prefix + name
@@ -82,10 +83,11 @@ def _py_target_isolated(
         # Disable and redirect original name.
         package_prefix = "//" + native.package_name() + ":"
 
-        # N.B. We make the disabled rule a test, even if the original was not.
-        # This ensures that developers will see the redirect using both
-        # `bazel run` or `bazel test`.
-        _disable_test(
+        # N.B. Make sure that a test (visible to both `bazel run` and
+        # `bazel test`) with the original name redirects to the isolated
+        # instantiation so users unfamiliar with isolation that use the
+        # "obvious" spelling will be properly informed.
+        _redirect_test(
             name = name,
             good_target = package_prefix + actual,
             bad_target = package_prefix + name,
@@ -140,6 +142,8 @@ def drake_py_binary(
         data = data,
         deps = deps,
         tags = tags,
+        python_version = "PY3",
+        srcs_version = "PY3",
         **kwargs
     )
     if add_test_rule:
@@ -163,7 +167,6 @@ def drake_py_binary(
 
 def drake_py_unittest(
         name,
-        deps = None,
         **kwargs):
     """Declares a `unittest`-based python test.
 
@@ -182,7 +185,8 @@ def drake_py_unittest(
         srcs = srcs,
         main = helper,
         allow_import_unittest = True,
-        deps = (deps or []) + [
+        _drake_py_unittest_shard_count = kwargs.pop("shard_count", None),
+        deps = kwargs.pop("deps", []) + [
             "@xmlrunner_py",
         ],
         **kwargs
@@ -214,11 +218,16 @@ def drake_py_test(
 
     By default, sets test size to "small" to indicate a unit test. Adds the tag
     "py" if not already present.
+
+    This macro does not allow a shard_count; use drake_py_unittest for that.
     """
     if size == None:
         size = "small"
     if srcs == None:
         srcs = ["test/%s.py" % name]
+    if kwargs.get("shard_count") != None:
+        fail("Only drake_py_unittest can use sharding")
+    shard_count = kwargs.pop("_drake_py_unittest_shard_count", None)
 
     # Work around https://github.com/bazelbuild/bazel/issues/1567.
     deps = deps or []
@@ -233,9 +242,12 @@ def drake_py_test(
         py_target = py_test,
         isolate = isolate,
         size = size,
+        shard_count = shard_count,
         srcs = srcs,
         deps = deps,
         tags = tags,
+        python_version = "PY3",
+        srcs_version = "PY3",
         **kwargs
     )
 

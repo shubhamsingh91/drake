@@ -3,6 +3,7 @@
 import copy
 import itertools
 import unittest
+import warnings
 
 import numpy as np
 
@@ -27,6 +28,9 @@ b = sym.Variable("b")
 c = sym.Variable("c")
 e_x = sym.Expression(x)
 e_y = sym.Expression(y)
+p_x = sym.Polynomial(x)
+m_x = sym.Monomial(x)
+boolean = sym.Variable(name="boolean", type=sym.Variable.Type.BOOLEAN)
 
 
 class TestSymbolicVariable(unittest.TestCase):
@@ -889,6 +893,22 @@ class TestSymbolicExpression(unittest.TestCase):
 
 
 class TestSymbolicFormula(unittest.TestCase):
+    def test_constructor(self):
+        sym.Formula(var=boolean)
+
+    def test_factory_functions(self):
+        f = sym.forall(vars=sym.Variables([x]), f=(x > 0))
+        self.assertEqual(f.get_kind(), sym.FormulaKind.Forall)
+
+        f = sym.isnan(e_x)
+        self.assertEqual(f.get_kind(), sym.FormulaKind.Isnan)
+
+        f = sym.positive_semidefinite([e_x])
+        self.assertEqual(f.get_kind(), sym.FormulaKind.PositiveSemidefinite)
+
+    def test_get_kind(self):
+        self.assertEqual((x > y).get_kind(), sym.FormulaKind.Gt)
+
     def test_get_free_variables(self):
         f = x > y
         self.assertEqual(f.GetFreeVariables(), sym.Variables([x, y]))
@@ -1140,6 +1160,12 @@ class TestSymbolicMonomial(unittest.TestCase):
         self.assertEqual(m.Evaluate(env=env),
                          env[x] ** 3 * env[y])
 
+    def test_evaluate_batch(self):
+        m = sym.Monomial(x, 3) * sym.Monomial(y)
+        monomial_vals = m.Evaluate(
+            vars=[x, y], vars_values=[[1, 2, 3], [4, 5, 6]])
+        np.testing.assert_array_equal(monomial_vals, [4, 8 * 5, 27 * 6])
+
     def test_evaluate_exception_np_nan(self):
         m = sym.Monomial(x, 3)
         env = {x: np.nan}
@@ -1261,6 +1287,19 @@ class TestSymbolicPolynomial(unittest.TestCase):
         p.AddProduct(coeff=sym.Expression(3), m=m)  # p += 3 * x
         numpy_compare.assert_equal(p.ToExpression(), 6 * x)
 
+    def test_expand(self):
+        a = sym.Variable("a")
+        x = sym.Variable("x")
+
+        p = sym.Polynomial({
+            sym.Monomial(): a ** 2 - 1 - (a+1) * (a-1),
+            sym.Monomial(x): a + 2})
+        p_expand = p.Expand()
+        self.assertEqual(len(p_expand.monomial_to_coefficient_map()), 1)
+        self.assertTrue(
+            p_expand.monomial_to_coefficient_map()[
+                sym.Monomial(x)].EqualTo(a+2))
+
     def test_remove_terms_with_small_coefficients(self):
         e = 3 * x + 1e-12 * y
         p = sym.Polynomial(e, [x, y])
@@ -1270,6 +1309,11 @@ class TestSymbolicPolynomial(unittest.TestCase):
         p = sym.Polynomial(e, [x, y])
         q = p.RemoveTermsWithSmallCoefficients(coefficient_tol=1e-6)
         numpy_compare.assert_equal(q.ToExpression(), 3 * x)
+
+    def test_even_odd(self):
+        p = sym.Polynomial()
+        self.assertTrue(p.IsEven())
+        self.assertTrue(p.IsOdd())
 
     def test_comparison(self):
         p = sym.Polynomial()
@@ -1289,6 +1333,12 @@ class TestSymbolicPolynomial(unittest.TestCase):
         self.assertFalse(
             p.CoefficientsAlmostEqual(
                 p=(p + sym.Polynomial(2e-6 * x)), tolerance=1e-6))
+
+        a = sym.Variable("a")
+        p_not_expand = sym.Polynomial(
+            {sym.Monomial(): a ** 2 - 1 - (a-1) * (a+1)})
+        p_expand = sym.Polynomial({sym.Monomial(): 0})
+        self.assertFalse(p_not_expand.EqualTo(p_expand))
 
     def test_repr(self):
         p = sym.Polynomial()
@@ -1501,6 +1551,288 @@ class TestSymbolicPolynomial(unittest.TestCase):
             p.EvaluatePartial(var=a, c=2),
             sym.Polynomial(2 * x * x + b * x + c, [x]))
 
+    def test_evaluate_indeterminates(self):
+        p = sym.Polynomial(2 * x * x, [x])
+        p_values = p.EvaluateIndeterminates(
+            indeterminates=[x], indeterminates_values=[[1, 2, 3]])
+        self.assertEqual(p_values.shape, ((3,)))
+
+    def test_evaluate_w_affine_coefficients(self):
+        p = sym.Polynomial(a * x * x + b * x, [x])
+        indeterminates_values = np.array([[1., 2., 3.]])
+        (A_coeff, decision_variables,
+         b_coeff) = p.EvaluateWithAffineCoefficients(
+             indeterminates=[x],
+             indeterminates_values=indeterminates_values)
+        self.assertEqual(A_coeff.shape, (3, 2))
+        self.assertEqual(b_coeff.shape, (3,))
+        self.assertEqual(decision_variables.shape, (2,))
+        for i in range(indeterminates_values.shape[1]):
+            self.assertTrue(
+                p.ToExpression().EvaluatePartial(
+                    {x: indeterminates_values[0, i]}).Expand().EqualTo(
+                    (A_coeff[i].dot(decision_variables) + b_coeff[i]).Expand())
+            )
+
+
+class TestSymbolicRationalFunction(unittest.TestCase):
+    def test_default_constructor(self):
+        r = sym.RationalFunction()
+        numpy_compare.assert_equal(r.ToExpression(), sym.Expression())
+
+    def test_polynomial_constructor(self):
+        m = {sym.Monomial(x): sym.Expression(3),
+             sym.Monomial(y): sym.Expression(2)}  # 3x + 2y
+        p = sym.Polynomial(m)
+        r = sym.RationalFunction(p=p)
+        expected = 3 * x + 2 * y
+        numpy_compare.assert_equal(r.ToExpression(), expected)
+
+    def test_numerator_denominator_constructor(self):
+        m1 = {sym.Monomial(x): sym.Expression(3),
+              sym.Monomial(y): sym.Expression(2)}  # 3x + 2y
+        p = sym.Polynomial(m1)
+
+        m2 = {sym.Monomial(z): sym.Expression(5)}  # 5z
+        q = sym.Polynomial(m2)
+
+        r = sym.RationalFunction(numerator=p, denominator=q)
+        expected = (3 * x + 2 * y) / (5 * z)
+        numpy_compare.assert_equal(r.ToExpression(), expected)
+
+    def test_monomial_constructor(self):
+        r = sym.RationalFunction(m=sym.Monomial(x))
+        expected = sym.Expression(x)
+        numpy_compare.assert_equal(r.ToExpression(), expected)
+
+    def test_double_constructor(self):
+        r = sym.RationalFunction(c=3)
+        expected = sym.Expression(3)
+        numpy_compare.assert_equal(r.ToExpression(), expected)
+
+    def test_get_numerator_denominator(self):
+        m1 = {sym.Monomial(x): sym.Expression(3),
+              sym.Monomial(y): sym.Expression(2)}  # 3x + 2y
+        p = sym.Polynomial(m1)
+
+        m2 = {sym.Monomial(z): sym.Expression(5)}  # 5z
+        q = sym.Polynomial(m2)
+
+        r = sym.RationalFunction(p, q)
+        numpy_compare.assert_equal(r.numerator().ToExpression(),
+                                   p.ToExpression())
+        numpy_compare.assert_equal(r.denominator().ToExpression(),
+                                   q.ToExpression())
+
+    def test_set_indeterminates(self):
+        e_num = a * x * x + b * y + c * z
+        e_den = a * b * x * y * z
+        indeterminates1 = sym.Variables([x, y, z])
+        p = sym.Polynomial(e_num)
+        q = sym.Polynomial(e_den)
+        r = sym.RationalFunction(p, q)
+
+        r.SetIndeterminates(new_indeterminates=indeterminates1)
+        self.assertEqual(r.numerator().TotalDegree(), 2)
+        self.assertEqual(r.denominator().TotalDegree(), 3)
+
+        indeterminates2 = sym.Variables([a, b, c])
+        r.SetIndeterminates(indeterminates2)
+        self.assertEqual(r.numerator().TotalDegree(), 1)
+        self.assertEqual(r.denominator().TotalDegree(), 2)
+
+    def test_repr(self):
+        r = sym.RationalFunction()
+        self.assertEqual(repr(r), '<RationalFunction "(0) / (1*1)">')
+
+    def test_addition(self):
+        r = sym.RationalFunction(sym.Polynomial(0.0, [x]))
+        r2 = sym.RationalFunction(sym.Polynomial(1 * x))
+
+        # Test RationalFunction + RationalFunction
+        numpy_compare.assert_equal(r + r, r)
+        numpy_compare.assert_equal(r2 + r, r)
+        numpy_compare.assert_equal(r + r2, r)
+        # Test RationalFunction + Polynomial
+        numpy_compare.assert_equal(p_x + r, r2)
+        numpy_compare.assert_equal(r + p_x, r2)
+        # Test RationalFunction + Monomial
+        numpy_compare.assert_equal(m_x + r, r2)
+        numpy_compare.assert_equal(r + m_x, r2)
+        # Test RationalFunction + double
+        numpy_compare.assert_equal(r + 0, r)
+        numpy_compare.assert_equal(0 + r, r)
+
+    def test_subtraction(self):
+        r = sym.RationalFunction(sym.Polynomial(0.0, [x]))
+        r2 = sym.RationalFunction(p_x)
+        # Test RationalFunction - RationalFunction
+        numpy_compare.assert_equal(r - r, r)
+        numpy_compare.assert_equal(r2 - r,
+                                   sym.RationalFunction(p_x))
+        numpy_compare.assert_equal(r - r2,
+                                   sym.RationalFunction(-p_x))
+        # Test RationalFunction - Polynomial
+        numpy_compare.assert_equal(p_x - r,
+                                   sym.RationalFunction(p_x))
+        numpy_compare.assert_equal(r - p_x,
+                                   sym.RationalFunction(-p_x))
+        # Test RationalFunction - Monomial
+        numpy_compare.assert_equal(m_x - r,
+                                   sym.RationalFunction(m_x))
+        numpy_compare.assert_equal(r - m_x,
+                                   -sym.RationalFunction(m_x))
+        # Test RationalFunction - double
+        numpy_compare.assert_equal(r - 0, r)
+        numpy_compare.assert_equal(0 - r, -r)
+
+    def test_multiplication(self):
+        r = sym.RationalFunction(sym.Polynomial(0.0, [x]))
+        # Test RationalFunction * RationalFunction
+        numpy_compare.assert_equal(r * r, r)
+        numpy_compare.assert_equal(sym.RationalFunction(p_x) * p_x,
+                                   sym.RationalFunction(sym.Polynomial(x * x)))
+        numpy_compare.assert_equal(p_x * sym.RationalFunction(p_x),
+                                   sym.RationalFunction(sym.Polynomial(x * x)))
+        numpy_compare.assert_equal(
+            sym.RationalFunction(p_x) * sym.RationalFunction(p_x),
+            sym.RationalFunction(sym.Polynomial(x * x)))
+        # Test RationalFunction * Polynomial
+        numpy_compare.assert_equal(p_x * r, r)
+        numpy_compare.assert_equal(r * p_x, r)
+        # Test RationalFunction * Monomial
+        numpy_compare.assert_equal(m_x * r, r)
+        numpy_compare.assert_equal(r * m_x, r)
+        # Test RationalFunction * double
+        numpy_compare.assert_equal(r * 0, r)
+        numpy_compare.assert_equal(0 * r, r)
+
+    def test_division(self):
+        p1 = sym.Polynomial(x * x + x)
+        p2 = sym.Polynomial(y)
+        r1 = sym.RationalFunction(p1)
+        r2 = sym.RationalFunction(p2)
+        # Test RationalFunction / RationalFunction
+        numpy_compare.assert_equal(r1 / r2,
+                                   sym.RationalFunction(p1, p2))
+        # Test RationalFunction / Polynomial
+        numpy_compare.assert_equal(r1 / p2,
+                                   sym.RationalFunction(p1, p2))
+        # Test Polynomial / RationalFunction
+        numpy_compare.assert_equal(p2 / r1,
+                                   sym.RationalFunction(p1, p2))
+        # Test RationalFunction / Monomial
+        numpy_compare.assert_equal(r2 / m_x,
+                                   sym.RationalFunction(p2, m_x))
+        numpy_compare.assert_equal(m_x / r2,
+                                   sym.RationalFunction(m_x, p2))
+        # Test RationalFunction / double
+        numpy_compare.assert_equal(r1 / 2,
+                                   sym.RationalFunction(p1, sym.Polynomial(2)))
+        numpy_compare.assert_equal(2 / r1,
+                                   sym.RationalFunction(sym.Polynomial(2), p1))
+
+    def test_addition_assignment(self):
+        r = sym.RationalFunction()
+        r += r
+        numpy_compare.assert_equal(r, sym.RationalFunction())
+
+        r += sym.Polynomial(x)
+        numpy_compare.assert_equal(r,
+                                   sym.RationalFunction(sym.Polynomial(1 * x)))
+
+        r += sym.Monomial(x)
+        numpy_compare.assert_equal(r,
+                                   sym.RationalFunction(sym.Monomial(x)))
+
+        r += 3
+        numpy_compare.assert_equal(r,
+                                   sym.RationalFunction(
+                                       sym.Polynomial(1 * x + 3)))
+
+    def test_subtraction_assignment(self):
+        r = sym.RationalFunction()
+        r -= r
+        numpy_compare.assert_equal(r, sym.RationalFunction())
+
+        r -= sym.Polynomial(x)
+        numpy_compare.assert_equal(
+            r, sym.RationalFunction(sym.Polynomial(-1 * x)))
+        r -= sym.Monomial(x)
+        numpy_compare.assert_equal(
+            r, -sym.RationalFunction(sym.Monomial(x)))
+        r -= 3
+        numpy_compare.assert_equal(
+            r, sym.RationalFunction(sym.Polynomial(-1 * x - 3)))
+
+    def test_multiplication_assignment(self):
+        r = sym.RationalFunction()
+        r *= r
+        numpy_compare.assert_equal(r, sym.RationalFunction())
+        r *= sym.Monomial(x)
+        numpy_compare.assert_equal(r, sym.RationalFunction())
+        r *= sym.Polynomial(x)
+        numpy_compare.assert_equal(r, sym.RationalFunction())
+        r *= 3
+        numpy_compare.assert_equal(r, sym.RationalFunction())
+
+    def test_division_assignment(self):
+        r = sym.RationalFunction(1)
+        r /= sym.RationalFunction(1)
+        numpy_compare.assert_equal(r, sym.RationalFunction(1))
+
+        r /= sym.Monomial(x)
+        numpy_compare.assert_equal(r, sym.RationalFunction(sym.Polynomial(1),
+                                                           sym.Polynomial(x)))
+
+        r = sym.RationalFunction(1)
+        r /= sym.Polynomial(x)
+        numpy_compare.assert_equal(r, sym.RationalFunction(sym.Polynomial(1),
+                                                           sym.Polynomial(x)))
+
+        r = sym.RationalFunction(1)
+        r /= 3
+        numpy_compare.assert_equal(r, sym.RationalFunction(1/3))
+
+    def test_comparison(self):
+        r = sym.RationalFunction()
+        numpy_compare.assert_equal(r, r)
+        self.assertIsInstance(r == r, sym.Formula)
+        self.assertEqual(r == r, sym.Formula.True_())
+        self.assertTrue(r.EqualTo(r))
+
+        q = sym.RationalFunction(sym.Polynomial(10))
+        numpy_compare.assert_not_equal(r, q)
+        self.assertIsInstance(r != q, sym.Formula)
+        self.assertEqual(r != q, sym.Formula.True_())
+        self.assertFalse(r.EqualTo(q))
+
+    def test_rational_function_evaluate(self):
+        p = sym.Polynomial(a * x * x + b * x + c, [x])
+        q = sym.Polynomial(b * x * z, [x, z])
+        r = sym.RationalFunction(p, q)
+        env = {a: 2.0,
+               b: 3.0,
+               c: 5.0,
+               x: 2.0,
+               z: 5.0}
+        expected_num = env[a] * env[x] * env[x] + env[b] * env[x] + env[c]
+        expected_den = env[b] * env[x] * env[z]
+        self.assertEqual(r.Evaluate(env=env),
+                         expected_num/expected_den)
+
+    def test_evaluate_exception_np_nan(self):
+        r = sym.RationalFunction(sym.Polynomial(x * x, [x]))
+        env = {x: np.nan}
+        with self.assertRaises(RuntimeError):
+            r.Evaluate(env)
+
+    def test_evaluate_exception_python_nan(self):
+        r = sym.RationalFunction(sym.Polynomial(x * x, [x]))
+        env = {x: float('nan')}
+        with self.assertRaises(RuntimeError):
+            r.Evaluate(env=env)
+
 
 class TestExtractVariablesFromExpression(unittest.TestCase):
     def test(self):
@@ -1513,6 +1845,10 @@ class TestExtractVariablesFromExpression(unittest.TestCase):
         self.assertEqual(len(map_var_to_index), 2)
         for i in range(2):
             self.assertEqual(map_var_to_index[variables[i].get_id()], i)
+
+        variables, map_var_to_index = sym.ExtractVariablesFromExpression(
+            expressions=np.array([x + x * y, y+1]))
+        self.assertEqual(variables.shape, (2,))
 
 
 class TestDecomposeAffineExpression(unittest.TestCase):
@@ -1598,7 +1934,7 @@ class TestDecomposeLumpedParameters(unittest.TestCase):
         numpy_compare.assert_equal(w0, [sym.Expression(x), sym.Expression(0)])
 
 
-class TestUnapply(unittest.TestCase):
+class TestUnapplyExpression(unittest.TestCase):
     def setUp(self):
         # For these kinds of expressions, the unapplied args should only ever
         # be of type Expression or float.
@@ -1706,3 +2042,276 @@ class TestUnapply(unittest.TestCase):
             for arg in old_args
         ]
         return ctor(*new_args)
+
+
+class TestUnapplyFormula(unittest.TestCase):
+    def setUp(self):
+        self._relational_formulas = [
+            x == y,
+            x != y,
+            x > y,
+            x >= y,
+            x < y,
+            x <= y,
+        ]
+        self._compound_formulas = [
+            sym.logical_and((x > y), (x > z)),
+            sym.logical_or((x > y), (x > z)),
+            sym.logical_not(x < y),
+        ]
+        self._misc_formulas = [
+            sym.Formula.False_(),
+            sym.Formula.True_(),
+            sym.Formula(boolean),
+            sym.forall(vars=sym.Variables([x]), f=(x > 0)),
+            sym.isnan(e_x),
+            sym.positive_semidefinite([e_x]),
+        ]
+        self._all_formulas = (
+            self._relational_formulas
+            + self._compound_formulas
+            + self._misc_formulas
+        )
+
+    def test_round_trip(self):
+        """Focused unit test to check each kind of Formula at least once."""
+        for f in self._all_formulas:
+            with self.subTest(f=f):
+                self._check_one_round_trip(f)
+
+    def _check_one_round_trip(self, f):
+        ctor, args = f.Unapply()
+        result = ctor(*args)
+        self.assertTrue(f.EqualTo(result), msg=repr(result))
+
+    def test_all_relational(self):
+        """Relational formulas should have Expression args."""
+        for f in self._relational_formulas:
+            with self.subTest(f=f):
+                self._check_one_relational(f)
+
+    def _check_one_relational(self, f):
+        ctor, args = f.Unapply()
+        self.assertEqual(len(args), 2)
+        self.assertIsInstance(args[0], sym.Expression)
+        self.assertIsInstance(args[1], sym.Expression)
+
+    def test_all_compound(self):
+        """Relational formulas should have Formula args."""
+        for f in self._compound_formulas:
+            with self.subTest(f=f):
+                self._check_one_compound(f)
+
+    def _check_one_compound(self, f):
+        ctor, args = f.Unapply()
+        self.assertGreaterEqual(len(args), 1)
+        for arg in args:
+            self.assertIsInstance(arg, sym.Formula)
+
+
+class TestToLatex(unittest.TestCase):
+    def test_basics(self):
+        x = sym.Variable("x")
+        y = sym.Variable("y")
+        b = sym.Variable("b", sym.Variable.Type.BOOLEAN)
+
+        # Expressions
+        self.assertEqual(sym.ToLatex(x), "x")
+        self.assertEqual(sym.ToLatex(1.0), "1")
+        self.assertEqual(sym.ToLatex(1.0, 1), "1")
+        self.assertEqual(sym.ToLatex(1.01), "1.010")
+        self.assertEqual(sym.ToLatex(1.01, 1), "1.0")
+        self.assertEqual(sym.ToLatex(x + y), "(x + y)")
+        self.assertEqual(sym.ToLatex(x + 2.3), "(2.300 + x)")
+        self.assertEqual(sym.ToLatex(x - y), "(x - y)")
+        self.assertEqual(sym.ToLatex(x - 2 * y), "(x - 2y)")
+        self.assertEqual(sym.ToLatex(2 * x + 3 * x + 4 * y), "(5x + 4y)")
+        self.assertEqual(sym.ToLatex(2.1 * x + 3.2 * y * y, 1),
+                         "(2.1x + 3.2y^{2})")
+        self.assertEqual(sym.ToLatex(x * pow(y, 2)), "x y^{2}")
+        self.assertEqual(sym.ToLatex(2 * x * y), "2 x y")
+        self.assertEqual(sym.ToLatex(pow(x, 3)), "x^{3}")
+        self.assertEqual(sym.ToLatex(pow(x, 3.1)), "x^{3.100}")
+        self.assertEqual(sym.ToLatex(x / y), R"\frac{x}{y}")
+        self.assertEqual(sym.ToLatex(sym.abs(x)), "|x|")
+        self.assertEqual(sym.ToLatex(sym.log(x)), R"\log{x}")
+        self.assertEqual(sym.ToLatex(sym.exp(x)), "e^{x}")
+        self.assertEqual(sym.ToLatex(sym.sqrt(x)), R"\sqrt{x}")
+        self.assertEqual(sym.ToLatex(sym.sin(x)), R"\sin{x}")
+        self.assertEqual(sym.ToLatex(sym.cos(x)), R"\cos{x}")
+        self.assertEqual(sym.ToLatex(sym.tan(x)), R"\tan{x}")
+        self.assertEqual(sym.ToLatex(sym.asin(x)), R"\asin{x}")
+        self.assertEqual(sym.ToLatex(sym.acos(x)), R"\acos{x}")
+        self.assertEqual(sym.ToLatex(sym.atan(x)), R"\atan{x}")
+        self.assertEqual(sym.ToLatex(sym.atan2(y, x)), R"\atan{\frac{y}{x}}")
+        self.assertEqual(sym.ToLatex(sym.sinh(x)), R"\sinh{x}")
+        self.assertEqual(sym.ToLatex(sym.cosh(x)), R"\cosh{x}")
+        self.assertEqual(sym.ToLatex(sym.tanh(x)), R"\tanh{x}")
+        self.assertEqual(sym.ToLatex(sym.min(x, y)), R"\min\{x, y\}")
+        self.assertEqual(sym.ToLatex(sym.max(x, y)), R"\max\{x, y\}")
+        self.assertEqual(sym.ToLatex(sym.ceil(x)), R"\lceil x \rceil")
+        self.assertEqual(sym.ToLatex(sym.floor(x)), R"\lfloor x \rfloor")
+        self.assertEqual(
+            sym.ToLatex(sym.if_then_else(x > y, 2 * x, 3)),
+            R"\begin{cases} 2 x & \text{if } x > y, \\"
+            R" 3 & \text{otherwise}.\end{cases}")
+
+        # Formulas
+        self.assertEqual(sym.ToLatex(sym.Formula.False_()), R"\text{false}")
+        self.assertEqual(sym.ToLatex(sym.Formula.True_()), R"\text{true}")
+        self.assertEqual(sym.ToLatex(sym.Formula(b)), R"b")
+        self.assertEqual(sym.ToLatex(x == y), R"x = y")
+        self.assertEqual(sym.ToLatex(2.5 * x == y, 2), R"2.50 x = y")
+        self.assertEqual(sym.ToLatex(2 * x != y), R"2 x \neq y")
+        self.assertEqual(sym.ToLatex(2 * x > y), R"2 x > y")
+        self.assertEqual(sym.ToLatex(2 * x >= y), R"2 x \ge y")
+        self.assertEqual(sym.ToLatex(2 * x < y), R"2 x < y")
+        self.assertEqual(sym.ToLatex(2 * x <= y), R"2 x \le y")
+        self.assertEqual(sym.ToLatex(sym.logical_and(x == y, x * y > x)),
+                         R"x = y \land x y > x")
+        self.assertEqual(
+            sym.ToLatex(sym.logical_not(sym.logical_and(x == y, x * y > x))),
+            R"x \neq y \lor x y \le x")
+        self.assertEqual(sym.ToLatex(sym.logical_or(x == y, x * y < x)),
+                         R"x = y \lor x y < x")
+        self.assertEqual(
+            sym.ToLatex(sym.logical_not(sym.logical_or(x == y, x * y < x))),
+            R"x \neq y \land x y \ge x")
+        self.assertEqual(sym.ToLatex(sym.logical_not(x == y)), R"x \neq y")
+        self.assertEqual(sym.ToLatex(sym.forall(sym.Variables([x, y]), x > y)),
+                         R"\forall x, y: (x > y)")
+        self.assertEqual(sym.ToLatex(sym.isnan(x)), R"\text{isnan}(x)")
+        self.assertEqual(sym.ToLatex(sym.logical_not(sym.isnan(x))),
+                         R"\neg \text{isnan}(x)")
+
+        # Matrix<double>
+        M = np.array([[1.2, 3], [4.56, 7]])
+        self.assertEqual(sym.ToLatex(M, 1),
+                         R"\begin{bmatrix} 1.2 & 3 \\ 4.6 & 7 \end{bmatrix}")
+
+        # Matrix<Expression>
+        Me = np.array([[x, 2.3 * y], [2.3 * y, x + y]])
+        self.assertEqual(
+            sym.ToLatex(Me, 1),
+            R"\begin{bmatrix} x & 2.3 y \\ 2.3 y & (x + y) \end{bmatrix}")
+
+        # Formula with a PSD Matrix.
+        self.assertEqual(
+            sym.ToLatex(sym.positive_semidefinite(Me), 1),
+            R"\begin{bmatrix} x & 2.3 y \\ 2.3 y & (x + y) \end{bmatrix}"
+            R" \succeq 0")
+
+
+class TestSinCosSubstitution(unittest.TestCase):
+    def test_basics(self):
+        x = sym.Variable("x")
+        y = sym.Variable("y")
+        sx = sym.Variable("sx")
+        sy = sym.Variable("sy")
+        cx = sym.Variable("cx")
+        cy = sym.Variable("cy")
+        subs = {x: sym.SinCos(s=sx, c=cx), y: sym.SinCos(s=sy, c=cy)}
+
+        self.assertTrue(
+            sym.Substitute(e=np.sin(x + y),
+                           subs=subs).EqualTo(sx * cy + cx * sy))
+        m = np.array([np.sin(x), np.cos(y), 1, np.sin(2*x)])
+        me = np.array([
+            sym.Expression(sx),
+            sym.Expression(cy),
+            sym.Expression(1), 2 * sx * cx
+        ])
+        msubs = sym.Substitute(m=m, subs=subs)
+        self.assertEqual(msubs.shape, (4, 1))
+        for i in range(4):
+            self.assertTrue(msubs[i, 0].EqualTo(me[i]))
+
+    def test_halfangle(self):
+        x = sym.Variable("x")
+        y = sym.Variable("y")
+        sx = sym.Variable("sx")
+        sy = sym.Variable("sy")
+        cx = sym.Variable("cx")
+        cy = sym.Variable("cy")
+        subs = {
+            x:
+            sym.SinCos(s=sx,
+                       c=cx,
+                       type=sym.SinCosSubstitutionType.kHalfAnglePreferSin),
+            y:
+            sym.SinCos(s=sy,
+                       c=cy,
+                       type=sym.SinCosSubstitutionType.kHalfAnglePreferCos)
+        }
+
+        self.assertTrue(
+            sym.Substitute(e=np.sin(x), subs=subs).EqualTo(2 * sx * cx))
+        self.assertTrue(
+            sym.Substitute(e=np.cos(x), subs=subs).EqualTo(1 - 2 * sx * sx))
+        self.assertTrue(
+            sym.Substitute(e=np.cos(y), subs=subs).EqualTo(2 * cy * cy - 1))
+        m = np.array([np.sin(0.5*x), np.cos(0.5*y), 1, np.cos(x)])
+        me = np.array([sx, cy, 1, 1 - 2 * sx**2])
+        msubs = sym.Substitute(m=m, subs=subs)
+        self.assertEqual(msubs.shape, (4, 1))
+        for i in range(4):
+            self.assertTrue(msubs[i, 0].EqualTo(me[i]))
+
+
+class TestStereographicSubstitution(unittest.TestCase):
+    def test(self):
+        x = sym.Variable("x")
+        y = sym.Variable("y")
+        sx = sym.Variable("sx")
+        sy = sym.Variable("sy")
+        cx = sym.Variable("cx")
+        cy = sym.Variable("cy")
+        tx = sym.Variable("tx")
+        ty = sym.Variable("ty")
+
+        p = sym.Polynomial(2*sx+sy*cx)
+        r = sym.SubstituteStereographicProjection(
+            e=p,
+            sin_cos=[sym.SinCos(s=sx, c=cx), sym.SinCos(s=sy, c=cy)],
+            t=[tx, ty])
+        self.assertTrue(r.numerator().Expand().EqualTo(
+            sym.Polynomial(4*tx*(1+ty*ty) + 2*ty * (1-tx*tx)).Expand()))
+        self.assertTrue(r.denominator().Expand().EqualTo(
+            sym.Polynomial((1+ty*ty)*(1+tx*tx)).Expand()))
+
+        e = 2 * np.sin(x) + np.sin(y) * np.cos(x)
+        r = sym.SubstituteStereographicProjection(e=e, subs={x: tx, y: ty})
+        self.assertTrue(r.numerator().Expand().EqualTo(
+            sym.Polynomial(4*tx*(1+ty*ty) + 2*ty * (1-tx*tx)).Expand()))
+        self.assertTrue(r.denominator().Expand().EqualTo(
+            sym.Polynomial((1+ty*ty)*(1+tx*tx)).Expand()))
+
+
+class TestReplaceBilinearTerms(unittest.TestCase):
+    def test(self):
+        x = np.array([sym.Variable("x0"), sym.Variable("x1")])
+        y = np.array([
+            sym.Variable("y0"), sym.Variable("y1"), sym.Variable("y2")])
+        W = np.empty((2, 3), dtype=object)
+        for i in range(2):
+            for j in range(3):
+                W[i, j] = sym.Variable(f"W({i}, {j})")
+        e = x[0]*y[1] * 3 + x[1]*y[2] * 4
+        e_replace = sym.ReplaceBilinearTerms(e=e, x=x, y=y, W=W)
+        self.assertTrue(e_replace.EqualTo(W[0, 1]*3 + W[1, 2]*4))
+
+
+class TestIssue17898(unittest.TestCase):
+    def test_numpy_dtype_object_operations_no_warnings(self):
+        """
+        Tests that operations like `np.matmul`, `np.sqrt`, etc. do not issue
+        warnings when using Drake-specified dtype=object types.
+
+        See #17898 for more context.
+        """
+        with warnings.catch_warnings(record=True) as w:
+            v = sym.MakeVectorVariable(2, "v")
+            np.eye(2) @ v
+            np.sqrt(v)
+            # Ensure no user-visible warnings occur.
+            self.assertEqual(len(w), 0)

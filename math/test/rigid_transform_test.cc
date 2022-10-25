@@ -120,11 +120,11 @@ GTEST_TEST(RigidTransform, ConstructorAndSet) {
   // RotationMatrix class, it is here due to the bug (mentioned below) in
   // EXPECT_THROW.  Contrast the use here of EXPECT_THROW (which does not have
   // an extra set of parentheses around its first argument) with the use of
-  // EXPECT_THROW((RigidTransform<double>(isometryC)), std::logic_error); below.
+  // EXPECT_THROW((RigidTransform<double>(isometryC)), std::exception); below.
   const Matrix3d bad = GetBadRotationMatrix();
   if (kDrakeAssertIsArmed) {
     EXPECT_THROW(RigidTransform<double>(RotationMatrix<double>(bad), p),
-                 std::logic_error);
+                 std::exception);
   }
 }
 
@@ -199,7 +199,7 @@ GTEST_TEST(RigidTransform, ConstructorFromMatrix34) {
 
   if (kDrakeAssertIsArmed) {
     pose(2, 2) += 1E-5;  // Corrupt the last element of the rotation matrix.
-    EXPECT_THROW(RigidTransformd XX(pose), std::logic_error);
+    EXPECT_THROW(RigidTransformd XX(pose), std::exception);
   }
 }
 
@@ -216,13 +216,13 @@ GTEST_TEST(RigidTransform, ConstructorFromMatrix4) {
   if (kDrakeAssertIsArmed) {
     DRAKE_EXPECT_NO_THROW(RigidTransformd Xm(pose));
     pose(3, 0) = kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose), std::exception);
     pose(3, 0) = 0;  pose(3, 1) = kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose), std::exception);
     pose(3, 1) = 0;  pose(3, 2) = kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose), std::exception);
     pose(3, 2) = 0;  pose(3, 3) = 1 + 2 * kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose), std::exception);
   }
 }
 
@@ -252,19 +252,19 @@ GTEST_TEST(RigidTransform, ConstructorFromEigenExpression) {
   if (kDrakeAssertIsArmed) {
     DRAKE_EXPECT_NO_THROW(RigidTransformd Xm(pose4 * pose4));
     pose4(3, 0) = kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::exception);
     pose4(3, 0) = 0;  pose4(3, 1) = kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::exception);
     pose4(3, 1) = 0;  pose4(3, 2) = kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::exception);
     pose4(3, 2) = 0;  pose4(3, 3) = 1 + 2 * kEpsilon;
-    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(pose4 * pose4), std::exception);
   }
 
   // Ensure calling the constructor with a 3x3 matrix Eigen expression fails.
   if (kDrakeAssertIsArmed) {
     const Matrix3<double> m3 = R.matrix();  // 3x3 matrix.
-    EXPECT_THROW(RigidTransformd Xm(1.0 * m3), std::logic_error);
+    EXPECT_THROW(RigidTransformd Xm(1.0 * m3), std::exception);
   }
 }
 
@@ -356,7 +356,7 @@ GTEST_TEST(RigidTransform, Isometry3) {
   // means the EXPECT_THROW fails.  The fix (credit Sherm) was to add an extra
   // set of parentheses around the first argument of EXPECT_THROW.
   if (kDrakeAssertIsArmed) {
-    EXPECT_THROW((RigidTransform<double>(isometryC)), std::logic_error);
+    EXPECT_THROW((RigidTransform<double>(isometryC)), std::exception);
   }
 }
 
@@ -380,7 +380,7 @@ GTEST_TEST(RigidTransform, IsIdentity) {
   // Test whether it is an identity matrix multiple ways.
   RigidTransform<double> X1;
   EXPECT_TRUE(X1.IsExactlyIdentity());
-  EXPECT_TRUE(X1.IsIdentityToEpsilon(0.0));
+  EXPECT_TRUE(X1.IsNearlyIdentity(0.0));
   EXPECT_TRUE(X1.rotation().IsExactlyIdentity());
   EXPECT_TRUE((X1.translation().array() == 0).all());
 
@@ -393,8 +393,8 @@ GTEST_TEST(RigidTransform, IsIdentity) {
   // Change rotation matrix to identity, but leave non-zero position vector.
   X2.set_rotation(RotationMatrix<double>::Identity());
   EXPECT_FALSE(X2.IsExactlyIdentity());
-  EXPECT_FALSE(X2.IsIdentityToEpsilon(3.99));
-  EXPECT_TRUE(X2.IsIdentityToEpsilon(4.01));
+  EXPECT_FALSE(X2.IsNearlyIdentity(3.99));
+  EXPECT_TRUE(X2.IsNearlyIdentity(4.01));
 
   // Change position vector to zero vector.
   const Vector3d zero_vector(0, 0, 0);
@@ -531,7 +531,7 @@ GTEST_TEST(RigidTransform, CastFromDoubleToAutoDiffXd) {
 
 // Verify RigidTransform is compatible with symbolic::Expression. This includes,
 // construction and methods involving Bool specialized for Expression, namely:
-// IsExactlyIdentity(), IsIdentityToEpsilon(), IsNearlyEqualTo().
+// IsExactlyIdentity(), IsNearlyIdentity(), IsNearlyEqualTo().
 GTEST_TEST(RigidTransform, SymbolicRigidTransformSimpleTests) {
   // Test RigidTransform can be constructed with Expression.
   RigidTransform<Expression> X;
@@ -540,8 +540,8 @@ GTEST_TEST(RigidTransform, SymbolicRigidTransformSimpleTests) {
   Formula test_Bool = X.IsExactlyIdentity();
   EXPECT_TRUE(test_Bool);
 
-  // Test IsIdentityToEpsilon() nominally works with Expression.
-  test_Bool = X.IsIdentityToEpsilon(kEpsilon);
+  // Test IsNearlyIdentity() nominally works with Expression.
+  test_Bool = X.IsNearlyIdentity(kEpsilon);
   EXPECT_TRUE(test_Bool);
 
   // Test IsExactlyEqualTo() nominally works for Expression.
@@ -562,8 +562,8 @@ GTEST_TEST(RigidTransform, SymbolicRigidTransformSimpleTests) {
   test_Bool = X.IsExactlyIdentity();
   EXPECT_FALSE(test_Bool);
 
-  // Test IsIdentityToEpsilon() works with Expression.
-  test_Bool = X.IsIdentityToEpsilon(kEpsilon);
+  // Test IsNearlyIdentity() works with Expression.
+  test_Bool = X.IsNearlyIdentity(kEpsilon);
   EXPECT_FALSE(test_Bool);
 
   // Test IsExactlyEqualTo() works for Expression.
@@ -589,18 +589,18 @@ GTEST_TEST(RigidTransform, SymbolicRigidTransformThrowsExceptions) {
   // The next four tests should throw exceptions since the tests are
   // inconclusive because the value of x is unknown.
   Formula test_Bool = X_symbolic.IsExactlyIdentity();
-  EXPECT_THROW(test_Bool.Evaluate(), std::runtime_error);
+  EXPECT_THROW(test_Bool.Evaluate(), std::exception);
 
-  test_Bool = X_symbolic.IsIdentityToEpsilon(kEpsilon);
-  EXPECT_THROW(test_Bool.Evaluate(), std::runtime_error);
+  test_Bool = X_symbolic.IsNearlyIdentity(kEpsilon);
+  EXPECT_THROW(test_Bool.Evaluate(), std::exception);
 
   const RigidTransform<Expression>& X_identity =
       RigidTransform<Expression>::Identity();
   test_Bool = X_symbolic.IsExactlyEqualTo(X_identity);
-  EXPECT_THROW(test_Bool.Evaluate(), std::runtime_error);
+  EXPECT_THROW(test_Bool.Evaluate(), std::exception);
 
   test_Bool = X_symbolic.IsNearlyEqualTo(X_identity, kEpsilon);
-  EXPECT_THROW(test_Bool.Evaluate(), std::runtime_error);
+  EXPECT_THROW(test_Bool.Evaluate(), std::exception);
 }
 
 // Test constructing a RigidTransform constructor from an Eigen::Translation3.
@@ -693,6 +693,40 @@ GTEST_TEST(RigidTransform, OperatorMultiplyByTranslation3AndViceVersa) {
   EXPECT_TRUE(X_AC.IsNearlyEqualTo(X_CA.inverse(), 32 * kEpsilon));
 }
 
+// Test multiplying a RigidTransform by an Eigen::Vector4.
+GTEST_TEST(RigidTransform, OperatorMultiplyByVector4) {
+  // Create a RigidTransform X_AB that relates the orientation and position of a
+  // frame A with origin point Ao and a frame B with origin point Bo.
+  const RigidTransform<double> X_AB = GetRigidTransformA();
+
+  // Verify X_AB multiplied by an Eigen::Vector4 p4_BoQ_B whose first 3 elements
+  // are the position vector from Bo to a point Q, expressed in frame B and
+  // whose 4ᵗʰ element is 1 produces Eigen::Vector4 p4_AoQ_A whose first 3
+  // elements are the position vector from Ao to Q, expressed in frame A and
+  // whose 4ᵗʰ element is 1.
+  const Eigen::Vector4d p4_BoQ_B(-12, -9, 7, 1);     // 4 element position.
+  const Eigen::Vector4d p4_AoQ_A = X_AB * p4_BoQ_B;  // 4 element position.
+  const Eigen::Vector3d p_BoQ_B = p4_BoQ_B.head(3);  // 3 element position.
+  const Eigen::Vector3d p_AoQ_A = X_AB * p_BoQ_B;    // 3 element position.
+  EXPECT_TRUE(CompareMatrices(p4_AoQ_A.head(3), p_AoQ_A, kEpsilon));
+  EXPECT_EQ(p4_AoQ_A(3), 1.0);  // Ensure the 4ᵗʰ element is 1.
+
+  // Verify X_AB multiplied by the Eigen::Vector4 vec4_B whose first 3 elements
+  // represent an arbitrary vector (e.g., force or velocity) expressed in
+  // frame B and whose 4ᵗʰ element is 0 produces Eigen::Vector4 vec4_A whose
+  // first 3 elements are vec_B expressed in frame A and whose 4ᵗʰ element is 0.
+  const Eigen::Vector4d vec4_B(-11, -8, 10, 0);   // 4 element arbitrary vector.
+  const Eigen::Vector4d vec4_A = X_AB * vec4_B;   // 4 element arbitrary vector.
+  const Eigen::Vector3d vec3_B = vec4_B.head(3);  // 3 element arbitrary vector.
+  const Eigen::Vector3d vec3_A = X_AB.rotation() * vec3_B;
+  EXPECT_TRUE(CompareMatrices(vec4_A.head(3), vec3_A, kEpsilon));
+  EXPECT_EQ(vec4_A(3), 0.0);  // Ensure the 4ᵗʰ element is 0.
+
+  // Verify that X_AB multiplied by an invalid vector throws an exception.
+  const Eigen::Vector4d bad_vector(1, 2, 3, 4);  // 4ᵗʰ element is not 0 or 1.
+  DRAKE_EXPECT_THROWS_MESSAGE(X_AB * bad_vector, ".*is not 0 or 1.*");
+}
+
 // Tests RigidTransform X_AB multiplied by a 3 x n matrix whose columns are
 // regarded as position vectors from Bo (frame B's origin) to an arbitrary point
 // Qi, expressed in B.  The result is tested to be a 3 x n matrix whose columns
@@ -760,7 +794,7 @@ GTEST_TEST(RigidTransform, OperatorMultiplyByMatrix3X) {
     Eigen::MatrixXd m_7x8(7, 8);
     m_7x8 = Eigen::MatrixXd::Identity(7, 8);
     Eigen::MatrixXd bad_matrix_multiply;
-    EXPECT_THROW(bad_matrix_multiply = X_AB * m_7x8, std::logic_error);
+    EXPECT_THROW(bad_matrix_multiply = X_AB * m_7x8, std::exception);
   }
 }
 

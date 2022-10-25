@@ -5,12 +5,19 @@ load(
     "drake_cc_library",
 )
 load(
-    "@drake//tools/skylark:py.bzl",
-    "py_binary",
+    "@drake//tools/skylark:drake_py.bzl",
+    "drake_py_binary",
 )
 load("//tools/lint:lint.bzl", "add_lint_tests")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = [
+    # All benchmarks should be in folders named "benchmarking".
+    "//common/benchmarking:__pkg__",
+    "//geometry/benchmarking:__pkg__",
+    "//multibody/benchmarking:__pkg__",
+    "//solvers/benchmarking:__pkg__",
+    "//systems/benchmarking:__pkg__",
+])
 
 drake_cc_library(
     name = "fixture_common",
@@ -21,12 +28,22 @@ drake_cc_library(
     ],
 )
 
-py_binary(
-    name = "record_results",
-    srcs = ["record_results.py"],
-    data = [
-        "//tools/workspace/cc:identify_compiler",
+drake_cc_library(
+    name = "gflags_main",
+    srcs = ["gflags_main.cc"],
+    deps = [
+        "@gflags",
+        "@googlebenchmark//:benchmark",
     ],
 )
 
-add_lint_tests(python_lint_extra_srcs = ["benchmark_tool.py"])
+drake_py_binary(
+    name = "benchmark_tool",
+    testonly = True,
+    srcs = ["benchmark_tool.py"],
+    data = [
+        "//tools/workspace/cc:compiler.txt",
+    ],
+)
+
+add_lint_tests()

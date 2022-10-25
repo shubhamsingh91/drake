@@ -230,7 +230,7 @@ class DistanceToPoint {
 
 template <typename T>
 struct ScalarSupport {
-  static bool is_supported(fcl::NODE_TYPE node_type) { return false; }
+  static bool is_supported(fcl::NODE_TYPE) { return false; }
 };
 
 /* Primitive support for double-valued query.  */
@@ -240,8 +240,8 @@ struct ScalarSupport<double> {
 };
 
 /* Primitive support for AutoDiff-valued query.  */
-template <typename DerType>
-struct ScalarSupport<Eigen::AutoDiffScalar<DerType>> {
+template <>
+struct ScalarSupport<AutoDiffXd> {
   static bool is_supported(fcl::NODE_TYPE node_type) {
     switch (node_type) {
       case fcl::GEOM_SPHERE:

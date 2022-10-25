@@ -8,6 +8,7 @@
 
 #include "drake/geometry/geometry_frame.h"
 #include "drake/geometry/geometry_instance.h"
+#include "drake/geometry/geometry_state.h"
 
 namespace drake {
 namespace geometry {
@@ -46,10 +47,6 @@ GTEST_TEST(SceneGraphInspector, ExerciseEverything) {
   inspector.num_sources();
 
   inspector.num_frames();
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-  inspector.all_frame_ids();
-#pragma GCC diagnostic pop
   inspector.num_geometries();
   inspector.GetAllGeometryIds();
   inspector.GetGeometryIds(GeometrySet{});
@@ -73,6 +70,7 @@ GTEST_TEST(SceneGraphInspector, ExerciseEverything) {
   inspector.BelongsToSource(frame_id, source_id);
   inspector.GetOwningSourceName(frame_id);
   inspector.GetName(frame_id);
+  inspector.GetParentFrame(frame_id);
   inspector.GetFrameGroup(frame_id);
   inspector.NumGeometriesForFrame(frame_id);
   inspector.NumGeometriesForFrameWithRole(frame_id, Role::kUnassigned);
@@ -97,6 +95,9 @@ GTEST_TEST(SceneGraphInspector, ExerciseEverything) {
   inspector.GetProximityProperties(geometry_id);
   inspector.GetIllustrationProperties(geometry_id);
   inspector.GetPerceptionProperties(geometry_id);
+  inspector.GetReferenceMesh(geometry_id);
+  inspector.GetAllDeformableGeometryIds();
+  inspector.GetReferenceMesh(geometry_id);
   // Register an *additional* geometry and assign proximity properties to both
   // to prevent an exception being thrown.
   const GeometryId geometry_id2 =
@@ -110,6 +111,7 @@ GTEST_TEST(SceneGraphInspector, ExerciseEverything) {
                                     ProximityProperties());
   inspector.CollisionFiltered(geometry_id, geometry_id2);
 
+  // Tests cloning a geometry.
   std::unique_ptr<GeometryInstance> geometry_instance_clone =
       inspector.CloneGeometryInstance(geometry_id);
   EXPECT_NE(geometry_instance_clone->id(), geometry_id);
@@ -121,6 +123,7 @@ GTEST_TEST(SceneGraphInspector, ExerciseEverything) {
   EXPECT_NE(geometry_instance_clone->proximity_properties(), nullptr);
   EXPECT_EQ(geometry_instance_clone->perception_properties(), nullptr);
   EXPECT_EQ(geometry_instance_clone->illustration_properties(), nullptr);
+
   inspector.geometry_version();
 }
 

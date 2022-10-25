@@ -39,18 +39,12 @@ int sum_ambient_dimensions(const ConvexSets& sets) {
 
 CartesianProduct::CartesianProduct(const ConvexSets& sets)
     : ConvexSet(&ConvexSetCloner<CartesianProduct>,
-                       sum_ambient_dimensions(sets)),
-      sets_{sets} {
-  for (const auto& s : sets_) {
-    DRAKE_DEMAND(s->IsBounded());
-  }
-}
+                sum_ambient_dimensions(sets)),
+      sets_{sets} {}
 
 CartesianProduct::CartesianProduct(const ConvexSet& setA, const ConvexSet& setB)
     : ConvexSet(&ConvexSetCloner<CartesianProduct>,
                 setA.ambient_dimension() + setB.ambient_dimension()) {
-  DRAKE_DEMAND(setA.IsBounded());
-  DRAKE_DEMAND(setB.IsBounded());
   sets_.emplace_back(setA.Clone());
   sets_.emplace_back(setB.Clone());
 }
@@ -64,9 +58,6 @@ CartesianProduct::CartesianProduct(const ConvexSets& sets,
   DRAKE_DEMAND(A_->rows() == b_->rows());
   DRAKE_DEMAND(A_->rows() == sum_ambient_dimensions(sets));
   DRAKE_DEMAND(A_->colPivHouseholderQr().rank() == A_->cols());
-  for (const auto& s : sets_) {
-    DRAKE_DEMAND(s->IsBounded());
-  }
 }
 
 CartesianProduct::CartesianProduct(const QueryObject<double>& query_object,
@@ -105,8 +96,12 @@ const ConvexSet& CartesianProduct::factor(int index) const {
 }
 
 bool CartesianProduct::DoIsBounded() const {
-  // Note: The constructor enforces that A_ is full column rank, and that all
-  // sets are bounded.
+  // Note: The constructor enforces that A_ is full column rank.
+  for (const auto& s : sets_) {
+    if (!s->IsBounded()) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -172,6 +167,50 @@ CartesianProduct::DoAddPointInNonnegativeScalingConstraints(
     constraints.insert(constraints.end(),
                        std::make_move_iterator(new_constraints.begin()),
                        std::make_move_iterator(new_constraints.end()));
+  }
+  return constraints;
+}
+
+std::vector<solvers::Binding<solvers::Constraint>>
+CartesianProduct::DoAddPointInNonnegativeScalingConstraints(
+    solvers::MathematicalProgram* prog, const Eigen::Ref<const MatrixXd>& A_x,
+    const Eigen::Ref<const VectorXd>& b_x, const Eigen::Ref<const VectorXd>& c,
+    double d, const Eigen::Ref<const VectorXDecisionVariable>& x,
+    const Eigen::Ref<const VectorXDecisionVariable>& t) const {
+  std::vector<Binding<Constraint>> constraints;
+  if (A_) {
+    VectorXDecisionVariable y = prog->NewContinuousVariables(A_->rows(), "y");
+    // y = A (A_x * x + b_x) + (c' * t + d) b,
+    // or [I, -A*A_x, - b*c']*[y; x; t] = A * b_x + d * b.
+    MatrixXd Aeq =
+        MatrixXd::Identity(A_->rows(), A_->rows() + x.size() + t.size());
+    Aeq.middleCols(A_->rows(), x.size()) = -(*A_) * A_x;
+    Aeq.rightCols(t.size()) = -(*b_) * c.transpose();
+    VectorXd beq = (*A_) * b_x + (*b_) * d;
+    constraints.emplace_back(
+        prog->AddLinearEqualityConstraint(Aeq, beq, {y, x, t}));
+    int index = 0;
+    for (const auto& s : sets_) {
+      int set_dim = s->ambient_dimension();
+      auto new_constraints = s->AddPointInNonnegativeScalingConstraints(
+          prog, MatrixXd::Identity(set_dim, set_dim), VectorXd::Zero(set_dim),
+          c, d, y.segment(index, set_dim), t);
+      index += set_dim;
+      constraints.insert(constraints.end(),
+                         std::make_move_iterator(new_constraints.begin()),
+                         std::make_move_iterator(new_constraints.end()));
+    }
+  } else {
+    int index = 0;
+    for (const auto& s : sets_) {
+      auto new_constraints = s->AddPointInNonnegativeScalingConstraints(
+          prog, A_x.middleRows(index, s->ambient_dimension()),
+          b_x.segment(index, s->ambient_dimension()), c, d, x, t);
+      index += s->ambient_dimension();
+      constraints.insert(constraints.end(),
+                         std::make_move_iterator(new_constraints.begin()),
+                         std::make_move_iterator(new_constraints.end()));
+    }
   }
   return constraints;
 }

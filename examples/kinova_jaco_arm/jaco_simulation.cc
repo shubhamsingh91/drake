@@ -22,6 +22,9 @@
 #include "drake/systems/lcm/lcm_interface_system.h"
 #include "drake/systems/lcm/lcm_publisher_system.h"
 #include "drake/systems/lcm/lcm_subscriber_system.h"
+#include "drake/systems/primitives/demultiplexer.h"
+#include "drake/systems/primitives/multiplexer.h"
+#include "drake/visualization/visualization_config_functions.h"
 
 DEFINE_double(simulation_sec, std::numeric_limits<double>::infinity(),
               "Number of seconds to simulate.");
@@ -43,6 +46,8 @@ using drake::multibody::Body;
 using drake::multibody::MultibodyPlant;
 using drake::multibody::Parser;
 using drake::systems::controllers::InverseDynamicsController;
+using drake::systems::Demultiplexer;
+using drake::visualization::AddDefaultVisualization;
 
 namespace drake {
 namespace examples {
@@ -56,53 +61,50 @@ const char kUrdfPath[] =
 int DoMain() {
   systems::DiagramBuilder<double> builder;
 
-  SceneGraph<double>* scene_graph = builder.AddSystem<SceneGraph>();
-  MultibodyPlant<double>* jaco_plant = builder.AddSystem<MultibodyPlant>(
-      FLAGS_time_step);
-
-  jaco_plant->RegisterAsSourceForSceneGraph(scene_graph);
-  builder.Connect(
-      jaco_plant->get_geometry_poses_output_port(),
-      scene_graph->get_source_pose_port(
-          jaco_plant->get_source_id().value()));
-  builder.Connect(
-      scene_graph->get_query_output_port(),
-      jaco_plant->get_geometry_query_input_port());
+  auto [jaco_plant, scene_graph] =
+      multibody::AddMultibodyPlantSceneGraph(&builder, FLAGS_time_step);
 
   const multibody::ModelInstanceIndex jaco_id =
-      Parser(jaco_plant, scene_graph).AddModelFromFile(
-          FindResourceOrThrow(kUrdfPath));
-  jaco_plant->WeldFrames(jaco_plant->world_frame(),
-                         jaco_plant->GetFrameByName("base"));
-  jaco_plant->Finalize();
+      Parser(&jaco_plant).AddModelFromFile(FindResourceOrThrow(kUrdfPath));
+  jaco_plant.WeldFrames(jaco_plant.world_frame(),
+                        jaco_plant.GetFrameByName("base"));
+  jaco_plant.Finalize();
 
   // These gains are really just a guess.  Velocity limits are not enforced,
   // allowing much faster simulated movement than the actual robot.
-  const int num_positions = jaco_plant->num_positions();
+  const int num_positions = jaco_plant.num_positions();
   VectorXd kp = VectorXd::Constant(num_positions, 100);
   VectorXd kd = 2.0 * kp.array().sqrt();
   VectorXd ki = VectorXd::Zero(num_positions);
 
   auto jaco_controller = builder.AddSystem<InverseDynamicsController>(
-      *jaco_plant, kp, ki, kd, false);
+      jaco_plant, kp, ki, kd, false);
 
-  builder.Connect(jaco_plant->get_state_output_port(jaco_id),
+  builder.Connect(jaco_plant.get_state_output_port(jaco_id),
                   jaco_controller->get_input_port_estimated_state());
+
+  AddDefaultVisualization(&builder);
 
   systems::lcm::LcmInterfaceSystem* lcm =
       builder.AddSystem<systems::lcm::LcmInterfaceSystem>();
-  geometry::DrakeVisualizerd::AddToBuilder(&builder, *scene_graph, lcm);
-
   auto command_sub = builder.AddSystem(
       systems::lcm::LcmSubscriberSystem::Make<drake::lcmt_jaco_command>(
           "KINOVA_JACO_COMMAND", lcm));
   auto command_receiver = builder.AddSystem<JacoCommandReceiver>();
   builder.Connect(command_sub->get_output_port(),
-                  command_receiver->get_input_port());
-  builder.Connect(command_receiver->get_output_port(),
+                  command_receiver->get_message_input_port());
+
+  auto mux = builder.AddSystem<systems::Multiplexer>(
+      std::vector<int>({kJacoDefaultArmNumJoints + kJacoDefaultArmNumFingers,
+              kJacoDefaultArmNumJoints + kJacoDefaultArmNumFingers}));
+  builder.Connect(command_receiver->get_commanded_position_output_port(),
+                  mux->get_input_port(0));
+  builder.Connect(command_receiver->get_commanded_velocity_output_port(),
+                  mux->get_input_port(1));
+  builder.Connect(mux->get_output_port(),
                   jaco_controller->get_input_port_desired_state());
   builder.Connect(jaco_controller->get_output_port_control(),
-                  jaco_plant->get_actuation_input_port(jaco_id));
+                  jaco_plant.get_actuation_input_port(jaco_id));
 
   auto status_pub =
       builder.AddSystem(
@@ -112,8 +114,17 @@ int DoMain() {
   // torques might want to wait until after #12631 is fixed or it could slow
   // down the simulation significantly.
   auto status_sender = builder.AddSystem<JacoStatusSender>();
-  builder.Connect(jaco_plant->get_state_output_port(jaco_id),
-                  status_sender->get_state_input_port());
+  auto demux = builder.AddSystem<systems::Demultiplexer>(
+      std::vector<int>({kJacoDefaultArmNumJoints + kJacoDefaultArmNumFingers,
+              kJacoDefaultArmNumJoints + kJacoDefaultArmNumFingers}));
+  builder.Connect(jaco_plant.get_state_output_port(jaco_id),
+                  demux->get_input_port());
+  builder.Connect(demux->get_output_port(0),
+                  status_sender->get_position_input_port());
+  builder.Connect(demux->get_output_port(0),
+                  command_receiver->get_position_measured_input_port());
+  builder.Connect(demux->get_output_port(1),
+                  status_sender->get_velocity_input_port());
   builder.Connect(status_sender->get_output_port(),
                   status_pub->get_input_port());
 
@@ -133,11 +144,8 @@ int DoMain() {
   initial_position(5) = 4.49;
   initial_position(6) = 5.03;
 
-  command_receiver->set_initial_position(
-      &diagram->GetMutableSubsystemContext(*command_receiver, &root_context),
-      initial_position);
-  jaco_plant->SetPositions(
-      &diagram->GetMutableSubsystemContext(*jaco_plant, &root_context),
+  jaco_plant.SetPositions(
+      &diagram->GetMutableSubsystemContext(jaco_plant, &root_context),
       initial_position);
 
   simulator.Initialize();

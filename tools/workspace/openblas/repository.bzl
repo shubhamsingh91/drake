@@ -21,7 +21,7 @@ def _impl(repo_ctx):
     os_result = determine_os(repo_ctx)
     if os_result.error != None:
         fail(os_result.error)
-    if os_result.is_macos:
+    if os_result.is_macos or os_result.is_macos_wheel:
         error = setup_pkg_config_repository(repo_ctx).error
         if error != None:
             fail(error)
@@ -35,9 +35,8 @@ openblas_repository = repository_rule(
     attrs = {
         "modname": attr.string(default = "openblas"),
         "licenses": attr.string_list(default = ["notice"]),  # BSD-3-Clause
-        "pkg_config_paths": attr.string_list(
-            default = ["/usr/local/opt/openblas/lib/pkgconfig"],
-        ),
+        "pkg_config_paths": attr.string_list(),
+        "homebrew_subdir": attr.string(default = "opt/openblas/lib/pkgconfig"),
     },
     local = True,
     configure = True,

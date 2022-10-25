@@ -1,6 +1,12 @@
+import os
 import sys
 import unittest
 import warnings
+
+# When importing pydrake, confirm that it works without any matplotlib
+# customization. We don't need the MPLBACKEND=Template override (from
+# our tools/bazel.rc file) since importing doesn't open any new windows.
+del os.environ['MPLBACKEND']  # noqa
 
 from pydrake.common.test_utilities.deprecation import catch_drake_warnings
 
@@ -125,6 +131,8 @@ class TestAll(unittest.TestCase):
             "InverseKinematics",
             # - math
             "SpatialVelocity",
+            # - meshcat
+            "JointSliders",
             # - parsing
             "Parser",
             # - parsers
@@ -136,8 +144,16 @@ class TestAll(unittest.TestCase):
             # perception
             "PointCloud",
             # solvers
+            # - agumented_lagrangian
+            "AugmentedLagrangianSmooth",
             # - mixed_integer_optimization_util
             "AddLogarithmicSos2Constraint",
+            # - clp
+            "ClpSolver",
+            # - csdp
+            "CsdpSolver",
+            # - dreal
+            "DrealSolver",
             # - gurobi
             "GurobiSolver",
             # - sdpa_free_format
@@ -146,10 +162,20 @@ class TestAll(unittest.TestCase):
             "IpoptSolver",
             # - branch_and_bound
             "MixedIntegerBranchAndBound",
+            # - mixed_integer_rotation_constraint
+            "MixedIntegerRotationConstraintGenerator",
             # - mathematicalprogram
             "MathematicalProgram",
             # - mosek
             "MosekSolver",
+            # - nlopt
+            "NloptSolver",
+            # - osqp
+            "OsqpSolver",
+            # - scs
+            "ScsSolver",
+            # - snopt
+            "SnoptSolver",
             # systems
             # - framework
             "BasicVector",
@@ -162,14 +188,15 @@ class TestAll(unittest.TestCase):
             "PySerializer",
             # - primitives
             "Adder",
-            # - rendering
-            "PoseVector",
             # - scalar_conversion
             "TemplateSystem",
             # - sensors
             "Image",
             # visualization
-            # - plotting
+            "AddDefaultVisualization",
+            # - _meldis
+            "Meldis",
+            # - _plotting
             "plot_sublevelset_quadratic",
         )
         # Ensure each symbol is exposed as globals from the above import

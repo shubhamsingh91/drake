@@ -10,7 +10,7 @@
 #include "drake/common/eigen_types.h"
 #include "drake/common/name_value.h"
 #include "drake/common/random.h"
-#include "drake/common/symbolic.h"
+#include "drake/common/symbolic/expression.h"
 
 namespace drake {
 namespace schema {
@@ -198,8 +198,8 @@ rotations, translations, and transforms using stochastic schemas.
 /// Base class for a single distribution, to be used with YAML archives.
 /// (See class DistributionVector for vector-valued distributions.)
 ///
-/// See @ref serialize_tips for implementation details, especially the
-/// unusually public member fields in our subclasses.
+/// See @ref implementing_serialize "Implementing Serialize" for implementation
+/// details, especially the unusually public member fields of our subclasses.
 class Distribution {
  public:
   virtual ~Distribution();
@@ -346,7 +346,7 @@ double GetDeterministicValue(const DistributionVariant& var);
 /// Base class for a vector of distributions, to be used with YAML archives.
 /// (See class Distribution for scalar-valued distributions.)
 ///
-/// See @ref serialize_tips for implementation details, especially the
+/// See @ref implementing_serialize for implementation details, especially the
 /// unusually public member fields in our subclasses.
 class DistributionVector {
  public:
@@ -499,6 +499,24 @@ bool IsDeterministic(const DistributionVectorVariant<Size>& vec);
 template <int Size>
 Eigen::VectorXd GetDeterministicValue(
     const DistributionVectorVariant<Size>& vec);
+
+#define DRAKE_DECLARE_TEMPLATE_INSTANTIATIONS_ON_ALL_SIZES(Func) \
+  extern template Func(const DistributionVectorVariantX&); \
+  extern template Func(const DistributionVectorVariant<1>&); \
+  extern template Func(const DistributionVectorVariant<2>&); \
+  extern template Func(const DistributionVectorVariant<3>&); \
+  extern template Func(const DistributionVectorVariant<4>&); \
+  extern template Func(const DistributionVectorVariant<5>&); \
+  extern template Func(const DistributionVectorVariant<6>&);
+
+DRAKE_DECLARE_TEMPLATE_INSTANTIATIONS_ON_ALL_SIZES(
+    std::unique_ptr<DistributionVector> ToDistributionVector)
+DRAKE_DECLARE_TEMPLATE_INSTANTIATIONS_ON_ALL_SIZES(
+    bool IsDeterministic)
+DRAKE_DECLARE_TEMPLATE_INSTANTIATIONS_ON_ALL_SIZES(
+    Eigen::VectorXd GetDeterministicValue)
+
+#undef DRAKE_DECLARE_TEMPLATE_INSTANTIATIONS_ON_ALL_SIZES
 
 }  // namespace schema
 }  // namespace drake

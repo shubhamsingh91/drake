@@ -8,25 +8,16 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 
+#include "drake/bindings/pydrake/common/eigen_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/bindings/pydrake/symbolic_py_unapply.h"
 #include "drake/bindings/pydrake/symbolic_types_pybind.h"
-#include "drake/common/symbolic_decompose.h"
-
-#pragma GCC diagnostic push
-// Apple LLVM version 10.0.1 (clang-1001.0.46.3) and Clang version 7.0.0 add
-// `-Wself-assign-overloaded` to `-Wall`, which generates warnings on
-// Pybind11's operator-overloading idiom that is using py::self (example:
-// `def(py::self + py::self)`). Here, we suppress the warning using
-// `#pragma diagnostic`.
-#if defined(__clang__) &&                                          \
-    ((!(__apple_build_version__) && (__clang_major__ >= 7)) ||     \
-        ((__apple_build_version__) && (__clang_major__ >= 10) &&   \
-            !((__clang_major__ == 10) && (__clang_minor__ == 0) && \
-                (__clang_patchlevel__ == 0))))
-#pragma GCC diagnostic ignored "-Wself-assign-overloaded"
-#endif
+#include "drake/common/symbolic/decompose.h"
+#include "drake/common/symbolic/latex.h"
+#include "drake/common/symbolic/monomial_util.h"
+#include "drake/common/symbolic/replace_bilinear_terms.h"
+#include "drake/common/symbolic/trigonometric_polynomial.h"
 
 namespace drake {
 namespace pydrake {
@@ -351,7 +342,7 @@ PYBIND11_MODULE(symbolic, m) {
           [m](const symbolic::Expression& e) {
             return internal::Unapply(m, e);
           },
-          internal::kUnapplyDoc)
+          internal::kUnapplyExpressionDoc)
       .def("Expand", &Expression::Expand, doc.Expression.Expand.doc)
       .def(
           "Evaluate",
@@ -524,8 +515,88 @@ PYBIND11_MODULE(symbolic, m) {
           const Expression& e) { return Substitute(M, var, e); },
       py::arg("m"), py::arg("var"), py::arg("e"), doc.Substitute.doc_3args);
 
+  {
+    using Enum = SinCosSubstitutionType;
+    constexpr auto& enum_doc = doc.SinCosSubstitutionType;
+    py::enum_<Enum> enum_py(m, "SinCosSubstitutionType", enum_doc.doc);
+    enum_py  // BR
+        .value("kAngle", Enum::kAngle, enum_doc.kAngle.doc)
+        .value("kHalfAnglePreferSin", Enum::kHalfAnglePreferSin,
+            enum_doc.kHalfAnglePreferSin.doc)
+        .value("kHalfAnglePreferCos", Enum::kHalfAnglePreferCos,
+            enum_doc.kHalfAnglePreferCos.doc);
+  }
+
+  py::class_<SinCos>(m, "SinCos", doc.SinCos.doc)
+      .def(py::init<Variable, Variable, SinCosSubstitutionType>(), py::arg("s"),
+          py::arg("c"), py::arg("type") = SinCosSubstitutionType::kAngle,
+          doc.SinCos.ctor.doc)
+      .def_readwrite("s", &SinCos::s, doc.SinCos.s.doc)
+      .def_readwrite("c", &SinCos::c, doc.SinCos.c.doc)
+      .def_readwrite("type", &SinCos::type, doc.SinCos.type.doc);
+
+  m.def(
+      "Substitute",
+      [](const Expression& e, const SinCosSubstitution& subs) {
+        return Substitute(e, subs);
+      },
+      py::arg("e"), py::arg("subs"), doc.Substitute.doc_sincos);
+
+  m.def(
+      "Substitute",
+      [](const MatrixX<Expression>& M, const SinCosSubstitution& subs) {
+        return Substitute(M, subs);
+      },
+      py::arg("m"), py::arg("subs"), doc.Substitute.doc_sincos_matrix);
+
+  m.def(
+      "SubstituteStereographicProjection",
+      [](const symbolic::Polynomial& e, const std::vector<SinCos>& sin_cos,
+          const VectorX<symbolic::Variable>& t) {
+        return symbolic::SubstituteStereographicProjection(e, sin_cos, t);
+      },
+      py::arg("e"), py::arg("sin_cos"), py::arg("t"),
+      doc.SubstituteStereographicProjection.doc_3args);
+
+  m.def(
+      "SubstituteStereographicProjection",
+      [](const Expression& e, const std::unordered_map<symbolic::Variable,
+                                  symbolic::Variable>& subs) {
+        return symbolic::SubstituteStereographicProjection(e, subs);
+      },
+      py::arg("e"), py::arg("subs"),
+      doc.SubstituteStereographicProjection.doc_2args);
+
+  {
+    constexpr auto& cls_doc = doc.FormulaKind;
+    py::enum_<FormulaKind>(m, "FormulaKind", doc.FormulaKind.doc)
+        .value("False", FormulaKind::False, cls_doc.False.doc)
+        .value("True", FormulaKind::True, cls_doc.True.doc)
+        .value("Var", FormulaKind::Var, cls_doc.Var.doc)
+        .value("Eq", FormulaKind::Eq, cls_doc.Eq.doc)
+        .value("Neq", FormulaKind::Neq, cls_doc.Neq.doc)
+        .value("Gt", FormulaKind::Gt, cls_doc.Gt.doc)
+        .value("Geq", FormulaKind::Geq, cls_doc.Geq.doc)
+        .value("Lt", FormulaKind::Lt, cls_doc.Lt.doc)
+        .value("Leq", FormulaKind::Leq, cls_doc.Leq.doc)
+        .value("And", FormulaKind::And, cls_doc.And.doc)
+        .value("Or", FormulaKind::Or, cls_doc.Or.doc)
+        .value("Not", FormulaKind::Not, cls_doc.Not.doc)
+        .value("Forall", FormulaKind::Forall, cls_doc.Forall.doc)
+        .value("Isnan", FormulaKind::Isnan, cls_doc.Isnan.doc)
+        .value("PositiveSemidefinite", FormulaKind::PositiveSemidefinite,
+            cls_doc.PositiveSemidefinite.doc);
+  }
+
   py::class_<Formula> formula_cls(m, "Formula", doc.Formula.doc);
-  formula_cls
+  formula_cls.def(py::init<>(), doc.Expression.ctor.doc_0args)
+      .def(py::init<const Variable&>(), py::arg("var"),
+          doc.Expression.ctor.doc_1args_var)
+      .def(
+          "Unapply",
+          [m](const symbolic::Formula& f) { return internal::Unapply(m, f); },
+          internal::kUnapplyFormulaDoc)
+      .def("get_kind", &Formula::get_kind, doc.Formula.get_kind.doc)
       .def("GetFreeVariables", &Formula::GetFreeVariables,
           doc.Formula.GetFreeVariables.doc)
       .def("EqualTo", &Formula::EqualTo, doc.Formula.EqualTo.doc)
@@ -600,6 +671,15 @@ PYBIND11_MODULE(symbolic, m) {
           [](const Formula& a, const Formula& b) { return a || b; })
       .def("logical_not", [](const Formula& a) { return !a; });
 
+  m.def("isnan", &symbolic::isnan, py::arg("e"), doc.isnan.doc);
+  m.def("forall", &symbolic::forall, py::arg("vars"), py::arg("f"),
+      doc.forall.doc);
+  m.def("positive_semidefinite",
+      overload_cast_explicit<Formula,
+          const Eigen::Ref<const MatrixX<Expression>>&>(
+          &symbolic::positive_semidefinite),
+      py::arg("m"), doc.positive_semidefinite.doc_1args_m);
+
   // TODO(m-chaturvedi) Add Pybind11 documentation for operator overloads, etc.
   py::class_<Monomial>(m, "Monomial", doc.Monomial.doc)
       .def(py::init<>(), doc.Monomial.ctor.doc_0args)
@@ -645,7 +725,16 @@ PYBIND11_MODULE(symbolic, m) {
           [](const Monomial& self, const Environment::map& env) {
             return self.Evaluate(Environment{env});
           },
-          py::arg("env"), doc.Monomial.Evaluate.doc)
+          py::arg("env"), doc.Monomial.Evaluate.doc_1args)
+      .def(
+          "Evaluate",
+          [](const Monomial& self,
+              const Eigen::Ref<const VectorX<symbolic::Variable>>& vars,
+              const Eigen::Ref<const Eigen::MatrixXd>& vars_values) {
+            return self.Evaluate(vars, vars_values);
+          },
+          py::arg("vars"), py::arg("vars_values"),
+          doc.Monomial.Evaluate.doc_2args)
       .def(
           "EvaluatePartial",
           [](const Monomial& self, const Environment::map& env) {
@@ -679,8 +768,8 @@ PYBIND11_MODULE(symbolic, m) {
   using symbolic::Polynomial;
 
   // TODO(m-chaturvedi) Add Pybind11 documentation for operator overloads, etc.
-  py::class_<Polynomial>(m, "Polynomial", doc.Polynomial.doc)
-      .def(py::init<>(), doc.Polynomial.ctor.doc_0args)
+  py::class_<Polynomial> polynomial_cls(m, "Polynomial", doc.Polynomial.doc);
+  polynomial_cls.def(py::init<>(), doc.Polynomial.ctor.doc_0args)
       .def(py::init<Polynomial::MapType>(), py::arg("map"),
           doc.Polynomial.ctor.doc_1args_map)
       .def(py::init<const Monomial&>(), py::arg("m"),
@@ -728,10 +817,13 @@ PYBIND11_MODULE(symbolic, m) {
           doc.Polynomial.Integrate.doc_3args)
       .def("AddProduct", &Polynomial::AddProduct, py::arg("coeff"),
           py::arg("m"), doc.Polynomial.AddProduct.doc)
+      .def("Expand", &Polynomial::Expand, doc.Polynomial.Expand.doc)
       .def("RemoveTermsWithSmallCoefficients",
           &Polynomial::RemoveTermsWithSmallCoefficients,
           py::arg("coefficient_tol"),
           doc.Polynomial.RemoveTermsWithSmallCoefficients.doc)
+      .def("IsEven", &Polynomial::IsEven, doc.Polynomial.IsEven.doc)
+      .def("IsOdd", &Polynomial::IsOdd, doc.Polynomial.IsOdd.doc)
       .def("CoefficientsAlmostEqual", &Polynomial::CoefficientsAlmostEqual,
           py::arg("p"), py::arg("tolerance"),
           doc.Polynomial.CoefficientsAlmostEqual.doc)
@@ -792,12 +884,116 @@ PYBIND11_MODULE(symbolic, m) {
           py::arg("var"), py::arg("c"),
           doc.Polynomial.EvaluatePartial.doc_2args)
       .def(
+          "EvaluateIndeterminates",
+          [](const Polynomial& self,
+              const Eigen::Ref<const VectorX<symbolic::Variable>>&
+                  indeterminates,
+              const Eigen::Ref<const Eigen::MatrixXd>& indeterminates_values) {
+            return self.EvaluateIndeterminates(
+                indeterminates, indeterminates_values);
+          },
+          py::arg("indeterminates"), py::arg("indeterminates_values"),
+          doc.Polynomial.EvaluateIndeterminates.doc)
+      .def(
+          "EvaluateWithAffineCoefficients",
+          [](const symbolic::Polynomial& self,
+              const Eigen::Ref<const VectorX<symbolic::Variable>>&
+                  indeterminates,
+              const Eigen::Ref<const Eigen::MatrixXd>& indeterminates_values) {
+            Eigen::MatrixXd A;
+            VectorX<symbolic::Variable> decision_variables;
+            Eigen::VectorXd b;
+            self.EvaluateWithAffineCoefficients(indeterminates,
+                indeterminates_values, &A, &decision_variables, &b);
+            return std::make_tuple(A, decision_variables, b);
+          },
+          py::arg("indeterminates"), py::arg("indeterminates_values"),
+          doc.Polynomial.EvaluateWithAffineCoefficients.doc)
+      .def(
           "Jacobian",
           [](const Polynomial& p,
               const Eigen::Ref<const VectorX<Variable>>& vars) {
             return p.Jacobian(vars);
           },
           py::arg("vars"), doc.Polynomial.Jacobian.doc);
+
+  py::class_<RationalFunction> rat_fun_cls(
+      m, "RationalFunction", doc.RationalFunction.doc);
+  rat_fun_cls.def(py::init<>(), doc.RationalFunction.ctor.doc_0args)
+      .def(py::init<Polynomial, Polynomial>(), py::arg("numerator"),
+          py::arg("denominator"),
+          doc.RationalFunction.ctor.doc_2args_numerator_denominator)
+      .def(py::init<const Polynomial&>(), py::arg("p"),
+          doc.RationalFunction.ctor.doc_1args_p)
+      .def(py::init<const Monomial&>(), py::arg("m"),
+          doc.RationalFunction.ctor.doc_1args_m)
+      .def(py::init<double>(), py::arg("c"),
+          doc.RationalFunction.ctor.doc_1args_c)
+      .def(py::init<>(), doc.RationalFunction.ctor.doc_0args)
+      .def("numerator", &RationalFunction::numerator,
+          doc.RationalFunction.numerator.doc)
+      .def("denominator", &RationalFunction::denominator,
+          doc.RationalFunction.denominator.doc)
+      .def("SetIndeterminates", &RationalFunction::SetIndeterminates,
+          py::arg("new_indeterminates"),
+          doc.RationalFunction.SetIndeterminates.doc)
+      .def("__str__",
+          [](const RationalFunction& self) { return fmt::format("{}", self); })
+      .def("__repr__",
+          [](const RationalFunction& self) {
+            return fmt::format("<RationalFunction \"{}\">", self);
+          })
+      .def(
+          "Evaluate",
+          [](const RationalFunction& self, const Environment::map& env) {
+            return self.Evaluate(Environment{env});
+          },
+          py::arg("env"), doc.RationalFunction.Evaluate.doc)
+      .def("ToExpression", &RationalFunction::ToExpression,
+          doc.RationalFunction.ToExpression.doc)
+      .def("EqualTo", &RationalFunction::EqualTo, py::arg("f"),
+          doc.RationalFunction.EqualTo.doc)
+
+      .def(-py::self)
+      // Addition
+      .def(py::self + py::self)
+      .def(py::self + double())
+      .def(double() + py::self)
+      .def(py::self + Polynomial())
+      .def(Polynomial() + py::self)
+      .def(py::self + Monomial())
+      .def(Monomial() + py::self)
+
+      // Subtraction
+      .def(py::self - py::self)
+      .def(py::self - double())
+      .def(double() - py::self)
+      .def(py::self - Polynomial())
+      .def(Polynomial() - py::self)
+      .def(py::self - Monomial())
+      .def(Monomial() - py::self)
+
+      // Multiplication
+      .def(py::self * py::self)
+      .def(py::self * double())
+      .def(double() * py::self)
+      .def(py::self * Polynomial())
+      .def(Polynomial() * py::self)
+      .def(py::self * Monomial())
+      .def(Monomial() * py::self)
+
+      // Division
+      .def(py::self / py::self)
+      .def(py::self / double())
+      .def(double() / py::self)
+      .def(py::self / Polynomial())
+      .def(Polynomial() / py::self)
+      .def(py::self / Monomial())
+      .def(Monomial() / py::self)
+
+      // Logical comparison
+      .def(py::self == py::self)
+      .def(py::self != py::self);
 
   m.def(
       "Evaluate",
@@ -814,6 +1010,26 @@ PYBIND11_MODULE(symbolic, m) {
       },
       py::arg("f"), py::arg("vars"), doc.Jacobian.doc_polynomial);
 
+  m.def("ToLatex",
+      overload_cast_explicit<std::string, const Expression&, int>(&ToLatex),
+      py::arg("e"), py::arg("precision") = 3, doc.ToLatex.doc_expression);
+  m.def("ToLatex",
+      overload_cast_explicit<std::string, const Formula&, int>(&ToLatex),
+      py::arg("f"), py::arg("precision") = 3, doc.ToLatex.doc_formula);
+
+  m.def(
+      "ToLatex",
+      [](const MatrixX<Expression>& M, int precision) {
+        return ToLatex(M, precision);
+      },
+      py::arg("M"), py::arg("precision") = 3, doc.ToLatex.doc_matrix);
+  m.def(
+      "ToLatex",
+      [](const MatrixX<double>& M, int precision) {
+        return ToLatex(M, precision);
+      },
+      py::arg("M"), py::arg("precision") = 3, doc.ToLatex.doc_matrix);
+
   // We have this line because pybind11 does not permit transitive
   // conversions. See
   // https://github.com/pybind/pybind11/blob/289e5d9cc2a4545d832d3c7fb50066476bce3c1d/include/pybind11/pybind11.h#L1629.
@@ -826,7 +1042,7 @@ PYBIND11_MODULE(symbolic, m) {
 
   ExecuteExtraPythonCode(m);
 
-  // Bind the free functions in symbolic_decompose.h
+  // Bind the free functions in symbolic/decompose.h
   m  // BR
       .def(
           "DecomposeLinearExpressions",
@@ -849,9 +1065,20 @@ PYBIND11_MODULE(symbolic, m) {
           },
           py::arg("expressions"), py::arg("vars"),
           doc.DecomposeAffineExpressions.doc_4args_expressions_vars_M_v)
-      .def("ExtractVariablesFromExpression",
-          &symbolic::ExtractVariablesFromExpression, py::arg("e"),
-          doc.ExtractVariablesFromExpression.doc)
+      .def(
+          "ExtractVariablesFromExpression",
+          [](const symbolic::Expression& e) {
+            return symbolic::ExtractVariablesFromExpression(e);
+          },
+          py::arg("e"), doc.ExtractVariablesFromExpression.doc_1args_e)
+      .def(
+          "ExtractVariablesFromExpression",
+          [](const Eigen::Ref<const VectorX<symbolic::Expression>>&
+                  expressions) {
+            return symbolic::ExtractVariablesFromExpression(expressions);
+          },
+          py::arg("expressions"),
+          doc.ExtractVariablesFromExpression.doc_1args_expressions)
       .def(
           "DecomposeQuadraticPolynomial",
           [](const symbolic::Polynomial& poly,
@@ -885,7 +1112,7 @@ PYBIND11_MODULE(symbolic, m) {
             Eigen::RowVectorXd coeffs(map_var_to_index.size());
             double constant_term;
             symbolic::DecomposeAffineExpression(
-                e, map_var_to_index, coeffs, &constant_term);
+                e, map_var_to_index, &coeffs, &constant_term);
             return std::make_pair(coeffs, constant_term);
           },
           py::arg("e"), py::arg("map_var_to_index"),
@@ -894,9 +1121,11 @@ PYBIND11_MODULE(symbolic, m) {
           py::arg("f"), py::arg("parameters"),
           doc.DecomposeLumpedParameters.doc);
 
+  // Bind free function in replace_bilinear_terms.
+  m.def("ReplaceBilinearTerms", &ReplaceBilinearTerms, py::arg("e"),
+      py::arg("x"), py::arg("y"), py::arg("W"), doc.ReplaceBilinearTerms.doc);
+
   // NOLINTNEXTLINE(readability/fn_size)
 }
 }  // namespace pydrake
 }  // namespace drake
-
-#pragma GCC diagnostic pop
