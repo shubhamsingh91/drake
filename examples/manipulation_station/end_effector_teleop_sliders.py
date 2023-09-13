@@ -3,26 +3,17 @@ from dataclasses import dataclass
 import sys
 import webbrowser
 
-if sys.platform == "darwin":
-    # TODO(jamiesnape): Fix this example on macOS Big Sur. Skipping on all
-    # macOS for simplicity and because of the tendency for macOS versioning
-    # schemes to unexpectedly change.
-    # ImportError: C++ type is not registered in pybind:
-    # NSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE
-    print("ERROR: Skipping this example on macOS because it fails on Big Sur")
-    sys.exit(0)
-
 import numpy as np
 
-from pydrake.common.value import AbstractValue
+from pydrake.common.value import Value
 from pydrake.examples import (
     ManipulationStation, ManipulationStationHardwareInterface,
     CreateClutterClearingYcbObjectList, SchunkCollisionModel)
 from pydrake.geometry import DrakeVisualizer, Meshcat, MeshcatVisualizer
-from pydrake.manipulation.planner import (
+from pydrake.math import RigidTransform, RollPitchYaw, RotationMatrix
+from pydrake.multibody.inverse_kinematics import (
     DifferentialInverseKinematicsIntegrator,
     DifferentialInverseKinematicsParameters)
-from pydrake.math import RigidTransform, RollPitchYaw, RotationMatrix
 from pydrake.systems.analysis import Simulator
 from pydrake.systems.framework import (DiagramBuilder, LeafSystem,
                                        PublishEvent)
@@ -146,7 +137,7 @@ class ToPose(LeafSystem):
         LeafSystem.__init__(self)
         self.DeclareVectorInputPort("rpy_xyz", 6)
         self.DeclareAbstractOutputPort(
-            "pose", lambda: AbstractValue.Make(RigidTransform()),
+            "pose", lambda: Value(RigidTransform()),
             self.DoCalcOutput)
 
     def DoCalcOutput(self, context, output):
@@ -244,7 +235,7 @@ def main():
         station.Finalize()
 
         # If using meshcat, don't render the cameras, since RgbdCamera
-        # rendering only works with drake-visualizer. Without this check,
+        # rendering only works with Meldis (modulo #18862). Without this check,
         # running this code in a docker container produces libGL errors.
         geometry_query_port = station.GetOutputPort("geometry_query")
 
@@ -258,7 +249,7 @@ def main():
         if args.setup == 'planar':
             meshcat.Set2dRenderMode()
 
-        # Connect and publish to drake visualizer.
+        # Connect LCM visualization.
         DrakeVisualizer.AddToBuilder(builder, geometry_query_port)
         image_to_lcm_image_array = builder.AddSystem(
             ImageToLcmImageArrayT())

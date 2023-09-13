@@ -1,9 +1,6 @@
-# -*- python -*-
-
 load("@drake//tools/install:install.bzl", "install")
 load(
     "@drake//tools/skylark:pybind.bzl",
-    "add_pybind_coverage_data",
     "drake_pybind_library",
     "get_drake_py_installs",
     "get_pybind_package_info",
@@ -23,81 +20,34 @@ package(default_visibility = [
 # bindings.
 PACKAGE_INFO = get_pybind_package_info("//bindings")
 
-drake_py_library(
-    name = "module_py",
-    srcs = ["__init__.py"],
-    imports = PACKAGE_INFO.py_imports,
-    deps = [
-        "//bindings/pydrake:module_py",
-    ],
-)
-
 drake_pybind_library(
-    name = "kuka_iiwa_py",
+    name = "manipulation",
     cc_deps = [
         "//bindings/pydrake:documentation_pybind",
         "//bindings/pydrake/common:eigen_pybind",
         "//bindings/pydrake/common:serialize_pybind",
     ],
-    cc_srcs = ["kuka_iiwa_py.cc"],
+    cc_so_name = "__init__",
+    cc_srcs = [
+        "manipulation_py.h",
+        "manipulation_py.cc",
+        "manipulation_py_kuka_iiwa.cc",
+        "manipulation_py_schunk_wsg.cc",
+        "manipulation_py_util.cc",
+    ],
     package_info = PACKAGE_INFO,
     py_deps = [
-        ":module_py",
+        "//bindings/pydrake/systems:framework_py",
+    ],
+    py_srcs = [
+        "_manipulation_extra.py",
+        # TODO(jwnimmer-tri) On 2023-11-01 upon completion of deprecation,
+        # remove these files.
+        "kuka_iiwa.py",
+        "schunk_wsg.py",
+        "util.py",
     ],
 )
-
-drake_pybind_library(
-    name = "planner_py",
-    cc_deps = [
-        "//bindings/pydrake:documentation_pybind",
-        "//bindings/pydrake/common:deprecation_pybind",
-        "//bindings/pydrake/common:eigen_pybind",
-    ],
-    cc_srcs = ["planner_py.cc"],
-    package_info = PACKAGE_INFO,
-    py_deps = [
-        ":module_py",
-    ],
-)
-
-drake_pybind_library(
-    name = "schunk_wsg_py",
-    cc_deps = [
-        "//bindings/pydrake:documentation_pybind",
-        "//bindings/pydrake/common:eigen_pybind",
-        "//bindings/pydrake/common:serialize_pybind",
-    ],
-    cc_srcs = ["schunk_wsg_py.cc"],
-    package_info = PACKAGE_INFO,
-    py_deps = [
-        ":module_py",
-    ],
-)
-
-drake_pybind_library(
-    name = "util_py",
-    cc_deps = [
-        "//bindings/pydrake:documentation_pybind",
-        "//bindings/pydrake/common:eigen_pybind",
-        "//bindings/pydrake/common:serialize_pybind",
-    ],
-    cc_srcs = ["util_py.cc"],
-    package_info = PACKAGE_INFO,
-    py_deps = [
-        ":module_py",
-    ],
-)
-
-PY_LIBRARIES_WITH_INSTALL = [
-    ":kuka_iiwa_py",
-    ":planner_py",
-    ":schunk_wsg_py",
-    ":util_py",
-]
-
-PY_LIBRARIES = [
-    ":module_py",
-]
 
 drake_py_unittest(
     name = "kuka_iiwa_test",
@@ -106,21 +56,9 @@ drake_py_unittest(
         "//manipulation/util:test_directives",
     ],
     deps = [
-        ":kuka_iiwa_py",
+        ":manipulation",
         "//bindings/pydrake/multibody",
         "//bindings/pydrake/systems",
-    ],
-)
-
-drake_py_unittest(
-    name = "planner_test",
-    data = [
-        "//multibody/benchmarks/acrobot:models",
-    ],
-    deps = [
-        ":planner_py",
-        "//bindings/pydrake/common/test_utilities",
-        "//bindings/pydrake/multibody",
     ],
 )
 
@@ -130,7 +68,7 @@ drake_py_unittest(
         "//manipulation/util:test_directives",
     ],
     deps = [
-        ":schunk_wsg_py",
+        ":manipulation",
         "//bindings/pydrake/multibody",
         "//bindings/pydrake/systems",
     ],
@@ -142,32 +80,17 @@ drake_py_unittest(
         "//manipulation/util:test_directives",
     ],
     deps = [
-        ":util_py",
+        ":manipulation",
         "//bindings/pydrake/multibody",
         "//bindings/pydrake/systems",
     ],
 )
 
-# Symbol roll-up (for user ease).
-drake_py_library(
-    name = "all_py",
-    srcs = ["all.py"],
-    deps = PY_LIBRARIES_WITH_INSTALL + PY_LIBRARIES,
-)
-
-# Package roll-up (for Bazel dependencies).
-drake_py_library(
-    name = "manipulation",
-    deps = [":all_py"],
-)
-
 install(
     name = "install",
-    targets = PY_LIBRARIES + [":all_py"],
+    targets = [":manipulation"],
     py_dest = PACKAGE_INFO.py_dest,
-    deps = get_drake_py_installs(PY_LIBRARIES_WITH_INSTALL),
+    deps = get_drake_py_installs([":manipulation"]),
 )
-
-add_pybind_coverage_data()
 
 add_lint_tests_pydrake()

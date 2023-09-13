@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load("//tools/skylark:py.bzl", "py_library")
 load("@drake//tools/install:check_licenses.bzl", "check_licenses")
 load("@drake//tools/install:install.bzl", "install")
@@ -48,13 +46,19 @@ drake_py_binary(
     name = "vendor_cxx",
     srcs = ["vendor_cxx.py"],
     visibility = [
-        # These should all be of the form "@foo_internal//:__pkg__".
-        "@gz_math_internal//:__pkg__",
-        "@gz_utils_internal//:__pkg__",
-        "@nlopt_internal//:__pkg__",
-        "@qhull_internal//:__pkg__",
-        "@sdformat_internal//:__pkg__",
-        "@yaml_cpp_internal//:__pkg__",
+        # These should all be of the form "@foo_internal//:__subpackages__".
+        "@clp_internal//:__subpackages__",
+        "@coinutils_internal//:__subpackages__",
+        "@conex_internal//:__subpackages__",
+        "@fcl_internal//:__subpackages__",
+        "@gz_math_internal//:__subpackages__",
+        "@gz_utils_internal//:__subpackages__",
+        "@ipopt_internal_fromsource//:__subpackages__",
+        "@msgpack_internal//:__subpackages__",
+        "@nlopt_internal//:__subpackages__",
+        "@qhull_internal//:__subpackages__",
+        "@sdformat_internal//:__subpackages__",
+        "@yaml_cpp_internal//:__subpackages__",
     ],
     deps = [":module_py"],
 )
@@ -76,48 +80,49 @@ drake_py_binary(
 )
 
 _DRAKE_EXTERNAL_PACKAGE_INSTALLS = ["@%s//:install" % p for p in [
-    "ccd",
+    "ccd_internal",
+    "clp_internal",
+    "coinutils_internal",
     "com_jidesoft_jide_oss",
     "common_robotics_utilities",
     "commons_io",
     "curl_internal",
-    "fcl",
+    "fcl_internal",
     "fmt",
     "gz_math_internal",
     "gz_utils_internal",
+    "ipopt",
     "lcm",
     "meshcat",
-    "msgpack_lite_js",
+    "msgpack_internal",
     "net_sf_jchart2d",
     "nanoflann_internal",
+    "nlohmann_internal",
     "nlopt_internal",
     "org_apache_xmlgraphics_commons",
-    "petsc",
+    "picosha2_internal",
     "pybind11",
     "qhull_internal",
     "sdformat_internal",
     "spdlog",
     "statsjs",
-    "tinyobjloader",
+    "stduuid_internal",
+    "suitesparse_internal",
+    "tinyobjloader_internal",
     "tinyxml2_internal",
-    "usockets",
-    "uwebsockets",
-    "vtk",
+    "usockets_internal",
+    "uwebsockets_internal",
+    "vtk_internal",
     "yaml_cpp_internal",
 ]] + ["//tools/workspace/%s:install" % p for p in [
     "abseil_cpp_internal",
-    "conex",
-    "cds",
+    "conex_internal",
     "drake_visualizer",
-    "dreal",
+    "gflags",
     "optitrack_driver",
-    "picosat",
 ]] + select({
-    "//conditions:default": ["@csdp//:install"],
+    "//conditions:default": ["@csdp_internal//:install"],
     "//tools:no_csdp": [],
-}) + select({
-    "//conditions:default": ["@ibex//:install"],
-    "//tools:no_dreal": [],
 }) + select({
     "//tools:with_gurobi": ["@gurobi//:install"],
     "//conditions:default": [],
@@ -129,12 +134,12 @@ _DRAKE_EXTERNAL_PACKAGE_INSTALLS = ["@%s//:install" % p for p in [
     "//conditions:default": [],
 }) + select({
     "//conditions:default": [
-        "@osqp//:install",
-        "@qdldl//:install",
+        "@osqp_internal//:install",
+        "@qdldl_internal//:install",
     ],
     "//tools:no_osqp": [],
 }) + select({
-    "//conditions:default": ["@scs//:install"],
+    "//conditions:default": ["@scs_internal//:install"],
     "//tools:no_scs": [],
 })
 

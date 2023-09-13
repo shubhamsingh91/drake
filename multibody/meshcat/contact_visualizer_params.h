@@ -29,7 +29,7 @@ struct ContactVisualizerParams {
   }
 
   /** The duration (in simulation seconds) between attempts to update poses in
-   the visualizer. (To help avoid small simulation timesteps, we use a default
+   the visualizer. (To help avoid small simulation time steps, we use a default
    period that has an exact representation in binary floating point; see
    drake#15021 for details.) */
   double publish_period{1 / 32.0};
@@ -50,7 +50,7 @@ struct ContactVisualizerParams {
    "Meshcat paths" for details. */
   std::string prefix{"contact_forces"};
 
-  /** Determines whether to send a Meschat::Delete(prefix) message on an
+  /** Determines whether to send a Meshcat::Delete(prefix) message on an
    initialization event to remove any visualizations e.g. from a previous
    simulation. See @ref declare_initialization_events "Declare initialization
    events" for more information. */

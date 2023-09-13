@@ -10,6 +10,7 @@ from pydrake.multibody.optimization import (
     CentroidalMomentumConstraint,
     ContactWrenchFromForceInWorldFrameEvaluator,
     QuaternionEulerIntegrationConstraint,
+    SpatialVelocityConstraint,
     StaticEquilibriumProblem,
     Toppra,
     ToppraDiscretization,
@@ -26,8 +27,8 @@ from pydrake.multibody.tree import (
     SpatialInertia,
 )
 import pydrake.multibody.inverse_kinematics as ik
-import pydrake.solvers.mathematicalprogram as mp
-from pydrake.solvers import SnoptSolver
+import pydrake.solvers as mp
+from pydrake.symbolic import Expression, MakeVectorVariable, Variable
 from pydrake.systems.framework import DiagramBuilder, DiagramBuilder_
 from pydrake.geometry import (
     Box,
@@ -37,6 +38,7 @@ from pydrake.geometry import (
 from pydrake.math import RigidTransform
 from pydrake.autodiffutils import AutoDiffXd
 from pydrake.common import FindResourceOrThrow
+from pydrake.common.test_utilities import numpy_compare
 from pydrake.trajectories import PiecewisePolynomial
 
 Environment = namedtuple("Environment", [
@@ -118,7 +120,7 @@ def split_se3(q_se3):
 
 class TestStaticEquilibriumProblem(unittest.TestCase):
 
-    @unittest.skipUnless(SnoptSolver().available(), "Requires Snopt")
+    @unittest.skipUnless(mp.SnoptSolver().available(), "Requires Snopt")
     def test_one_box(self):
         # Test with a single box.
         masses = [1.]
@@ -146,7 +148,7 @@ class TestStaticEquilibriumProblem(unittest.TestCase):
 
         # Now set the complementarity tolerance.
         dut.UpdateComplementarityTolerance(0.002)
-        solver = SnoptSolver()
+        solver = mp.SnoptSolver()
         result = solver.Solve(dut.prog())
         self.assertTrue(result.is_success())
         q_sol = result.GetSolution(dut.q_vars())
@@ -180,6 +182,67 @@ class TestQuaternionEulerIntegrationConstraint(unittest.TestCase):
         dut = QuaternionEulerIntegrationConstraint(
             allow_quaternion_negation=True)
         self.assertIsInstance(dut, mp.Constraint)
+        self.assertTrue(dut.allow_quaternion_negation())
+        q1 = np.array([1, 0, 0, 0])
+        q2 = np.array([0, 1, 0, 0])
+        w = np.array([0.1, 0.2, 0.3])
+        h = 0.01
+        c = dut.ComposeVariable(quat1=q1, quat2=q2, angular_vel=w, h=h)
+        np.testing.assert_equal(c, np.concatenate((q1, q2, w, [h])))
+        q1 = MakeVectorVariable(4, "q1")
+        q2 = MakeVectorVariable(4, "q2")
+        w = MakeVectorVariable(3, "w")
+        h = Variable("h")
+        c = dut.ComposeVariable(quat1=q1, quat2=q2, angular_vel=w, h=h)
+        numpy_compare.assert_equal(c, np.concatenate((q1, q2, w, [h])))
+        q1 = np.array([
+            Expression(1), Expression(0), Expression(0), Expression(0)])
+        q2 = np.array([
+            Expression(1), Expression(0), Expression(0), Expression(0)])
+        w = np.array([Expression(1), Expression(0), Expression(0)])
+        h = Expression(0.01)
+        c = dut.ComposeVariable(quat1=q1, quat2=q2, angular_vel=w, h=h)
+        numpy_compare.assert_equal(c, np.concatenate((q1, q2, w, [h])))
+
+
+class TestSpatialVelocityConstraint(unittest.TestCase):
+    def test(self):
+        masses = [1., 2]
+        box_sizes = [np.array([0.1, 0.1, 0.1]), np.array([0.1, 0.1, 0.2])]
+        env = construct_environment(masses, box_sizes)
+        context = env.plant.CreateDefaultContext()
+        w_AC_bounds = SpatialVelocityConstraint.AngularVelocityBounds()
+        w_AC_bounds.magnitude_lower = 0.2
+        w_AC_bounds.magnitude_upper = 0.4
+        w_AC_bounds.reference_direction = [1, 2, 3]
+        w_AC_bounds.theta_bound = np.pi / 4
+        dut = SpatialVelocityConstraint(
+            plant=env.plant,
+            frameA=env.plant.world_frame(),
+            v_AC_lower=[1, 2, 3],
+            v_AC_upper=[4, 5, 6],
+            frameB=env.plant.GetFrameByName("box0"),
+            p_BCo=[0.2, 0.3, 0.6],
+            plant_context=context)
+        self.assertIsInstance(dut, mp.Constraint)
+        np.testing.assert_array_almost_equal(dut.lower_bound(), [1, 2, 3])
+        np.testing.assert_array_almost_equal(dut.upper_bound(), [4, 5, 6])
+
+        dut = SpatialVelocityConstraint(
+            plant=env.plant,
+            frameA=env.plant.world_frame(),
+            v_AC_lower=[1, 2, 3],
+            v_AC_upper=[4, 5, 6],
+            frameB=env.plant.GetFrameByName("box0"),
+            p_BCo=[0.2, 0.3, 0.6],
+            plant_context=context,
+            w_AC_bounds=w_AC_bounds)
+        self.assertIsInstance(dut, mp.Constraint)
+        np.testing.assert_array_almost_equal(
+            dut.lower_bound(),
+            [1, 2, 3, 0.04, np.cos(np.pi / 4)])
+        np.testing.assert_array_almost_equal(
+            dut.upper_bound(), [4, 5, 6, 0.16, 1])
 
 
 class TestContactWrenchFromForceInWorldFrameEvaluator(unittest.TestCase):
@@ -187,7 +250,7 @@ class TestContactWrenchFromForceInWorldFrameEvaluator(unittest.TestCase):
         builder = DiagramBuilder()
         plant, scene_graph = AddMultibodyPlantSceneGraph(
             builder, MultibodyPlant(time_step=0.01))
-        Parser(plant).AddModelFromFile(FindResourceOrThrow(
+        Parser(plant).AddModels(FindResourceOrThrow(
                 "drake/bindings/pydrake/multibody/test/two_bodies.sdf"))
         plant.Finalize()
         diagram = builder.Build()
@@ -236,7 +299,7 @@ class TestToppra(unittest.TestCase):
         file_path = FindResourceOrThrow(
             "drake/manipulation/models/iiwa_description/iiwa7/"
             "iiwa7_no_collision.sdf")
-        iiwa_id = Parser(plant).AddModelFromFile(file_path, "iiwa")
+        iiwa_id, = Parser(plant).AddModels(file_path)
         plant.WeldFrames(plant.world_frame(),
                          plant.GetFrameByName("iiwa_link_0", iiwa_id))
         plant.Finalize()
@@ -289,15 +352,35 @@ class TestToppra(unittest.TestCase):
         constraint = toppra.AddFrameTranslationalSpeedLimit(
             constraint_frame=frame, upper_limit=1.)
         self.assertIsInstance(constraint, mp.Binding[mp.BoundingBoxConstraint])
-        constraint = toppra.AddFrameAccelerationLimit(
+
+        breaks = [path.start_time(), path.end_time()]
+
+        speed_limit_traj = PiecewisePolynomial.FirstOrderHold(
+            breaks, np.array(([[1, 1]])))
+        constraint = toppra.AddFrameTranslationalSpeedLimit(
+            constraint_frame=frame, upper_limit=speed_limit_traj)
+        self.assertIsInstance(constraint, mp.Binding[mp.BoundingBoxConstraint])
+
+        backward_con, forward_con = toppra.AddFrameAccelerationLimit(
             constraint_frame=frame, lower_limit=lower_limit,
             upper_limit=upper_limit,
             discretization=ToppraDiscretization.kCollocation)
         self.assertIsInstance(backward_con, mp.Binding[mp.LinearConstraint])
         self.assertIsInstance(forward_con, mp.Binding[mp.LinearConstraint])
-        constraint = toppra.AddFrameAccelerationLimit(
+        backward_con, forward_con = toppra.AddFrameAccelerationLimit(
             constraint_frame=frame, lower_limit=lower_limit,
             upper_limit=upper_limit,
+            discretization=ToppraDiscretization.kInterpolation)
+        self.assertIsInstance(backward_con, mp.Binding[mp.LinearConstraint])
+        self.assertIsInstance(forward_con, mp.Binding[mp.LinearConstraint])
+
+        upper_traj = PiecewisePolynomial.FirstOrderHold(breaks,
+                                                        np.ones((6, 2)))
+        lower_traj = PiecewisePolynomial.FirstOrderHold(breaks,
+                                                        -np.ones((6, 2)))
+        backward_con, forward_con = toppra.AddFrameAccelerationLimit(
+            constraint_frame=frame, lower_limit=lower_traj,
+            upper_limit=upper_traj,
             discretization=ToppraDiscretization.kInterpolation)
         self.assertIsInstance(backward_con, mp.Binding[mp.LinearConstraint])
         self.assertIsInstance(forward_con, mp.Binding[mp.LinearConstraint])

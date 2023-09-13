@@ -10,6 +10,7 @@
 #include <Eigen/Dense>
 
 #include "drake/common/eigen_types.h"
+#include "drake/common/parallelism.h"
 #include "drake/perception/point_cloud_flags.h"
 
 namespace drake {
@@ -22,10 +23,6 @@ namespace perception {
 /// This is a mix between the philosophy of PCL (templated interface to
 /// provide a compile-time open set, run-time closed set) and VTK (non-templated
 /// interface to provide a very free form run-time open set).
-/// You may construct one PointCloud which will contain different sets of
-/// data, but you cannot change the contained data types after construction.
-/// However, you can mutate the data contained within the structure and resize
-/// the cloud.
 ///
 /// Definitions:
 ///
@@ -42,7 +39,7 @@ namespace perception {
 ///
 /// @note "contiguous" here means contiguous in memory. This was chosen to
 /// avoid ambiguity between PCL and Eigen, where in PCL "dense" implies that
-/// the point cloud corresponds to a cloud with invalid values, and in Eigen
+/// the point cloud corresponds to a cloud with only valid values, and in Eigen
 /// "dense" implies contiguous storage.
 ///
 /// @note The accessors / mutators for the point fields of this class returns
@@ -90,7 +87,7 @@ class PointCloud final {
   /// @param fields
   ///   Fields that the point cloud contains.
   /// @param skip_initialize
-  ///    Do not default-initialize new values.
+  ///   Do not default-initialize new values.
   explicit PointCloud(int new_size = 0,
                       pc_flags::Fields fields = pc_flags::kXYZs,
                       bool skip_initialize = false);
@@ -120,10 +117,10 @@ class PointCloud final {
   // shallow copies.
 
   /// Returns the fields provided by this point cloud.
-  pc_flags::Fields fields() const { return fields_; }
+  pc_flags::Fields fields() const;
 
   /// Returns the number of points in this point cloud.
-  int size() const { return size_; }
+  int size() const;
 
   /// Conservative resize; will maintain existing data, and initialize new
   /// data to their invalid values.
@@ -224,9 +221,7 @@ class PointCloud final {
   bool has_descriptors(const pc_flags::DescriptorType& descriptor_type) const;
 
   /// Returns the descriptor type.
-  const pc_flags::DescriptorType& descriptor_type() const {
-    return fields_.descriptor_type();
-  }
+  const pc_flags::DescriptorType& descriptor_type() const;
 
   /// Returns access to descriptor values.
   /// @pre `has_descriptors()` must be true.
@@ -255,9 +250,9 @@ class PointCloud final {
   /// @param other
   ///    Other point cloud.
   /// @param fields_in
-  ///    Fields to copy. If this is `kInherit`, then both clouds must have the
-  ///    exact same fields. Otherwise, both clouds must support the fields
-  ///    indicated this parameter.
+  ///    Fields to copy. If this is `kInherit`, then `other`s fields will be
+  ///    copied. Otherwise, both clouds must support the fields indicated this
+  ///    parameter.
   /// @param allow_resize
   ///    Permit resizing to the other cloud's size.
   void SetFrom(
@@ -278,6 +273,16 @@ class PointCloud final {
 
   /// @name Fields
   /// @{
+
+  /// Updates the point cloud to a given set of fields. In the case of
+  /// introducing a new field, its container will be allocated with the current
+  /// size and default initialized. The data for all retained fields will remain
+  /// unchanged.
+  /// @param new_fields
+  ///    New fields to set to.
+  /// @param skip_initialize
+  ///    Do not default-initialize new values.
+  void SetFields(pc_flags::Fields new_fields, bool skip_initialize = false);
 
   /// Returns if a point cloud has a given set of fields.
   bool HasFields(pc_flags::Fields fields_in) const;
@@ -332,10 +337,12 @@ class PointCloud final {
   /// corresponding to the centroid of the points in that voxel. Points with
   /// non-finite xyz values are ignored. All other fields (e.g. rgbs, normals,
   /// and descriptors) with finite values will also be averaged across the
-  /// points in a voxel.
+  /// points in a voxel. @p parallelize enables OpenMP parallelization.
+  /// Equivalent to Open3d's voxel_down_sample or PCL's VoxelGrid filter.
   /// @throws std::exception if has_xyzs() is false.
   /// @throws std::exception if voxel_size <= 0.
-  PointCloud VoxelizedDownSample(double voxel_size) const;
+  PointCloud VoxelizedDownSample(
+      double voxel_size, Parallelism parallelize = false) const;
 
   /// Estimates the normal vectors in `this` by fitting a plane at each point
   /// in the cloud using up to `num_closest` points within Euclidean distance
@@ -345,14 +352,15 @@ class PointCloud final {
   /// points within the @p radius), will receive normal [NaN, NaN, NaN].
   /// Normals estimated from two closest points will be orthogonal to the
   /// vector between those points, but can be arbitrary in the last
-  /// dimension.
+  /// dimension. @p parallelize enables OpenMP parallelization.
   ///
   /// @returns true iff all points were assigned normals by having at least
   /// *three* closest points within @p radius.
   ///
   /// @pre @p radius > 0 and @p num_closest >= 3.
   /// @throws std::exception if has_xyzs() is false.
-  bool EstimateNormals(double radius, int num_closest);
+  bool EstimateNormals(
+      double radius, int num_closest, Parallelism parallelize = false);
 
  private:
   void SetDefault(int start, int num);
@@ -360,10 +368,6 @@ class PointCloud final {
   // Provides PIMPL encapsulation of storage mechanism.
   class Storage;
 
-  // Represents the size of the point cloud.
-  int size_{};
-  // Represents which fields are enabled for this point cloud.
-  pc_flags::Fields fields_{pc_flags::kXYZs};
   // Owns storage used for the point cloud.
   std::unique_ptr<Storage> storage_;
 };

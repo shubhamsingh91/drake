@@ -119,7 +119,7 @@ class TestSystemBase : public System<T> {
 
   std::map<PeriodicEventData, std::vector<const Event<T>*>,
            PeriodicEventDataComparator>
-  DoGetPeriodicEvents() const final {
+  DoMapPeriodicEventsByTiming(const Context<T>&) const final {
     ADD_FAILURE() << "A test called a method that was expected to be unused.";
     return {};
   }
@@ -132,6 +132,13 @@ class TestSystemBase : public System<T> {
 
   void DoCalcTimeDerivatives(const Context<T>& context,
                              ContinuousState<T>* derivatives) const override {}
+
+  void DoFindUniquePeriodicDiscreteUpdatesOrThrow(
+      const char* api_name, const Context<T>& context,
+      std::optional<PeriodicEventData>* timing,
+      EventCollection<DiscreteUpdateEvent<T>>* events) const override {
+    ADD_FAILURE() << "A test called a method that was expected to be unused.";
+  }
 
   void DispatchPublishHandler(
       const Context<T>& context,
@@ -288,7 +295,7 @@ TEST_F(SystemTest, ContextBelongsWithSystem) {
 
   // These just uses a couple of arbitrary methods to test that a Context not
   // created by a System throws the appropriate exception.
-  DRAKE_EXPECT_THROWS_MESSAGE(system2.Publish(*context_),
+  DRAKE_EXPECT_THROWS_MESSAGE(system2.ForcedPublish(*context_),
                               "[^]*#framework-context-system-mismatch.*");
   DRAKE_EXPECT_THROWS_MESSAGE(system2.SetDefaultContext(context_.get()),
                               "[^]*#framework-context-system-mismatch.*");
@@ -369,7 +376,7 @@ TEST_F(SystemTest, DiscreteUpdate) {
 
   std::unique_ptr<DiscreteValues<double>> update =
       system_.AllocateDiscreteVariables();
-  system_.CalcDiscreteVariableUpdates(
+  system_.CalcDiscreteVariableUpdate(
       *context_, event_info->get_discrete_update_events(), update.get());
   EXPECT_EQ(1, system_.get_update_count());
 }
@@ -395,28 +402,72 @@ TEST_F(SystemTest, PortReferencesAreStable) {
   EXPECT_EQ(kAbstractValued, first_output.get_data_type());
 }
 
-// Tests the convenience methods for the case when we have exactly one input or
-// output port.
-TEST_F(SystemTest, ExactlyOnePortConvenience) {
+// Tests the convenience method for the case when we have exactly one port.
+TEST_F(SystemTest, ExactlyOneInputPortConvenience) {
+  // No ports: fail.
   DRAKE_EXPECT_THROWS_MESSAGE(system_.get_input_port(),
-                              ".*num_input_ports\\(\\) = 0");
+                              ".*does not have any inputs");
 
+  // One port: pass.
   system_.DeclareInputPort("one", kVectorValued, 2);
   EXPECT_EQ(&system_.get_input_port(), &system_.get_input_port(0));
 
+  // One deprecated port: pass.
+  const_cast<InputPort<double>&>(system_.get_input_port(0))
+      .set_deprecation("deprecated");
+  EXPECT_EQ(&system_.get_input_port(), &system_.get_input_port(0));
+
+  // Two ports (one non-deprecated): pass.
   system_.DeclareInputPort("two", kVectorValued, 2);
-  DRAKE_EXPECT_THROWS_MESSAGE(system_.get_input_port(),
-                              ".*num_input_ports\\(\\) = 2");
+  EXPECT_EQ(&system_.get_input_port(), &system_.get_input_port(1));
 
+  // Three ports (two non-deprecated): fail.
+  system_.DeclareInputPort("three", kVectorValued, 2);
+  DRAKE_EXPECT_THROWS_MESSAGE(system_.get_input_port(), ".*has 3 inputs.*");
+
+  // Three ports (one non-deprecated): pass.
+  const_cast<InputPort<double>&>(system_.get_input_port(1))
+      .set_deprecation("deprecated");
+  EXPECT_EQ(&system_.get_input_port(), &system_.get_input_port(2));
+
+  // Three deprecated ports: fail
+  const_cast<InputPort<double>&>(system_.get_input_port(2))
+      .set_deprecation("deprecated");
+  DRAKE_EXPECT_THROWS_MESSAGE(system_.get_input_port(), ".*has 3 inputs.*");
+}
+
+// Tests the convenience method for the case when we have exactly one port.
+TEST_F(SystemTest, ExactlyOneOutputPortConvenience) {
+  // No ports: fail.
   DRAKE_EXPECT_THROWS_MESSAGE(system_.get_output_port(),
-                              ".*num_output_ports\\(\\) = 0");
+                              ".*does not have any outputs");
 
+  // One port: pass.
   system_.AddAbstractOutputPort();
   EXPECT_EQ(&system_.get_output_port(), &system_.get_output_port(0));
 
+  // One deprecated port: pass.
+  const_cast<OutputPort<double>&>(system_.get_output_port(0))
+      .set_deprecation("deprecated");
+  EXPECT_EQ(&system_.get_output_port(), &system_.get_output_port(0));
+
+  // Two ports (one non-deprecated): pass.
   system_.AddAbstractOutputPort();
-  DRAKE_EXPECT_THROWS_MESSAGE(system_.get_output_port(),
-                              ".*num_output_ports\\(\\) = 2");
+  EXPECT_EQ(&system_.get_output_port(), &system_.get_output_port(1));
+
+  // Three ports (two non-deprecated): fail.
+  system_.AddAbstractOutputPort();
+  DRAKE_EXPECT_THROWS_MESSAGE(system_.get_output_port(), ".*has 3 outputs.*");
+
+  // Three ports (one non-deprecated): pass.
+  const_cast<OutputPort<double>&>(system_.get_output_port(1))
+      .set_deprecation("deprecated");
+  EXPECT_EQ(&system_.get_output_port(), &system_.get_output_port(2));
+
+  // Three deprecated ports: fail.
+  const_cast<OutputPort<double>&>(system_.get_output_port(2))
+      .set_deprecation("deprecated");
+  DRAKE_EXPECT_THROWS_MESSAGE(system_.get_output_port(), ".*has 3 outputs.*");
 }
 
 TEST_F(SystemTest, PortNameTest) {

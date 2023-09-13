@@ -40,14 +40,14 @@ const std::vector<GeometryId>& GetCollisionGeometriesForBody(
       plant.GetCollisionGeometriesForBody(body);
   if (warn_for_multi_geometry_body && geometries.size() > 1) {
     static const logging::Warn log_once(
-        "MultibodyPlant has at least one body '{}/{}' with multiple contact "
+        "MultibodyPlant has at least one body '{}' with multiple contact "
         "geometries. Contacts with this body may be unclear in the visualizer "
         "if contact is made with multiple geometries simultaneously. To "
         "clarify the visualization, use ConnectContactResultsToDrakeVisualizer "
         "instead of the ContactResultsToLcm constructor, and pass a SceneGraph "
         "to that function. See the documentation for ContactResultsToLcmSystem "
         "for details.",
-        plant.GetModelInstanceName(body.model_instance()), body.name());
+        body.scoped_name());
     unused(log_once);
   }
   return geometries;
@@ -308,7 +308,7 @@ systems::lcm::LcmPublisherSystem* ConnectWithNameLookup(
           new ContactResultsToLcmSystem<double>(multibody_plant, name_lookup)));
   contact_to_lcm->set_name("contact_to_lcm");
 
-  // To help avoid small timesteps, use a default period that has an exact
+  // To help avoid small time steps, use a default period that has an exact
   // representation in binary floating point (see drake#15021).
   const double default_publish_period = 1.0 / 64;
   auto contact_results_publisher = builder->AddSystem(

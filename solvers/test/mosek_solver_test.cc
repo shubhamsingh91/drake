@@ -10,6 +10,7 @@
 #include "drake/solvers/mixed_integer_optimization_util.h"
 #include "drake/solvers/test/exponential_cone_program_examples.h"
 #include "drake/solvers/test/linear_program_examples.h"
+#include "drake/solvers/test/quadratic_constrained_program_examples.h"
 #include "drake/solvers/test/quadratic_program_examples.h"
 #include "drake/solvers/test/second_order_cone_program_examples.h"
 #include "drake/solvers/test/semidefinite_program_examples.h"
@@ -18,6 +19,7 @@
 namespace drake {
 namespace solvers {
 namespace test {
+const double kInf = std::numeric_limits<double>::infinity();
 TEST_P(LinearProgramTest, TestLP) {
   MosekSolver solver;
   prob()->RunProblem(&solver);
@@ -62,6 +64,13 @@ TEST_F(UnboundedLinearProgramTest1, Test) {
   }
 }
 
+TEST_F(DuplicatedVariableLinearProgramTest1, Test) {
+  MosekSolver solver;
+  if (solver.available()) {
+    CheckSolution(solver);
+  }
+}
+
 TEST_P(QuadraticProgramTest, TestQP) {
   MosekSolver solver;
   prob()->RunProblem(&solver);
@@ -90,6 +99,13 @@ TEST_P(TestEllipsoidsSeparation, TestSOCP) {
 INSTANTIATE_TEST_SUITE_P(
     MosekTest, TestEllipsoidsSeparation,
     ::testing::ValuesIn(GetEllipsoidsSeparationProblems()));
+
+GTEST_TEST(TestDuplicatedVariableQuadraticProgram, Test) {
+  MosekSolver solver;
+  if (solver.available()) {
+    TestDuplicatedVariableQuadraticProgram(solver);
+  }
+}
 
 TEST_P(TestQPasSOCP, TestSOCP) {
   MosekSolver mosek_solver;
@@ -135,6 +151,16 @@ GTEST_TEST(TestSOCP, SmallestEllipsoidCoveringProblem) {
   // Mosek 10 returns a solution that is accurate up to 1.3E-5 for this specific
   // problem. Might need to change the tolerance when we upgrade Mosek.
   SolveAndCheckSmallestEllipsoidCoveringProblems(solver, {}, 1.3E-5);
+}
+
+GTEST_TEST(TestSOCP, TestSocpDuplicatedVariable1) {
+  MosekSolver solver;
+  TestSocpDuplicatedVariable1(solver, std::nullopt, 1E-6);
+}
+
+GTEST_TEST(TestSOCP, TestSocpDuplicatedVariable2) {
+  MosekSolver solver;
+  TestSocpDuplicatedVariable2(solver, std::nullopt, 1E-6);
 }
 
 GTEST_TEST(TestSemidefiniteProgram, TrivialSDP) {
@@ -459,6 +485,13 @@ GTEST_TEST(MosekTest, LPDualSolution3) {
   }
 }
 
+GTEST_TEST(MosekTest, LPDualSolution4) {
+  MosekSolver solver;
+  if (solver.available()) {
+    TestLPDualSolution4(solver, 1E-8);
+  }
+}
+
 GTEST_TEST(MosekTest, QPDualSolution1) {
   MosekSolver solver;
   if (solver.available()) {
@@ -512,7 +545,7 @@ GTEST_TEST(MosekSolver, SocpDualSolution2) {
   MosekSolver solver;
   if (solver.available()) {
     SolverOptions solver_options{};
-    TestSocpDualSolution2(solver, solver_options, 1E-6, true);
+    TestSocpDualSolution2(solver, solver_options, 1E-6);
   }
 }
 
@@ -520,6 +553,22 @@ GTEST_TEST(MosekTest, SDPDualSolution1) {
   MosekSolver solver;
   if (solver.available()) {
     TestSDPDualSolution1(solver, 3E-6);
+  }
+}
+
+GTEST_TEST(MosekTest, TestEllipsoid1) {
+  // Test quadratically constrained program.
+  MosekSolver solver;
+  if (solver.available()) {
+    TestEllipsoid1(solver, std::nullopt, 1E-6);
+  }
+}
+
+GTEST_TEST(MosekTest, TestEllipsoid2) {
+  // Test quadratically constrained program.
+  MosekSolver solver;
+  if (solver.available()) {
+    TestEllipsoid2(solver, std::nullopt, 1E-5);
   }
 }
 
@@ -586,6 +635,29 @@ GTEST_TEST(MosekTest, InfeasibleSemidefiniteProgramTest) {
 
     // Check that the optimal cost is not NAN.
     EXPECT_FALSE(std::isnan(result.get_optimal_cost()));
+  }
+}
+
+GTEST_TEST(MosekTest, LPNoBasisSelection) {
+  // We solve an LP using interior point method (IPM), but don't do basis
+  // identification (which cleans the solution) after IPM finishes. Hence the
+  // basis solution is not available and Mosek can only acquire the IPM
+  // solution.
+  MathematicalProgram prog;
+  auto x = prog.NewContinuousVariables<2>();
+  prog.AddBoundingBoxConstraint(0, kInf, x);
+  prog.AddLinearConstraint(x(0) + x(1) <= 1);
+  prog.AddLinearCost(-x(0) - 2 * x(1));
+
+  SolverOptions solver_options;
+  solver_options.SetOption(MosekSolver::id(), "MSK_IPAR_INTPNT_BASIS", 0);
+  MosekSolver solver;
+  if (solver.available()) {
+    auto result = solver.Solve(prog, std::nullopt, solver_options);
+    EXPECT_TRUE(result.is_success());
+    const auto x_sol = result.GetSolution(x);
+    const double tol = 1E-6;
+    EXPECT_TRUE(CompareMatrices(x_sol, Eigen::Vector2d(0, 1), tol));
   }
 }
 }  // namespace test

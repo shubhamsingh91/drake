@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load(
     "@drake//tools/skylark:drake_cc.bzl",
     "drake_cc_library",
@@ -154,19 +152,21 @@ def cc_vector_gen(
 def drake_cc_vector_gen_library(
         name,
         srcs = [],
+        tags = [],
         deps = [],
         **kwargs):
     """Given *_named_vector.yaml files in `srcs`, declare a drake_cc_library
     with the given `name`, containing the generated BasicVector subclasses for
     those `srcs`.  The `deps` are passed through to the declared library.
 
-    This macro is inteded for use only within Drake itself.  Other projects
+    This macro is intended for use only within Drake itself.  Other projects
     using vector_gen should copy this macro and adapt it as necessary, e.g.,
     by setting drake_workspace_name correctly.
     """
     generated = cc_vector_gen(
         name = name + "_codegen",
         srcs = srcs,
+        tags = tags,
         include_prefix = "drake",
         drake_workspace_name = "",
         visibility = [],
@@ -175,6 +175,7 @@ def drake_cc_vector_gen_library(
         name = name,
         srcs = generated.srcs,
         hdrs = generated.hdrs,
+        tags = tags + ["nolint"],
         deps = deps + generated.deps,
         **kwargs
     )

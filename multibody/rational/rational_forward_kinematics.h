@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -8,10 +9,12 @@
 #include "drake/common/symbolic/rational_function.h"
 #include "drake/common/symbolic/trigonometric_polynomial.h"
 #include "drake/multibody/plant/multibody_plant.h"
+#include "drake/multibody/tree/mobilizer.h"
 #include "drake/multibody/tree/multibody_tree.h"
 
 namespace drake {
 namespace multibody {
+
 /** For certain robots (whose joint transforms are algebraic functions of joint
  variables, for example revolute/prismatic/floating-base joints), we can
  represent the pose (position, orientation) of each body, as rational
@@ -36,7 +39,10 @@ namespace multibody {
  q* is the variable θ*. Note that the stereographic projection has a
  singularity at θ = θ* ± π, as s = tan(Δθ/2)=tan(±π/2) is ±infinity.
 
- Currently we only support robots with revolute and weld joints.
+ For prismatic joint, we define s = d - d*, where d is the displacement of the
+ joint, and d* is the joint value in q*.
+
+ Currently we only support robots with revolute, prismatic and weld joints.
 
  Throughout this file, we use the following convention
  1. q denotes the generalized position of the entire robot. It includes the
@@ -101,14 +107,97 @@ class RationalForwardKinematics {
   /** Computes values of s from q_val and q_star_val, while handling the index
    matching between q and s (we don't guarantee that s(i) is computed from
    q(i)).
+   @param angles_wrap_to_inf If set to True, then for a revolute joint whose (θ
+   −θ*) >=π/2 (or <= −π/2), we set the corresponding s to ∞ (or −∞), @default is
+   false.
    */
-  [[nodiscard]] Eigen::VectorXd ComputeSValue(
-      const Eigen::Ref<const Eigen::VectorXd>& q_val,
-      const Eigen::Ref<const Eigen::VectorXd>& q_star_val) const;
+  template <typename Derived>
+  [[nodiscard]] std::enable_if_t<is_eigen_vector<Derived>::value,
+                                 VectorX<typename Derived::Scalar>>
+  ComputeSValue(const Eigen::MatrixBase<Derived>& q_val,
+                const Eigen::Ref<const Eigen::VectorXd>& q_star_val,
+                bool angles_wrap_to_inf = false) const {
+    VectorX<typename Derived::Scalar> s_val(s_.size());
+    using T = typename Derived::Scalar;
+    for (int i = 0; i < s_val.size(); ++i) {
+      const internal::Mobilizer<double>& mobilizer =
+          GetInternalTree(plant_).get_mobilizer(
+              map_s_to_mobilizer_.at(s_[i].get_id()));
+      // the mobilizer cannot be a weld joint since weld joint doesn't introduce
+      // a variable into s_.
+      if (IsRevolute(mobilizer)) {
+        const int q_index = mobilizer.position_start_in_q();
+        const auto delta = (q_val(q_index) - q_star_val(q_index)) / 2;
+        if (angles_wrap_to_inf) {
+          if (delta >= T(M_PI / 2)) {
+            s_val(i) = T(std::numeric_limits<double>::infinity());
+          } else if (delta <= -T(M_PI / 2)) {
+            s_val(i) = T(-std::numeric_limits<double>::infinity());
+          } else {
+            s_val(i) = tan(delta);
+          }
+        } else {
+          s_val(i) = tan(delta);
+        }
+      } else if (IsPrismatic(mobilizer)) {
+        const int q_index = mobilizer.position_start_in_q();
+        s_val(i) = q_val(q_index) - q_star_val(q_index);
+      } else {
+        // Successful construction guarantees nothing but supported mobilizer
+        // types.
+        DRAKE_UNREACHABLE();
+      }
+    }
+    return s_val;
+  }
+
+  /** Computes values of q from s_val and q_star_val, while handling the index
+   matching between q and s (we don't guarantee that s(i) is computed from
+   q(i)).
+   */
+  template <typename Derived>
+  [[nodiscard]] std::enable_if_t<is_eigen_vector<Derived>::value,
+                                 VectorX<typename Derived::Scalar>>
+  ComputeQValue(const Eigen::MatrixBase<Derived>& s_val,
+                const Eigen::Ref<const Eigen::VectorXd>& q_star_val) const {
+    VectorX<typename Derived::Scalar> q_val(s_.size());
+    for (int i = 0; i < s_val.size(); ++i) {
+      const internal::Mobilizer<double>& mobilizer =
+          GetInternalTree(plant_).get_mobilizer(
+              map_s_to_mobilizer_.at(s_[i].get_id()));
+      // the mobilizer cannot be a weld joint since weld joint doesn't introduce
+      // a variable into s_.
+      const int q_index = mobilizer.position_start_in_q();
+      using std::atan2;
+      using std::pow;
+      if (IsRevolute(mobilizer)) {
+        q_val(q_index) =
+            atan2(2 * s_val(i), 1 - pow(s_val(i), 2)) + q_star_val(q_index);
+      } else if (IsPrismatic(mobilizer)) {
+        q_val(q_index) = s_val(i) + q_star_val(q_index);
+      } else {
+        // Successful construction guarantees nothing but supported mobilizer
+        // types.
+        DRAKE_UNREACHABLE();
+      }
+    }
+    return q_val;
+  }
 
   const MultibodyPlant<double>& plant() const { return plant_; }
 
-  const VectorX<symbolic::Variable>& s() const { return s_; }
+  Eigen::Map<const VectorX<symbolic::Variable>> s() const {
+    return Eigen::Map<const VectorX<symbolic::Variable>>(s_.data(), s_.size());
+  }
+
+  /** map_mobilizer_to_s_index_[mobilizer_index] returns the starting index of
+   the mobilizer's variable in s_ (the variable will be contiguous in s for
+   the same mobilizer). If this mobilizer doesn't have a variable in s_ (like
+   the weld joint), then the s index is set to -1.
+   */
+  [[nodiscard]] const std::vector<int> map_mobilizer_to_s_index() const {
+    return map_mobilizer_to_s_index_;
+  }
 
  private:
   /* Computes the pose of a body, connected to its parent body through a
@@ -149,6 +238,14 @@ class RationalForwardKinematics {
                                      const math::RigidTransformd& X_MC,
                                      const Pose<T>& X_AP) const;
 
+  // Computes the pose of the link, connected to its parent link through a
+  // prismatic joint. The displacement of the prismatic joint is d_star + s
+  // along `axis_F`.
+  template <typename T>
+  Pose<T> CalcPrismaticJointChildLinkPose(
+      const Eigen::Ref<const Eigen::Vector3d>& axis_F,
+      const math::RigidTransformd& X_PF, const math::RigidTransformd& X_MC,
+      const Pose<T>& X_AP, double d_star, const symbolic::Variable& d) const;
   /* Given the pose of the parent frame X_AP measured in a frame A, calculates
    the pose of `child` measured as expressed in frame A as a multilinear
    polynomial, with indeterminates being s. s includes s_q and c_q for
@@ -174,10 +271,19 @@ class RationalForwardKinematics {
       const Eigen::Ref<const Eigen::VectorXd>& q_star, BodyIndex parent,
       BodyIndex child, const Pose<symbolic::Polynomial>& X_AP) const;
 
+  /* Determines whether the current joint is revolute. */
+  bool IsRevolute(const internal::Mobilizer<double>& mobilizer) const;
+
+  /* Determines whether the current joint is a weld. */
+  bool IsWeld(const internal::Mobilizer<double>& mobilizer) const;
+
+  /* Determines whether the current joint is prismatic. */
+  bool IsPrismatic(const internal::Mobilizer<double>& mobilizer) const;
+
   const MultibodyPlant<double>& plant_;
   // The variables used in computing the pose as rational functions. s_ are the
   // indeterminates in the rational functions.
-  VectorX<symbolic::Variable> s_;
+  std::vector<symbolic::Variable> s_;
   // Each s(i) is associated with a mobilizer.
   std::unordered_map<symbolic::Variable::Id, internal::MobilizerIndex>
       map_s_to_mobilizer_;
@@ -191,19 +297,20 @@ class RationalForwardKinematics {
   // include s for the revolute joint, it doesn't include s for other joint
   // types (like prismatic joints). See map_s_index_to_angle_index_ and
   // map_angle_to_s_index_ below for how to relate s_angles_ to s.
-  VectorX<symbolic::Variable> s_angles_;
+  std::vector<symbolic::Variable> s_angles_;
   std::vector<symbolic::SinCos> sin_cos_;
+  symbolic::Variables sin_cos_set_;
   VectorX<symbolic::Polynomial> one_plus_s_angles_squared_;
   VectorX<symbolic::Polynomial> two_s_angles_;
   VectorX<symbolic::Polynomial> one_minus_s_angles_squared_;
 
-  VectorX<symbolic::Variable> cos_delta_;
-  VectorX<symbolic::Variable> sin_delta_;
+  std::vector<symbolic::Variable> cos_delta_;
+  std::vector<symbolic::Variable> sin_delta_;
   // s_ could contain both prismatic s and revolute s.
-  // TODO(hongkai.dai): support prismatic joint.
   // s_angles_[map_s_index_to_angle_index_[i]] = s_[i]
   std::unordered_map<int, int> map_s_index_to_angle_index_;
   symbolic::Variables s_variables_;
+  symbolic::Variables s_angle_variables_;
 };
 }  // namespace multibody
 }  // namespace drake

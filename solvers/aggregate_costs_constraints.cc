@@ -201,6 +201,45 @@ void AggregateBoundingBoxConstraints(const MathematicalProgram& prog,
   }
 }
 
+void AggregateDuplicateVariables(const Eigen::SparseMatrix<double>& A,
+                                 const VectorX<symbolic::Variable>& vars,
+                                 Eigen::SparseMatrix<double>* A_new,
+                                 VectorX<symbolic::Variable>* vars_new) {
+  // First select the unique variables from decision_vars.
+  vars_new->resize(vars.rows());
+  // vars_to_vars_new records the mapping from vars to vars_new. Namely
+  // vars[i] = (*vars_new)[vars_to_vars_new[vars[i].get_id()]]
+  std::unordered_map<symbolic::Variable::Id, int> vars_to_vars_new;
+  int unique_var_count = 0;
+  for (int i = 0; i < vars.rows(); ++i) {
+    const bool seen_already = vars_to_vars_new.count(vars(i).get_id());
+    if (!seen_already) {
+      (*vars_new)(unique_var_count) = vars(i);
+      vars_to_vars_new.emplace(vars(i).get_id(), unique_var_count);
+      unique_var_count++;
+    }
+  }
+  // A * vars = A_new * vars_new.
+  // A_new_triplets are the non-zero triplets in A_new.
+  std::vector<Eigen::Triplet<double>> A_new_triplets;
+  A_new_triplets.reserve(A.nonZeros());
+  for (int i = 0; i < A.cols(); ++i) {
+    const int A_new_col = vars_to_vars_new.at(vars(i).get_id());
+    for (Eigen::SparseMatrix<double>::InnerIterator it(A, i); it; ++it) {
+      A_new_triplets.emplace_back(it.row(), A_new_col, it.value());
+    }
+  }
+  *A_new = Eigen::SparseMatrix<double>(A.rows(), unique_var_count);
+  A_new->setFromTriplets(A_new_triplets.begin(), A_new_triplets.end());
+  vars_new->conservativeResize(unique_var_count);
+}
+
+const Binding<QuadraticCost>* FindNonconvexQuadraticCost(
+    const std::vector<Binding<QuadraticCost>>& quadratic_costs) {
+  return internal::FindNonconvexQuadraticCost(quadratic_costs);
+}
+
+namespace internal {
 const Binding<QuadraticCost>* FindNonconvexQuadraticCost(
     const std::vector<Binding<QuadraticCost>>& quadratic_costs) {
   for (const auto& cost : quadratic_costs) {
@@ -211,7 +250,16 @@ const Binding<QuadraticCost>* FindNonconvexQuadraticCost(
   return nullptr;
 }
 
-namespace internal {
+const Binding<QuadraticConstraint>* FindNonconvexQuadraticConstraint(
+    const std::vector<Binding<QuadraticConstraint>>& quadratic_constraints) {
+  for (const auto& constraint : quadratic_constraints) {
+    if (!constraint.evaluator()->is_convex()) {
+      return &constraint;
+    }
+  }
+  return nullptr;
+}
+
 bool CheckConvexSolverAttributes(const MathematicalProgram& prog,
                                  const ProgramAttributes& solver_capabilities,
                                  std::string_view solver_name,
@@ -227,7 +275,7 @@ bool CheckConvexSolverAttributes(const MathematicalProgram& prog,
     return false;
   }
   const Binding<QuadraticCost>* nonconvex_quadratic_cost =
-      FindNonconvexQuadraticCost(prog.quadratic_costs());
+      internal::FindNonconvexQuadraticCost(prog.quadratic_costs());
   if (nonconvex_quadratic_cost != nullptr) {
     if (explanation) {
       *explanation = fmt::format(
@@ -240,6 +288,18 @@ bool CheckConvexSolverAttributes(const MathematicalProgram& prog,
   }
   if (explanation) {
     explanation->clear();
+  }
+  const Binding<QuadraticConstraint>* nonconvex_quadratic_constraint =
+      internal::FindNonconvexQuadraticConstraint(prog.quadratic_constraints());
+  if (nonconvex_quadratic_constraint != nullptr) {
+    if (explanation) {
+      *explanation = fmt::format(
+          "{} is unable to solve because (at least) the quadratic constraint "
+          "{} is non-convex. Either change this constraint to a convex one, or "
+          "switch to a different solver like SNOPT/IPOPT/NLOPT.",
+          solver_name, nonconvex_quadratic_constraint->to_string());
+    }
+    return false;
   }
   return true;
 }

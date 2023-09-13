@@ -62,7 +62,7 @@ TEST_F(UnboundedLinearProgramTest0, TestGurobiUnbounded) {
     EXPECT_EQ(result.get_solution_result(),
               SolutionResult::kInfeasibleOrUnbounded);
     // This code is defined in
-    // https://www.gurobi.com/documentation/9.5/refman/optimization_status_codes.html
+    // https://www.gurobi.com/documentation/10.0/refman/optimization_status_codes.html
     const int GRB_INF_OR_UNBD = 4;
     EXPECT_EQ(result.get_solver_details<GurobiSolver>().optimization_status,
               GRB_INF_OR_UNBD);
@@ -72,11 +72,18 @@ TEST_F(UnboundedLinearProgramTest0, TestGurobiUnbounded) {
     EXPECT_FALSE(result.is_success());
     EXPECT_EQ(result.get_solution_result(), SolutionResult::kUnbounded);
     // This code is defined in
-    // https://www.gurobi.com/documentation/9.5/refman/optimization_status_codes.html
+    // https://www.gurobi.com/documentation/10.0/refman/optimization_status_codes.html
     const int GRB_UNBOUNDED = 5;
     EXPECT_EQ(result.get_solver_details<GurobiSolver>().optimization_status,
               GRB_UNBOUNDED);
     EXPECT_EQ(result.get_optimal_cost(), MathematicalProgram::kUnboundedCost);
+  }
+}
+
+TEST_F(DuplicatedVariableLinearProgramTest1, Test) {
+  GurobiSolver solver;
+  if (solver.is_available()) {
+    CheckSolution(solver);
   }
 }
 
@@ -127,6 +134,13 @@ GTEST_TEST(GurobiTest, TestInitialGuess) {
                                   MatrixCompareType::absolute));
       EXPECT_NEAR(result.get_optimal_cost(), 0, 1E-6);
     }
+  }
+}
+
+GTEST_TEST(TestDuplicatedVariableQuadraticProgram, Test) {
+  GurobiSolver solver;
+  if (solver.available()) {
+    TestDuplicatedVariableQuadraticProgram(solver);
   }
 }
 
@@ -235,8 +249,9 @@ TEST_P(TestEllipsoidsSeparation, TestSOCP) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(GurobiTest, TestEllipsoidsSeparation,
-                        ::testing::ValuesIn(GetEllipsoidsSeparationProblems()));
+INSTANTIATE_TEST_SUITE_P(
+    GurobiTest, TestEllipsoidsSeparation,
+    ::testing::ValuesIn(GetEllipsoidsSeparationProblems()));
 
 TEST_P(TestQPasSOCP, TestSOCP) {
   GurobiSolver gurobi_solver;
@@ -246,7 +261,7 @@ TEST_P(TestQPasSOCP, TestSOCP) {
 }
 
 INSTANTIATE_TEST_SUITE_P(GurobiTest, TestQPasSOCP,
-                        ::testing::ValuesIn(GetQPasSOCPProblems()));
+                         ::testing::ValuesIn(GetQPasSOCPProblems()));
 
 TEST_P(TestFindSpringEquilibrium, TestSOCP) {
   GurobiSolver gurobi_solver;
@@ -283,6 +298,16 @@ GTEST_TEST(TestSOCP, MaximizeGeometricMeanTrivialProblem2) {
 GTEST_TEST(TestSOCP, SmallestEllipsoidCoveringProblem) {
   GurobiSolver solver;
   SolveAndCheckSmallestEllipsoidCoveringProblems(solver, {}, 1E-6);
+}
+
+GTEST_TEST(TestSOCP, TestSocpDuplicatedVariable1) {
+  GurobiSolver solver;
+  TestSocpDuplicatedVariable1(solver, std::nullopt, 1E-6);
+}
+
+GTEST_TEST(TestSOCP, TestSocpDuplicatedVariable2) {
+  GurobiSolver solver;
+  TestSocpDuplicatedVariable2(solver, std::nullopt, 1E-6);
 }
 
 GTEST_TEST(GurobiTest, MultipleThreadsSharingEnvironment) {
@@ -364,7 +389,7 @@ GTEST_TEST(GurobiTest, GurobiErrorCode) {
     DRAKE_EXPECT_THROWS_MESSAGE(solver.Solve(prog, {}, solver_options1),
                                 ".* 'Foo' is an unknown parameter in Gurobi.*");
 
-    // Report error when we pass an incorect value to a valid Gurobi parameter
+    // Report error when we pass an incorrect value to a valid Gurobi parameter
     SolverOptions solver_options2;
     solver_options2.SetOption(solver.solver_id(), "FeasibilityTol", 1E10);
     DRAKE_EXPECT_THROWS_MESSAGE(solver.Solve(prog, {}, solver_options2),
@@ -550,6 +575,11 @@ GTEST_TEST(GurobiTest, QPDualSolution3) {
   TestQPDualSolution3(solver);
 }
 
+GTEST_TEST(GurobiTest, TestEqualityConstrainedQP1) {
+  GurobiSolver solver;
+  TestEqualityConstrainedQP1(solver);
+}
+
 GTEST_TEST(GurobiTest, EqualityConstrainedQPDualSolution1) {
   GurobiSolver solver;
   TestEqualityConstrainedQPDualSolution1(solver);
@@ -573,6 +603,11 @@ GTEST_TEST(GurobiTest, LPDualSolution2) {
 GTEST_TEST(GurobiTest, LPDualSolution3) {
   GurobiSolver solver;
   TestLPDualSolution3(solver);
+}
+
+GTEST_TEST(GurobiTest, LPDualSolution4) {
+  GurobiSolver solver;
+  TestLPDualSolution4(solver);
 }
 
 GTEST_TEST(GurobiTest, SOCPDualSolution1) {
@@ -630,7 +665,7 @@ GTEST_TEST(GurobiTest, SOCPDualSolution2) {
     SolverOptions options;
     options.SetOption(GurobiSolver::id(), "QCPDual", 1);
     const auto result = solver.Solve(prog, {}, options);
-    // By pertubing the constraint1 as x^2 <= 2x + 3 + eps, the optimal cost
+    // By perturbing the constraint1 as x^2 <= 2x + 3 + eps, the optimal cost
     // becomes -1 - sqrt(4+eps). The gradient of the cost w.r.t eps is -1/4.
     EXPECT_TRUE(CompareMatrices(result.GetDualSolution(constraint1),
                                 Vector1d(-1.0 / 4), 1e-8));
@@ -641,10 +676,45 @@ GTEST_TEST(GurobiTest, SOCPDualSolution2) {
   }
 }
 
+GTEST_TEST(GurobiTest, TestDegenerateSOCP) {
+  GurobiSolver solver;
+  if (solver.is_available()) {
+    TestDegenerateSOCP(solver);
+  }
+}
+
 GTEST_TEST(GurobiTest, TestNonconvexQP) {
   GurobiSolver solver;
   if (solver.available()) {
     TestNonconvexQP(solver, true);
+  }
+}
+
+GTEST_TEST(GurobiTest, TestIterationLimit) {
+  // Make sure that when the solver hits the iteration limit, it still reports
+  // the best-effort solution.
+  MathematicalProgram prog;
+  auto x = prog.NewContinuousVariables<4>();
+  prog.AddLorentzConeConstraint(x);
+  auto constraint2 = prog.AddLinearConstraint(x(0) + x(1) + x(2) + x(3) == 2);
+  prog.AddRotatedLorentzConeConstraint(x);
+  prog.AddLinearCost(x(0) + 2 * x(1));
+
+  GurobiSolver solver;
+  if (solver.available()) {
+    SolverOptions solver_options;
+    solver_options.SetOption(solver.id(), "IterationLimit", 1);
+    solver_options.SetOption(solver.id(), "BarIterLimit", 1);
+    solver_options.SetOption(solver.id(), "QCPDual", 1);
+    const auto result = solver.Solve(prog, std::nullopt, solver_options);
+    const auto solver_details = result.get_solver_details<GurobiSolver>();
+    // This code is defined in
+    // https://www.gurobi.com/documentation/10.0/refman/optimization_status_codes.html
+    const int ITERATION_LIMIT = 7;
+    EXPECT_EQ(solver_details.optimization_status, ITERATION_LIMIT);
+    EXPECT_TRUE(std::isfinite(result.get_optimal_cost()));
+    EXPECT_TRUE(result.GetSolution(x).array().isFinite().all());
+    EXPECT_TRUE(result.GetDualSolution(constraint2).array().isFinite().all());
   }
 }
 

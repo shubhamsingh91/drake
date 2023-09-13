@@ -13,9 +13,8 @@
 
 #include <Eigen/Dense>
 
-// Keep this version in sync with drake/tools/workspace/repository.bzl.
-static_assert(EIGEN_VERSION_AT_LEAST(3, 3, 4),
-              "Drake requires Eigen >= v3.3.4.");
+static_assert(EIGEN_VERSION_AT_LEAST(3, 3, 5),
+              "Drake requires Eigen >= v3.3.5.");
 
 #include "drake/common/constants.h"
 #include "drake/common/drake_assert.h"
@@ -147,6 +146,9 @@ using MatrixLikewise = Eigen::Matrix<Scalar,
     Derived::IsRowMajor ? Eigen::RowMajor : Eigen::ColMajor,
     Derived::MaxRowsAtCompileTime, Derived::MaxColsAtCompileTime>;
 
+/// A fully dynamic Eigen stride.
+using StrideX = Eigen::Stride<Eigen::Dynamic, Eigen::Dynamic>;
+
 /// A quaternion templated on scalar type.
 template <typename Scalar>
 using Quaternion = Eigen::Quaternion<Scalar>;
@@ -158,71 +160,6 @@ using AngleAxis = Eigen::AngleAxis<Scalar>;
 /// An Isometry templated on scalar type.
 template <typename Scalar>
 using Isometry3 = Eigen::Transform<Scalar, 3, Eigen::Isometry>;
-
-/// A translation in 3D templated on scalar type.
-template <typename Scalar>
-using Translation3 = Eigen::Translation<Scalar, 3>;
-
-/// A column vector consisting of one twist.
-template <typename Scalar>
-using TwistVector = Eigen::Matrix<Scalar, kTwistSize, 1>;
-
-/// A matrix with one twist per column, and dynamically many columns.
-template <typename Scalar>
-using TwistMatrix = Eigen::Matrix<Scalar, kTwistSize, Eigen::Dynamic>;
-
-/// A six-by-six matrix.
-template <typename Scalar>
-using SquareTwistMatrix = Eigen::Matrix<Scalar, kTwistSize, kTwistSize>;
-
-/// A column vector consisting of one wrench (spatial force) = `[r X f; f]`,
-/// where f is a force (translational force) applied at a point `P` and `r` is
-/// the position vector from a point `O` (called the "moment center") to point
-/// `P`.
-template <typename Scalar>
-using WrenchVector = Eigen::Matrix<Scalar, 6, 1>;
-
-/// EigenSizeMinPreferDynamic<a, b>::value gives the min between compile-time
-/// sizes @p a and @p b. 0 has absolute priority, followed by 1, followed by
-/// Dynamic, followed by other finite values.
-///
-/// Note that this is a type-trait version of EIGEN_SIZE_MIN_PREFER_DYNAMIC
-/// macro in "Eigen/Core/util/Macros.h".
-template <int a, int b>
-struct EigenSizeMinPreferDynamic {
-  // clang-format off
-  static constexpr int value = (a == 0 || b == 0) ? 0 :
-                               (a == 1 || b == 1) ? 1 :
-     (a == Eigen::Dynamic || b == Eigen::Dynamic) ? Eigen::Dynamic :
-                                           a <= b ? a : b;
-  // clang-format on
-};
-
-/// EigenSizeMinPreferFixed is a variant of EigenSizeMinPreferDynamic. The
-/// difference is that finite values now have priority over Dynamic, so that
-/// EigenSizeMinPreferFixed<3, Dynamic>::value gives 3.
-///
-/// Note that this is a type-trait version of EIGEN_SIZE_MIN_PREFER_FIXED macro
-/// in "Eigen/Core/util/Macros.h".
-template <int a, int b>
-struct EigenSizeMinPreferFixed {
-  // clang-format off
-  static constexpr int value = (a == 0 || b == 0) ? 0 :
-                               (a == 1 || b == 1) ? 1 :
-     (a == Eigen::Dynamic && b == Eigen::Dynamic) ? Eigen::Dynamic :
-                            (a == Eigen::Dynamic) ? b :
-                            (b == Eigen::Dynamic) ? a :
-                                           a <= b ? a : b;
-  // clang-format on
-};
-
-/// MultiplyEigenSizes<a, b> gives a * b if both of a and b are fixed
-/// sizes. Otherwise it gives Eigen::Dynamic.
-template <int a, int b>
-struct MultiplyEigenSizes {
-  static constexpr int value =
-      (a == Eigen::Dynamic || b == Eigen::Dynamic) ? Eigen::Dynamic : a * b;
-};
 
 /*
  * Determines if a type is derived from EigenBase<> (e.g. ArrayBase<>,

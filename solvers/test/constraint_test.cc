@@ -1,5 +1,7 @@
 #include "drake/solvers/constraint.h"
 
+#include <limits>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -9,12 +11,13 @@
 #include "drake/common/test_utilities/symbolic_test_util.h"
 #include "drake/math/autodiff.h"
 #include "drake/math/autodiff_gradient.h"
+#include "drake/solvers/test/generic_trivial_constraints.h"
 
-using Eigen::MatrixXd;
-using Eigen::VectorXd;
 using Eigen::Matrix2d;
+using Eigen::MatrixXd;
 using Eigen::Vector2d;
 using Eigen::Vector3d;
+using Eigen::VectorXd;
 using ::testing::HasSubstr;
 using ::testing::Not;
 
@@ -178,6 +181,10 @@ GTEST_TEST(testConstraint, testQuadraticConstraintHessian) {
   QuadraticConstraint constraint1(Q, b, 0, 1);
   EXPECT_TRUE(CompareMatrices(constraint1.Q(), Q));
   EXPECT_TRUE(CompareMatrices(constraint1.b(), b));
+  EXPECT_EQ(constraint1.hessian_type(),
+            QuadraticConstraint::HessianType::kPositiveSemidefinite);
+  // The constraint is non-convex due to the lower bound not being -inf.
+  EXPECT_FALSE(constraint1.is_convex());
   std::ostringstream os;
   constraint1.Display(os, symbolic::MakeVectorContinuousVariable(2, "x"));
   EXPECT_EQ(os.str(),
@@ -197,20 +204,49 @@ GTEST_TEST(testConstraint, testQuadraticConstraintHessian) {
   EXPECT_PRED2(FormulaEqual, constraint1.CheckSatisfied(x_sym),
                0 <= y_sym[0] && y_sym[0] <= 1);
 
-  // Updates constraint with a non-symmetric Hessian.
+  // Updates constraint with a non-symmetric negative definite Hessian.
   // clang-format off
-  Q << 1, 1,
-       0, 1;
+  Q << -1, 1,
+       0, -1;
   // clang-format on
   b << 1, 2;
   constraint1.UpdateCoefficients(Q, b);
   EXPECT_TRUE(CompareMatrices(constraint1.Q(), (Q + Q.transpose()) / 2));
   EXPECT_TRUE(CompareMatrices(constraint1.b(), b));
+  EXPECT_EQ(constraint1.hessian_type(),
+            QuadraticConstraint::HessianType::kNegativeSemidefinite);
+  EXPECT_FALSE(constraint1.is_convex());
 
   // Constructs a constraint with a non-symmetric Hessian.
-  QuadraticConstraint constraint2(Q, b, 0, 1);
+  QuadraticConstraint constraint2(
+      Q, b, 0, kInf, QuadraticConstraint::HessianType::kNegativeSemidefinite);
   EXPECT_TRUE(CompareMatrices(constraint2.Q(), (Q + Q.transpose()) / 2));
   EXPECT_TRUE(CompareMatrices(constraint2.b(), b));
+  EXPECT_EQ(constraint2.hessian_type(),
+            QuadraticConstraint::HessianType::kNegativeSemidefinite);
+  EXPECT_TRUE(constraint2.is_convex());
+
+  // Updates constraints with an indefinite Hessian.
+  // clang-format off
+  Q << 1, 2,
+       2, 3;
+  // clang-format on
+  constraint2.UpdateCoefficients(Q, b);
+  EXPECT_EQ(constraint2.hessian_type(),
+            QuadraticConstraint::HessianType::kIndefinite);
+  EXPECT_FALSE(constraint2.is_convex());
+
+  // Updates constraint with a specified Hessian type.
+  constraint2.UpdateCoefficients(
+      Eigen::Matrix2d::Identity(), b,
+      QuadraticConstraint::HessianType::kPositiveSemidefinite);
+  EXPECT_EQ(constraint2.hessian_type(),
+            QuadraticConstraint::HessianType::kPositiveSemidefinite);
+  EXPECT_FALSE(constraint2.is_convex());
+
+  // Construct a constraint with psd Hessian and lower bound being -inf.
+  QuadraticConstraint constraint3(Eigen::Matrix2d::Identity(), b, -kInf, 1);
+  EXPECT_TRUE(constraint3.is_convex());
 }
 
 void TestLorentzConeEvalConvex(const Eigen::Ref<const Eigen::MatrixXd>& A,
@@ -246,8 +282,7 @@ void TestLorentzConeEvalConvex(const Eigen::Ref<const Eigen::MatrixXd>& A,
   dx_test.col(0) = Eigen::VectorXd::LinSpaced(x_test.rows(), 0, 1);
   dx_test.col(1) = Eigen::VectorXd::LinSpaced(x_test.rows(), 1, 2);
 
-  const AutoDiffVecXd x_autodiff =
-      math::InitializeAutoDiff(x_test, dx_test);
+  const AutoDiffVecXd x_autodiff = math::InitializeAutoDiff(x_test, dx_test);
 
   AutoDiffVecXd y_autodiff1, y_autodiff2;
   cnstr1.Eval(x_autodiff, &y_autodiff1);
@@ -283,13 +318,13 @@ void TestLorentzConeEvalNonconvex(const Eigen::Ref<const Eigen::MatrixXd>& A,
   EXPECT_TRUE(
       CompareMatrices(y, y_expected, 1E-10, MatrixCompareType::absolute));
 
-  bool is_in_cone_expected = (y(0) >= 0) & (y(1) >= 0);
+  bool is_in_cone_expected = (y(0) >= 0) && (y(1) >= 0);
   EXPECT_EQ(is_in_cone, is_in_cone_expected);
   EXPECT_EQ(cnstr.CheckSatisfied(x_test), is_in_cone_expected);
 
   std::ostringstream os;
-  cnstr.Display(
-      os, symbolic::MakeVectorContinuousVariable(cnstr.num_vars(), "x"));
+  cnstr.Display(os,
+                symbolic::MakeVectorContinuousVariable(cnstr.num_vars(), "x"));
   EXPECT_THAT(os.str(), HasSubstr("LorentzConeConstraint\n"));
   EXPECT_THAT(os.str(), HasSubstr("pow"));
   EXPECT_THAT(os.str(), Not(HasSubstr("sqrt")));
@@ -321,15 +356,13 @@ void TestRotatedLorentzConeEval(const Eigen::Ref<const Eigen::MatrixXd> A,
   VectorXd y;
   cnstr.Eval(x_test, &y);
   Eigen::VectorXd z = A * x_test + b;
-  Vector3d y_expected(
-      z(0),
-      z(1),
-      z(0) * z(1) - z.tail(z.size() - 2).squaredNorm());
+  Vector3d y_expected(z(0), z(1),
+                      z(0) * z(1) - z.tail(z.size() - 2).squaredNorm());
   EXPECT_TRUE(
       CompareMatrices(y, y_expected, 1E-10, MatrixCompareType::absolute));
 
-  bool is_in_cone_expected =
-      (z(0) >= 0) & (z(1) >= 0) & (z(0) * z(1) >= z.tail(z.size() - 2).norm());
+  bool is_in_cone_expected = (z(0) >= 0) && (z(1) >= 0) &&
+                             (z(0) * z(1) >= z.tail(z.size() - 2).norm());
   EXPECT_EQ(is_in_cone, is_in_cone_expected);
   EXPECT_EQ(cnstr.CheckSatisfied(x_test), is_in_cone_expected);
 
@@ -343,8 +376,8 @@ void TestRotatedLorentzConeEval(const Eigen::Ref<const Eigen::MatrixXd> A,
   EXPECT_EQ(cnstr.CheckSatisfied(x_taylor), is_in_cone_expected);
 
   std::ostringstream os;
-  cnstr.Display(
-      os, symbolic::MakeVectorContinuousVariable(cnstr.num_vars(), "x"));
+  cnstr.Display(os,
+                symbolic::MakeVectorContinuousVariable(cnstr.num_vars(), "x"));
   EXPECT_THAT(os.str(), HasSubstr("RotatedLorentzConeConstraint\n"));
   EXPECT_THAT(os.str(), HasSubstr("pow"));
 
@@ -588,9 +621,9 @@ GTEST_TEST(testConstraint, testExpressionConstraint) {
   Variable x2{"x2"};
 
   Vector3<Variable> vars{x0, x1, x2};
-  Vector2<Expression> e{ 1. + x0*x0, x1*x1 + x2 };
+  Vector2<Expression> e{1. + x0 * x0, x1 * x1 + x2};
 
-  ExpressionConstraint constraint(e, Vector2d::Zero(), 2.*Vector2d::Ones());
+  ExpressionConstraint constraint(e, Vector2d::Zero(), 2. * Vector2d::Ones());
 
   const VectorX<symbolic::Expression>& expressions{constraint.expressions()};
   ASSERT_EQ(expressions.size(), 2);
@@ -678,9 +711,10 @@ class SimpleEvaluator : public EvaluatorBase {
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(SimpleEvaluator)
   SimpleEvaluator() : EvaluatorBase(2, 3) {
     c_.resize(2, 3);
-    c_ <<
-        1, 2, 3,
-        4, 5, 6;
+    // clang-format off
+    c_ << 1, 2, 3,
+          4, 5, 6;
+    // clang-format on
   }
 
  protected:
@@ -721,8 +755,10 @@ GTEST_TEST(testConstraint, testEvaluatorConstraint) {
   x << 7, 8, 9;
   VectorXd y(2);
   MatrixXd c(2, 3);
+  // clang-format off
   c << 1, 2, 3,
        4, 5, 6;
+  // clang-format on
   const VectorXd y_expected = c * x;
   constraint.Eval(x, &y);
   EXPECT_EQ(y_expected, y);
@@ -759,14 +795,13 @@ GTEST_TEST(testConstraint, testExponentialConeConstraint) {
   Eigen::Vector2d y_expected;
   y_expected(0) = z(0) - z(1) * std::exp(z(2) / z(1));
   y_expected(1) = z(1);
-  const double tol = 5 * std::numeric_limits<double>::epsilon();
+  const double tol = 8.0 * std::numeric_limits<double>::epsilon();
   EXPECT_TRUE(CompareMatrices(y, y_expected, tol));
 
   // Check autodiff evaluation.
   Eigen::MatrixXd dx(2, 1);
   dx << 1, 1;
-  const auto x_autodiff = math::InitializeAutoDiff(
-      Eigen::VectorXd(x), dx);
+  const auto x_autodiff = math::InitializeAutoDiff(Eigen::VectorXd(x), dx);
   AutoDiffVecXd y_autodiff;
   constraint.Eval(x_autodiff, &y_autodiff);
   // Now compute the gradient manually.
@@ -776,9 +811,217 @@ GTEST_TEST(testConstraint, testExponentialConeConstraint) {
       z_autodiff(0) - z_autodiff(1) * exp(z_autodiff(2) / z_autodiff(1));
   y_autodiff_expected(1) = z_autodiff(1);
   EXPECT_TRUE(CompareMatrices(math::ExtractValue(y_autodiff), y_expected, tol));
-  EXPECT_TRUE(CompareMatrices(
-      math::ExtractGradient(y_autodiff),
-      math::ExtractGradient(y_autodiff_expected), tol));
+  EXPECT_TRUE(CompareMatrices(math::ExtractGradient(y_autodiff),
+                              math::ExtractGradient(y_autodiff_expected), tol));
+}
+
+/* Note: To render the latex string output with the most relevant engine, open
+a jupyter notebook and run, e.g.:
+```
+from IPython.display import Markdown, display
+latex = "0 \\le (1.2 + x_{0} + 2x_{1})"
+display(Markdown(f"$${latex}$$"))
+```
+with the appropriate latex string. */
+
+GTEST_TEST(ToLatex, GenericConstraint) {
+  test::GenericTrivialConstraint1 c;
+  c.set_description("test");
+  Vector3<Variable> vars = symbolic::MakeVectorVariable<3>("x");
+  EXPECT_EQ(
+      c.ToLatex(vars),
+      "\\text{GenericTrivialConstraint1}(x_{0}, x_{1}, x_{2}) \\tag{test}");
+}
+
+GTEST_TEST(ToLatex, LinearConstraint) {
+  Matrix2d A;
+  A << 1, 2, 3, 4;
+  const Vector2d lb(-1, -2);
+  const Vector2d ub(1, kInf);
+  LinearConstraint c(A, lb, ub);
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(c.ToLatex(vars),
+            "\\begin{bmatrix} -1 \\\\ -2 \\end{bmatrix} \\le \\begin{bmatrix} "
+            "1 & 2 \\\\ 3 & 4 \\end{bmatrix} \\begin{bmatrix} x_{0} \\\\ x_{1} "
+            "\\end{bmatrix} \\le \\begin{bmatrix} 1 \\\\ \\infty "
+            "\\end{bmatrix} \\tag{test}");
+
+  // Trivial lower or upper bounds are not displayed.
+  LinearConstraint c_no_lb(A, Vector2d::Constant(-kInf), ub);
+  EXPECT_EQ(c_no_lb.ToLatex(vars),
+            "\\begin{bmatrix} 1 & 2 \\\\ 3 & 4 \\end{bmatrix} \\begin{bmatrix} "
+            "x_{0} \\\\ x_{1} \\end{bmatrix} \\le \\begin{bmatrix} 1 \\\\ "
+            "\\infty \\end{bmatrix}");
+  LinearConstraint c_no_ub(A, lb, Vector2d::Constant(kInf));
+  EXPECT_EQ(c_no_ub.ToLatex(vars),
+            "\\begin{bmatrix} -1 \\\\ -2 \\end{bmatrix} \\le \\begin{bmatrix} "
+            "1 & 2 \\\\ 3 & 4 \\end{bmatrix} \\begin{bmatrix} x_{0} \\\\ x_{1} "
+            "\\end{bmatrix}");
+
+  // LinearEqualityConstraint sets lb == ub.
+  LinearEqualityConstraint c_eq(A, lb);
+  EXPECT_EQ(
+      c_eq.ToLatex(vars),
+      "\\begin{bmatrix} 1 & 2 \\\\ 3 & 4 \\end{bmatrix} \\begin{bmatrix} x_{0} "
+      "\\\\ x_{1} \\end{bmatrix} = \\begin{bmatrix} -1 \\\\ -2 \\end{bmatrix}");
+
+  // Scalar constraints are a special case.
+  LinearConstraint c_scalar(A.row(0), Vector1d{-1}, Vector1d{1});
+  EXPECT_EQ(c_scalar.ToLatex(vars), "-1 \\le (x_{0} + 2x_{1}) \\le 1");
+}
+
+GTEST_TEST(ToLatex, BoundingBoxConstraint) {
+  const Vector2d lb(-1, -2);
+  const Vector2d ub(1, kInf);
+  BoundingBoxConstraint c(lb, ub);
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(c.ToLatex(vars),
+            "\\begin{bmatrix} -1 \\\\ -2 \\end{bmatrix} \\le \\begin{bmatrix} "
+            "x_{0} \\\\ x_{1} \\end{bmatrix} \\le \\begin{bmatrix} 1 \\\\ "
+            "\\infty \\end{bmatrix} \\tag{test}");
+
+  // Scalar constraints are a special case.
+  BoundingBoxConstraint c_scalar(Vector1d{-1}, Vector1d{1});
+  EXPECT_EQ(c_scalar.ToLatex(vars.head<1>()), "-1 \\le x_{0} \\le 1");
+}
+
+GTEST_TEST(ToLatex, QuadraticConstraint) {
+  Matrix2d Q;
+  Q << 1, 2, 2, 4;
+  Vector2d b{3, 5};
+  const double lb = -1;
+  const double ub = 1;
+  QuadraticConstraint c(Q, b, lb, ub);
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(c.ToLatex(vars),
+            "-1 \\le \\begin{bmatrix} x_{0} \\\\ x_{1} \\end{bmatrix}^T "
+            "\\begin{bmatrix} 0.500 & 1 \\\\ 1 & 2 \\end{bmatrix} "
+            "\\begin{bmatrix} x_{0} "
+            "\\\\ x_{1} \\end{bmatrix} + (3x_{0} + 5x_{1}) \\le 1 \\tag{test}");
+
+  // xᵀx = 1.
+  QuadraticConstraint c_eq(2 * Matrix2d::Identity(), Vector2d::Zero(), 1, 1);
+  EXPECT_EQ(c_eq.ToLatex(vars),
+            "\\begin{bmatrix} x_{0} \\\\ x_{1} \\end{bmatrix}^T "
+            "\\begin{bmatrix} 1 & 0 \\\\ 0 & 1 \\end{bmatrix} \\begin{bmatrix} "
+            "x_{0} \\\\ x_{1} \\end{bmatrix} = 1");
+}
+
+GTEST_TEST(ToLatex, PolynomialConstraint) {
+  const Polynomiald x("x");
+  const Polynomiald y("y");
+  const Polynomiald poly = (x - 1) * (x - 1) + (y + 2) * (y + 2);
+  const std::vector<Polynomiald::VarType> var_mapping = {
+      x.GetSimpleVariable(), y.GetSimpleVariable()};
+  PolynomialConstraint c(Vector1<Polynomiald>(poly), var_mapping, Vector1d{-1},
+                         Vector1d{1});
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  // TODO(russt): Improve this (or perhaps even deprecate the constraint type).
+  // PolynomialConstraint doesn't currently support Expression.
+  EXPECT_EQ(c.ToLatex(vars),
+            "\\text{PolynomialConstraint}(x_{0}, x_{1}) \\tag{test}");
+}
+
+GTEST_TEST(ToLatex, LorentzConeConstraints) {
+  MatrixXd A(4, 2);
+  // clang-format off
+  A << 1, 2,
+       3, 4,
+       5, 6,
+       7, 8;
+  // clang-format on
+  VectorXd b(4);
+  b << 1.2, 3.4, 5.6, 7.8;
+  LorentzConeConstraint lc(A, b);
+  lc.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(lc.ToLatex(vars, 1),
+            "\\left|\\begin{bmatrix} (3.4 + 3x_{0} + 4x_{1}) \\\\ (5.6 + "
+            "5x_{0} + 6x_{1}) \\\\ (7.8 + 7x_{0} + 8x_{1}) "
+            "\\end{bmatrix}\\right|_2 \\le (1.2 + x_{0} + 2x_{1}) \\tag{test}");
+
+  RotatedLorentzConeConstraint rlc(A, b);
+  rlc.set_description("test");
+  EXPECT_EQ(rlc.ToLatex(vars, 1),
+            "0 \\le (1.2 + x_{0} + 2x_{1}),\\\\ 0 \\le (3.4 + 3x_{0} + "
+            "4x_{1}),\\\\ \\left|\\begin{bmatrix} (5.6 + 5x_{0} + 6x_{1}) \\\\ "
+            "(7.8 + 7x_{0} + 8x_{1}) \\end{bmatrix}\\right|_2^2 \\le (1.2 + "
+            "x_{0} + 2x_{1}) (3.4 + 3x_{0} + 4x_{1}) \\tag{test}");
+}
+
+GTEST_TEST(ToLatex, LinearComplementarityConstraint) {
+  Eigen::Matrix2d M = Eigen::Matrix2d::Identity();
+  Eigen::Vector2d q(-1, -1);
+
+  LinearComplementarityConstraint c(M, q);
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(c.ToLatex(vars),
+            "0 \\le \\begin{bmatrix} x_{0} \\\\ x_{1} \\end{bmatrix} \\perp "
+            "\\begin{bmatrix} (-1 + x_{0}) \\\\ (-1 + x_{1}) \\end{bmatrix} "
+            "\\ge 0 \\tag{test}");
+}
+
+GTEST_TEST(ToLatex, PositiveSemidefiniteConstraint) {
+  Variable x{"x"}, y{"y"}, z{"z"};
+  Matrix2<Variable> S;
+  S << x, y, y, z;
+  PositiveSemidefiniteConstraint c(2);
+  c.set_description("test");
+  Vector4<Variable> vars{x, y, y, z};
+  EXPECT_EQ(c.ToLatex(vars),
+            "\\begin{bmatrix} x & y \\\\ y & z \\end{bmatrix} \\succeq 0 "
+            "\\tag{test}");
+}
+
+GTEST_TEST(ToLatex, LinearMatrixInequalityConstraint) {
+  Eigen::Matrix2d F0 = 2 * Eigen::Matrix2d::Identity();
+  Eigen::Matrix2d F1;
+  F1 << 1, 1, 1, 1;
+  Eigen::Matrix2d F2;
+  F2 << 1, 2, 2, 1;
+  LinearMatrixInequalityConstraint c({F0, F1, F2});
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(
+      c.ToLatex(vars),
+      "\\begin{bmatrix} (2 + x_{0} + x_{1}) & (x_{0} + 2x_{1}) \\\\ (x_{0} + "
+      "2x_{1}) & (2 + x_{0} + x_{1}) \\end{bmatrix} \\succeq 0 \\tag{test}");
+}
+
+GTEST_TEST(ToLatex, ExpressionConstraint) {
+  Vector2<Variable> x = symbolic::MakeVectorVariable<2>("x");
+  ExpressionConstraint c_scalar(Vector1<Expression>{1.2 + x(0) + 2 * x(1)},
+                                Vector1d{-1.2}, Vector1d{0.3});
+  c_scalar.set_description("test");
+  EXPECT_EQ(c_scalar.ToLatex(c_scalar.vars(), 1),
+            "-1.2 \\le (1.2 + x_{0} + 2x_{1}) \\le 0.3 \\tag{test}");
+
+  ExpressionConstraint c_vector(
+      Vector2<Expression>{0.1 + x(0), 3 * x(0) * x(1)}, Vector2d{-1, -2},
+      Vector2d{1, 2});
+  EXPECT_EQ(c_vector.ToLatex(c_vector.vars(), 1),
+            "\\begin{bmatrix} -1 \\\\ -2 \\end{bmatrix} \\le \\begin{bmatrix} "
+            "(0.1 + x_{0}) \\\\ 3 x_{0} x_{1} \\end{bmatrix} \\le "
+            "\\begin{bmatrix} 1 \\\\ 2 \\end{bmatrix}");
+}
+
+GTEST_TEST(ToLatex, ExponentialConeConstraint) {
+  Eigen::SparseMatrix<double> A(3, 2);
+  A.coeffRef(0, 0) = 2;
+  A.coeffRef(1, 1) = 3;
+  A.coeffRef(2, 0) = 1;
+  Eigen::Vector3d b(1, 2, 3);
+  ExponentialConeConstraint c(A, b);
+  c.set_description("test");
+  Vector2<Variable> vars = symbolic::MakeVectorVariable<2>("x");
+  EXPECT_EQ(c.ToLatex(vars),
+            "0 \\le (2 + 3x_{1}),\\\\ (1 + 2x_{0}) \\le (2 + 3x_{1}) "
+            "e^{\\frac{(3 + x_{0})}{(2 + 3x_{1})}} \\tag{test}");
 }
 
 }  // namespace

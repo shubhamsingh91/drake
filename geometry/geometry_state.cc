@@ -19,6 +19,7 @@
 #include "drake/geometry/proximity_properties.h"
 #include "drake/geometry/render/render_engine.h"
 #include "drake/geometry/utilities.h"
+#include "drake/math/autodiff_gradient.h"
 
 namespace drake {
 namespace geometry {
@@ -35,7 +36,6 @@ using render::ColorRenderCamera;
 using render::DepthRenderCamera;
 using std::make_pair;
 using std::make_unique;
-using std::move;
 using std::set;
 using std::string;
 using std::swap;
@@ -137,10 +137,112 @@ GeometryState<T>::GeometryState()
   source_root_frame_map_[self_source_] = {world};
 }
 
+namespace {
+
+// Helper for the scalar-converting copy constructor.
+// Copies the argument to use a different scalar type U => T.
+// See #13618 and related for a possible generic replacement.
+template <typename T, typename U>
+static VectorX<T> ChangeScalarType(const VectorX<U>& other) {
+  if constexpr (std::is_same_v<T, U>) {
+    return other;
+  } else if constexpr (std::is_same_v<U, AutoDiffXd>) {
+    return math::DiscardZeroGradient(other);
+  } else {
+    return ExtractDoubleOrThrow(other);
+  }
+}
+
+// Helper for the scalar-converting copy constructor.
+// Copies the argument to use a different scalar type U => T.
+// See #13618 and related for a possible generic replacement.
+template <typename T, typename U>
+static RigidTransform<T> ChangeScalarType(const RigidTransform<U>& other) {
+  if constexpr (std::is_same_v<T, U>) {
+    return other;
+  } else if constexpr (std::is_same_v<U, AutoDiffXd>) {
+    return RigidTransform<T>(math::DiscardZeroGradient(other.GetAsMatrix34()));
+  } else {
+    return RigidTransform<T>(ExtractDoubleOrThrow(other.GetAsMatrix34()));
+  }
+}
+
+}  // namespace
+
+// It is _vitally_ important that all members are _explicitly_ accounted for
+// (either in the initialization list or in the body). Failure to do so will
+// lead to errors in the converted GeometryState instance.
+template <typename T>
+template <typename U>
+GeometryState<T>::GeometryState(const GeometryState<U>& source)
+    : self_source_(source.self_source_),
+      source_frame_id_map_(source.source_frame_id_map_),
+      source_deformable_geometry_id_map_(
+          source.source_deformable_geometry_id_map_),
+      source_frame_name_map_(source.source_frame_name_map_),
+      source_root_frame_map_(source.source_root_frame_map_),
+      source_names_(source.source_names_),
+      source_anchored_geometry_map_(source.source_anchored_geometry_map_),
+      frames_(source.frames_),
+      geometries_(source.geometries_),
+      frame_index_to_id_map_(source.frame_index_to_id_map_),
+      geometry_engine_(
+          std::move(source.geometry_engine_->template ToScalarType<T>())),
+      render_engines_(source.render_engines_),
+      geometry_version_(source.geometry_version_) {
+  auto convert_pose_vector = [](const std::vector<RigidTransform<U>>& s,
+                                std::vector<RigidTransform<T>>* d) {
+    std::vector<RigidTransform<T>>& dest = *d;
+    dest.resize(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+      dest[i] = ChangeScalarType<T>(s[i]);
+    }
+  };
+  // TODO(xuchenhan-tri): The scalar conversion of KinematicsData should be
+  // handled by the KinematicsData class.
+  convert_pose_vector(source.kinematics_data_.X_PFs, &kinematics_data_.X_PFs);
+  convert_pose_vector(source.kinematics_data_.X_WFs, &kinematics_data_.X_WFs);
+
+  // Now convert the id -> pose map.
+  {
+    std::unordered_map<GeometryId, RigidTransform<T>>& dest =
+        kinematics_data_.X_WGs;
+    const std::unordered_map<GeometryId, RigidTransform<U>>& s =
+        source.kinematics_data_.X_WGs;
+    for (const auto& id_pose_pair : s) {
+      const GeometryId id = id_pose_pair.first;
+      const RigidTransform<U>& X_WG_source = id_pose_pair.second;
+      dest.insert({id, ChangeScalarType<T>(X_WG_source)});
+    }
+  }
+
+  // Now convert the id -> configuration map.
+  {
+    std::unordered_map<GeometryId, VectorX<T>>& dest = kinematics_data_.q_WGs;
+    const std::unordered_map<GeometryId, VectorX<U>>& s =
+        source.kinematics_data_.q_WGs;
+    for (const auto& id_configuration_pair : s) {
+      const GeometryId id = id_configuration_pair.first;
+      const VectorX<U>& q_WG_source = id_configuration_pair.second;
+      dest.insert({id, ChangeScalarType<T>(q_WG_source)});
+    }
+  }
+}
+template <typename T>
+std::vector<GeometryId> GeometryState<T>::GetAllGeometryIds() const {
+  std::vector<GeometryId> ids;
+  ids.reserve(geometries_.size());
+  for (const auto& id_geometry_pair : geometries_) {
+    ids.push_back(id_geometry_pair.first);
+  }
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
 template <typename T>
 unordered_set<GeometryId> GeometryState<T>::GetGeometryIds(
       const GeometrySet& geometry_set, const std::optional<Role>& role) const {
-  return CollectIds(geometry_set, role);
+  return CollectIds(geometry_set, role, CollisionFilterScope::kAll);
 }
 
 template <typename T>
@@ -215,6 +317,20 @@ GeometryState<T>::GetCollisionCandidates() const {
     }
   }
   return pairs;
+}
+
+template <typename T>
+std::vector<SourceId> GeometryState<T>::GetAllSourceIds() const {
+  std::vector<SourceId> result;
+  result.reserve(source_frame_id_map_.size());
+  result.push_back(self_source_);
+  for (const auto& [source_id, _] : source_names_) {
+    if (source_id != self_source_) {
+      result.push_back(source_id);
+    }
+  }
+  std::sort(result.begin() + 1, result.end());
+  return result;
 }
 
 template <typename T>
@@ -364,17 +480,27 @@ GeometryId GeometryState<T>::GetGeometryIdByName(
 
   if (count == 1) return result;
   if (count < 1) {
-    throw std::logic_error("The frame '" + frame_name + "' (" +
-        to_string(frame_id) + ") has no geometry with the role '" +
-        to_string(role) + "' and the canonical name '" + canonical_name + "'");
+    std::vector<std::string_view> names;
+    for (GeometryId geometry_id : frame.child_geometries()) {
+      const InternalGeometry& geometry = geometries_.at(geometry_id);
+      if (geometry.has_role(role)) {
+        names.emplace_back(geometry.name());
+      }
+    }
+    throw std::logic_error(fmt::format(
+        "The frame '{}' ({}) has no geometry with the role '{}' and the "
+        "canonical name '{}'. The names associated with this frame/role are "
+        "{{{}}}.",
+        frame_name, frame_id, role, canonical_name, fmt::join(names, ", ")));
   }
   // This case should only be possible for unassigned geometries - internal
   // invariants require unique names for actual geometries with the _same_
   // role on the same frame.
   DRAKE_DEMAND(role == Role::kUnassigned);
-  throw std::logic_error("The frame '" + frame_name + "' (" +
-      to_string(frame_id) + ") has multiple geometries with the role '" +
-      to_string(role) + "' and the canonical name '" + canonical_name + "'");
+  throw std::logic_error(
+      fmt::format("The frame '{}' ({}) has multiple geometries with the role "
+                  "'{}' and the canonical name '{}'",
+                  frame_name, frame_id, role, canonical_name));
 }
 
 template <typename T>
@@ -424,13 +550,6 @@ const math::RigidTransform<double>& GeometryState<T>::GetPoseInFrame(
     GeometryId geometry_id) const {
   const auto& geometry = GetValueOrThrow(geometry_id, geometries_);
   return geometry.X_FG();
-}
-
-template <typename T>
-const math::RigidTransform<double>& GeometryState<T>::GetPoseInParent(
-    GeometryId geometry_id) const {
-  const auto& geometry = GetValueOrThrow(geometry_id, geometries_);
-  return geometry.X_PG();
 }
 
 template <typename T>
@@ -505,12 +624,12 @@ bool GeometryState<T>::IsDeformableGeometry(GeometryId id) const {
 
 template <typename T>
 std::vector<GeometryId> GeometryState<T>::GetAllDeformableGeometryIds() const {
-  std::vector<GeometryId> deformable_geometries;
+  std::vector<GeometryId> ids;
   for (const auto& it : source_deformable_geometry_id_map_) {
-    deformable_geometries.insert(
-        deformable_geometries.end(), it.second.begin(), it.second.end());
+    ids.insert(ids.end(), it.second.begin(), it.second.end());
   }
-  return deformable_geometries;
+  std::sort(ids.begin(), ids.end());
+  return ids;
 }
 
 template <typename T>
@@ -670,6 +789,34 @@ FrameId GeometryState<T>::RegisterFrame(SourceId source_id, FrameId parent_id,
 }
 
 template <typename T>
+void GeometryState<T>::RenameFrame(FrameId frame_id, const std::string& name) {
+  FindOrThrow(frame_id, frames_, [frame_id]() {
+    return "Cannot rename frame with invalid frame id: " +
+        to_string(frame_id);
+  });
+  InternalFrame& frame = frames_.at(frame_id);
+  const std::string old_name(frame.name());
+  if (old_name == name) { return; }
+
+  SourceId source_id = frame.source_id();
+
+  // Edit source_frame_name_map_.
+  FrameNameSet& f_name_set = source_frame_name_map_.at(source_id);
+  f_name_set.erase(old_name);
+  const auto& [iterator, was_inserted] =
+      f_name_set.insert(std::string(name));
+  if (!was_inserted) {
+    throw std::logic_error(
+        fmt::format("Renaming frame from '{}'"
+                    " to an already existing name '{}'",
+                    old_name, name));
+  }
+
+  // Edit internal frame object.
+  frame.set_name(name);
+}
+
+template <typename T>
 GeometryId GeometryState<T>::RegisterGeometry(
     SourceId source_id, FrameId frame_id,
     std::unique_ptr<GeometryInstance> geometry) {
@@ -738,48 +885,80 @@ GeometryId GeometryState<T>::RegisterDeformableGeometry(
 }
 
 template <typename T>
-GeometryId GeometryState<T>::RegisterGeometryWithParent(
-    SourceId source_id, GeometryId parent_id,
-    std::unique_ptr<GeometryInstance> geometry) {
-  // There are three error conditions in the doxygen:
-  //    1. geometry == nullptr,
-  //    2. source_id is not a registered source, and
-  //    3. parent_id doesn't belong to source_id.
-  //
-  // Only #1 is tested directly. #2 and #3 are tested implicitly during the act
-  // of registering the geometry.
-
+void GeometryState<T>::RenameGeometry(GeometryId geometry_id,
+                                      const std::string& name) {
+  InternalGeometry* geometry = GetMutableGeometry(geometry_id);
   if (geometry == nullptr) {
     throw std::logic_error(
-        "Registering null geometry to geometry " + to_string(parent_id) +
-            ", on source " + to_string(source_id) + ".");
+        "Cannot rename geometry with invalid geometry id: "
+        + to_string(geometry_id));
+  }
+  if (geometry->name() == name) { return; }
+
+  // Check for name uniqueness in all assigned roles. Note: if the universe of
+  // roles grows, this iteration will need to grow as well.
+  for (Role role : {Role::kProximity, Role::kIllustration, Role::kPerception}) {
+    if (geometry->has_role(role)) {
+      ThrowIfNameExistsInRole(geometry->frame_id(), role, name);
+    }
   }
 
-  // This confirms that parent_id exists at all.
-  InternalGeometry& parent_geometry =
-      GetMutableValueOrThrow(parent_id, &geometries_);
-  FrameId frame_id = parent_geometry.frame_id();
+  // Edit internal geometry object.
+  geometry->set_name(name);
+}
 
-  // This implicitly confirms that source_id is registered (condition #2) and
-  // that frame_id belongs to source_id. By construction, parent_id must
-  // belong to the same source as frame_id, so this tests condition #3.
-  GeometryId new_id = RegisterGeometry(source_id, frame_id, move(geometry));
+template <typename T>
+void GeometryState<T>::ChangeShape(SourceId source_id, GeometryId geometry_id,
+                                   const Shape& shape,
+                                   std::optional<RigidTransformd> X_FG) {
+  if (!BelongsToSource(geometry_id, source_id)) {
+    throw std::logic_error("Given geometry id " + to_string(geometry_id) +
+                           " does not belong to the given source id " +
+                           to_string(source_id));
+  }
+  InternalGeometry* geometry = GetMutableGeometry(geometry_id);
+  // Must be non-null, otherwise, we never would've gotten past the
+  // `BelongsToSource()` call.
+  DRAKE_DEMAND(geometry != nullptr);
 
-  // RegisterGeometry stores X_PG into X_FG_ (having assumed that  the
-  // parent was a frame). This replaces the stored X_PG value with the
-  // semantically correct value X_FG by concatenating X_FP with X_PG.
+  // TODO(SeanCurtis-TRI) Allow changing deformable geometries after the fact;
+  // this would require coordination with MbP because the state of the
+  // deformable object  must be consistent between the two systems; the size of
+  // the data in the corresponding port would have to change on both sides.
+  if (geometry->is_deformable()) {
+    throw std::logic_error(
+        "Cannot use ChangeShape() to change the shape of deformable "
+        "geometries.");
+  }
 
-  // Transform pose relative to geometry, to pose relative to frame.
-  InternalGeometry& new_geometry = geometries_[new_id];
-  // The call to `RegisterGeometry()` above stashed the pose X_PG into the
-  // X_FG_ vector assuming the parent was the frame. Replace it by concatenating
-  // its pose in parent, with its parent's pose in frame. NOTE: the pose is no
-  // longer available from geometry because of the `move(geometry)`.
-  const RigidTransform<double>& X_PG = new_geometry.X_FG();
-  const RigidTransform<double>& X_FP = parent_geometry.X_FG();
-  new_geometry.set_geometry_parent(parent_id, X_FP * X_PG);
-  parent_geometry.add_child(new_id);
-  return new_id;
+  geometry->SetShape(shape);
+  if (X_FG.has_value()) {
+    // As documented on SceneGraph::SetShape(); use the old pose unless
+    // explicitly changed.
+    geometry->set_pose(*X_FG);
+  }
+  // We've changed pose and shape; now we just need to notify the various
+  // engines to update themselves.
+  if (geometry->has_proximity_role()) {
+    // Proximity engine is best handled by removal and re-addition; we use the
+    // unchecked version because we just need the engine mechanism; no
+    // further GeometryState checking.
+    RemoveFromProximityEngineUnchecked(*geometry);
+    AddToProximityEngineUnchecked(*geometry);
+  }
+  if (geometry->has_illustration_role()) {
+    // Illustration has no "engine"; it's just the InternalGeometry. All
+    // reifications of illustration geometry happen outside of SceneGraph. We
+    // just need to let them know that the work is necessary.
+    geometry_version_.modify_illustration();
+  }
+  if (geometry->has_perception_role()) {
+    // Render engines are best handled by removal and re-addition; we use the
+    // unchecked version because we just need the engine mechanism; no
+    // further GeometryState checking.
+    RemoveFromAllRenderersUnchecked(geometry_id);
+    AddToCompatibleRenderersUnchecked(*geometry);
+  }
 }
 
 template <typename T>
@@ -799,7 +978,21 @@ void GeometryState<T>::RemoveGeometry(SourceId source_id,
             "source " + to_string(source_id) + ", but the geometry doesn't "
             "belong to that source.");
   }
-  RemoveGeometryUnchecked(geometry_id, RemoveGeometryOrigin::kGeometry);
+
+  const InternalGeometry& geometry = GetValueOrThrow(geometry_id, geometries_);
+  auto& frame = GetMutableValueOrThrow(geometry.frame_id(), &frames_);
+  frame.remove_child(geometry_id);
+
+  RemoveProximityRole(geometry_id);
+  RemovePerceptionRole(geometry_id);
+  RemoveIllustrationRole(geometry_id);
+
+  // Clean up state collections.
+  kinematics_data_.X_WGs.erase(geometry_id);
+  kinematics_data_.q_WGs.erase(geometry_id);
+
+  // Remove from the geometries.
+  geometries_.erase(geometry_id);
 }
 
 template <typename T>
@@ -851,11 +1044,13 @@ void GeometryState<T>::AssignRole(SourceId source_id, GeometryId geometry_id,
       ids_for_filtering.Add(geometry.frame_id());
       // Apply collision filter between geometry id and any geometries that have
       // been identified. If none have been identified, this makes no changes.
+      // Per public documentation of SceneGraph, we exclude deformable
+      // geometries and only filter among rigid geometries.
       geometry_engine_->collision_filter().Apply(
-          CollisionFilterDeclaration().ExcludeBetween(GeometrySet(geometry_id),
-                                                      ids_for_filtering),
-          [this](const GeometrySet& set) {
-            return this->CollectIds(set, Role::kProximity);
+          CollisionFilterDeclaration(CollisionFilterScope::kOmitDeformable)
+              .ExcludeBetween(GeometrySet(geometry_id), ids_for_filtering),
+          [this](const GeometrySet& set, CollisionFilterScope scope) {
+            return this->CollectIds(set, Role::kProximity, scope);
           },
           true /* is_invariant */);
     } break;
@@ -886,33 +1081,15 @@ void GeometryState<T>::AssignRole(SourceId source_id, GeometryId geometry_id,
   // TODO(SeanCurtis-TRI): To support RoleAssign::kReplace, the render engines
   //  need to handle these changes.
 
-  auto accepting_renderers =
-      properties.GetPropertyOrDefault("renderer", "accepting", set<string>{});
-
   geometry.SetRole(std::move(properties));
 
-  const RigidTransformd& X_WG =
-      convert_to_double(kinematics_data_.X_WGs.at(geometry_id));
-  bool added_to_renderer{false};
-  for (auto& [name, engine] : render_engines_) {
-    if (accepting_renderers.empty() || accepting_renderers.count(name) > 0) {
-      added_to_renderer =
-          engine->RegisterVisual(
-              geometry_id, geometry.shape(), *geometry.perception_properties(),
-              X_WG, geometry.is_dynamic()) ||
-          added_to_renderer;
-    }
-  }
+  const bool added_to_renderer = AddToCompatibleRenderersUnchecked(geometry);
+
   if (!added_to_renderer && render_engines_.size() > 0) {
     // TODO(SeanCurtis-TRI): This message would be better with a geometry name.
     drake::log()->warn(
         "Perception role assigned to geometry {}, but no renderer accepted it",
         geometry_id);
-  }
-  if (added_to_renderer) {
-    // Increment version number only if some renderer picks up the role
-    // assignment.
-    geometry_version_.modify_perception();
   }
 }
 
@@ -1060,7 +1237,7 @@ void GeometryState<T>::AddRenderer(
         "AddRenderer(): A renderer with the name '{}' already exists", name));
   }
   render::RenderEngine* render_engine = renderer.get();
-  render_engines_[name] = move(renderer);
+  render_engines_[name] = std::move(renderer);
   bool accepted = false;
   for (auto& id_geo_pair : geometries_) {
     InternalGeometry& geometry = id_geo_pair.second;
@@ -1104,7 +1281,8 @@ void GeometryState<T>::RenderColorImage(const ColorRenderCamera& camera,
                                         FrameId parent_frame,
                                         const RigidTransformd& X_PC,
                                         ImageRgba8U* color_image_out) const {
-  const RigidTransformd X_WC = GetDoubleWorldPose(parent_frame) * X_PC;
+  const RigidTransformd X_WC =
+      CalcCameraWorldPose(camera.core(), parent_frame, X_PC);
   const render::RenderEngine& engine =
       GetRenderEngineOrThrow(camera.core().renderer_name());
   // TODO(SeanCurtis-TRI): Invoke UpdateViewpoint() as part of a calc cache
@@ -1118,7 +1296,8 @@ void GeometryState<T>::RenderDepthImage(const DepthRenderCamera& camera,
                                         FrameId parent_frame,
                                         const RigidTransformd& X_PC,
                                         ImageDepth32F* depth_image_out) const {
-  const RigidTransformd X_WC = GetDoubleWorldPose(parent_frame) * X_PC;
+  const RigidTransformd X_WC =
+      CalcCameraWorldPose(camera.core(), parent_frame, X_PC);
   const render::RenderEngine& engine =
       GetRenderEngineOrThrow(camera.core().renderer_name());
   // See note in RenderColorImage() about this const cast.
@@ -1131,7 +1310,8 @@ void GeometryState<T>::RenderLabelImage(const ColorRenderCamera& camera,
                                         FrameId parent_frame,
                                         const RigidTransformd& X_PC,
                                         ImageLabel16I* label_image_out) const {
-  const RigidTransformd X_WC = GetDoubleWorldPose(parent_frame) * X_PC;
+  const RigidTransformd X_WC =
+      CalcCameraWorldPose(camera.core(), parent_frame, X_PC);
   const render::RenderEngine& engine =
       GetRenderEngineOrThrow(camera.core().renderer_name());
   // See note in RenderColorImage() about this const cast.
@@ -1140,9 +1320,7 @@ void GeometryState<T>::RenderLabelImage(const ColorRenderCamera& camera,
 }
 
 template <typename T>
-template <typename T1>
-typename std::enable_if_t<!std::is_same_v<T1, symbolic::Expression>,
-                          std::unique_ptr<GeometryState<AutoDiffXd>>>
+std::unique_ptr<GeometryState<AutoDiffXd>>
 GeometryState<T>::ToAutoDiffXd() const {
   return std::unique_ptr<GeometryState<AutoDiffXd>>(
       new GeometryState<AutoDiffXd>(*this));
@@ -1150,13 +1328,20 @@ GeometryState<T>::ToAutoDiffXd() const {
 
 template <typename T>
 unordered_set<GeometryId> GeometryState<T>::CollectIds(
-    const GeometrySet& geometry_set, std::optional<Role> role) const {
+    const GeometrySet& geometry_set, std::optional<Role> role,
+    CollisionFilterScope scope) const {
+  auto must_include = [scope](const InternalGeometry& g,
+                              const std::optional<Role>& r) {
+    // Must have compatible role and be part of the scope.
+    return (!r.has_value() || g.has_role(*r)) &&
+           (scope == CollisionFilterScope::kAll || !g.is_deformable());
+  };
   unordered_set<GeometryId> resultant_ids;
   for (auto frame_id : geometry_set.frames()) {
     const auto& frame = GetValueOrThrow(frame_id, frames_);
     for (auto geometry_id : frame.child_geometries()) {
       const InternalGeometry& geometry = geometries_.at(geometry_id);
-      if (!role.has_value() || geometry.has_role(*role)) {
+      if (must_include(geometry, role)) {
         resultant_ids.insert(geometry_id);
       }
     }
@@ -1170,10 +1355,11 @@ unordered_set<GeometryId> GeometryState<T>::CollectIds(
           "SceneGraph: " +
           to_string(geometry_id));
     }
-    if (!role.has_value() || geometry->has_role(*role)) {
+    if (must_include(*geometry, role)) {
       resultant_ids.insert(geometry_id);
     }
   }
+
   return resultant_ids;
 }
 
@@ -1295,49 +1481,6 @@ SourceId GeometryState<T>::get_source_id(GeometryId id) const {
                            " does not map to a registered geometry");
   }
   return geometry->source_id();
-}
-
-template <typename T>
-void GeometryState<T>::RemoveGeometryUnchecked(GeometryId geometry_id,
-                                               RemoveGeometryOrigin caller) {
-  const InternalGeometry& geometry = GetValueOrThrow(geometry_id, geometries_);
-
-  // TODO(SeanCurtis-TRI): When this gets invoked by RemoveFrame(), this
-  // recursive action will not be necessary, as all child geometries will
-  // automatically get removed. I've put it into a block so for future
-  // reference; simply add an if statement to determine if this is coming from
-  // frame removal.
-  {
-    for (auto child_id : geometry.child_geometry_ids()) {
-      RemoveGeometryUnchecked(child_id, RemoveGeometryOrigin::kRecurse);
-    }
-    // Remove the geometry from its frame's list of geometries.
-    auto& frame = GetMutableValueOrThrow(geometry.frame_id(), &frames_);
-    frame.remove_child(geometry_id);
-  }
-
-  RemoveProximityRole(geometry_id);
-  RemovePerceptionRole(geometry_id);
-  RemoveIllustrationRole(geometry_id);
-
-  if (caller == RemoveGeometryOrigin::kGeometry) {
-    // Only the geometry that this function is *directly* invoked on needs to
-    // remove itself from its possible parent geometry. If called recursively,
-    // it is because the parent geometry is being deleted anyways and removal
-    // is implicit in the deletion of that parent geometry.
-    if (std::optional<GeometryId> parent_id = geometry.parent_id()) {
-      auto& parent_geometry =
-          GetMutableValueOrThrow(*parent_id, &geometries_);
-      parent_geometry.remove_child(geometry_id);
-    }
-  }
-
-  // Clean up state collections.
-  kinematics_data_.X_WGs.erase(geometry_id);
-  kinematics_data_.q_WGs.erase(geometry_id);
-
-  // Remove from the geometries.
-  geometries_.erase(geometry_id);
 }
 
 template <typename T>
@@ -1491,6 +1634,35 @@ bool GeometryState<T>::RemoveRoleUnchecked(GeometryId geometry_id, Role role) {
 }
 
 template <typename T>
+void GeometryState<T>::AddToProximityEngineUnchecked(
+    const InternalGeometry& geometry) {
+  const GeometryId geometry_id = geometry.id();
+  if (geometry.is_deformable()) {
+    DRAKE_DEMAND(geometry.reference_mesh() != nullptr);
+    geometry_engine_->AddDeformableGeometry(*geometry.reference_mesh(),
+                                            geometry_id);
+  } else if (geometry.is_dynamic()) {
+    // Pass the geometry to the engine.
+    const RigidTransformd& X_WG =
+        convert_to_double(kinematics_data_.X_WGs.at(geometry_id));
+    geometry_engine_->AddDynamicGeometry(geometry.shape(), X_WG, geometry_id,
+                                         *geometry.proximity_properties());
+  } else {
+    geometry_engine_->AddAnchoredGeometry(geometry.shape(), geometry.X_FG(),
+                                          geometry_id,
+                                          *geometry.proximity_properties());
+  }
+  geometry_version_.modify_proximity();
+}
+
+template <typename T>
+void GeometryState<T>::RemoveFromProximityEngineUnchecked(
+    const InternalGeometry& geometry) {
+  geometry_engine_->RemoveGeometry(geometry.id(), geometry.is_dynamic());
+  geometry_version_.modify_proximity();
+}
+
+template <typename T>
 bool GeometryState<T>::RemoveFromRendererUnchecked(
     const std::string& renderer_name, GeometryId id) {
   render::RenderEngine* engine = render_engines_[renderer_name].get_mutable();
@@ -1505,6 +1677,42 @@ bool GeometryState<T>::RemoveFromRendererUnchecked(
 }
 
 template <typename T>
+bool GeometryState<T>::AddToCompatibleRenderersUnchecked(
+    const internal::InternalGeometry& geometry) {
+  const PerceptionProperties& properties = *geometry.perception_properties();
+
+  const RigidTransformd& X_WG =
+      convert_to_double(kinematics_data_.X_WGs.at(geometry.id()));
+
+  auto accepting_renderers =
+      properties.GetPropertyOrDefault("renderer", "accepting", set<string>{});
+
+  bool added_to_renderer{false};
+  for (auto& [name, engine] : render_engines_) {
+    if (accepting_renderers.empty() || accepting_renderers.count(name) > 0) {
+      added_to_renderer =
+          engine->RegisterVisual(geometry.id(), geometry.shape(), properties,
+                                 X_WG, geometry.is_dynamic()) ||
+          added_to_renderer;
+    }
+  }
+  if (added_to_renderer) {
+    // Increment version number only if some renderer picks up the role
+    // assignment.
+    geometry_version_.modify_perception();
+  }
+  return added_to_renderer;
+}
+
+template <typename T>
+void GeometryState<T>::RemoveFromAllRenderersUnchecked(GeometryId id) {
+  for (auto& name_engine_pair : render_engines_) {
+    const std::string& engine_name = name_engine_pair.first;
+    RemoveFromRendererUnchecked(engine_name, id);
+  }
+}
+
+template <typename T>
 bool GeometryState<T>::RemoveProximityRole(GeometryId geometry_id) {
   internal::InternalGeometry* geometry = GetMutableGeometry(geometry_id);
   DRAKE_DEMAND(geometry != nullptr);
@@ -1513,9 +1721,11 @@ bool GeometryState<T>::RemoveProximityRole(GeometryId geometry_id) {
   if (!geometry->has_proximity_role()) return false;
 
   // Geometry *is* registered; do the work to remove it.
-  geometry_engine_->RemoveGeometry(geometry_id, geometry->is_dynamic());
+  RemoveFromProximityEngineUnchecked(*geometry);
   geometry->RemoveProximityRole();
-  geometry_version_.modify_proximity();
+
+  // TODO(SeanCurtis-TRI): This doesn't remove the geometry from collision
+  // filters; it should.
   return true;
 }
 
@@ -1542,10 +1752,7 @@ bool GeometryState<T>::RemovePerceptionRole(GeometryId geometry_id) {
 
   // Geometry has a perception role; do the work to remove it from whichever
   // render engines it happens to present in.
-  for (auto& name_engine_pair : render_engines_) {
-    const std::string& engine_name = name_engine_pair.first;
-    RemoveFromRendererUnchecked(engine_name, geometry_id);
-  }
+  RemoveFromAllRenderersUnchecked(geometry_id);
   geometry->RemovePerceptionRole();
   return true;
 }
@@ -1585,6 +1792,14 @@ const render::RenderEngine& GeometryState<T>::GetRenderEngineOrThrow(
 }
 
 template <typename T>
+RigidTransformd GeometryState<T>::CalcCameraWorldPose(
+    const render::RenderCameraCore& core, FrameId parent_frame,
+    const RigidTransformd& X_PC) const {
+  return GetDoubleWorldPose(parent_frame) * X_PC *
+         core.sensor_pose_in_camera_body();
+}
+
+template <typename T>
 RigidTransformd GeometryState<T>::GetDoubleWorldPose(FrameId frame_id) const {
   if (frame_id == InternalFrame::world_frame_id()) {
     return RigidTransformd::Identity();
@@ -1593,11 +1808,14 @@ RigidTransformd GeometryState<T>::GetDoubleWorldPose(FrameId frame_id) const {
   return internal::convert_to_double(kinematics_data_.X_WFs[frame.index()]);
 }
 
-// Explicit instantiations.
-template std::unique_ptr<GeometryState<AutoDiffXd>>
-    GeometryState<double>::ToAutoDiffXd<double>() const;
-template std::unique_ptr<GeometryState<AutoDiffXd>>
-    GeometryState<AutoDiffXd>::ToAutoDiffXd<AutoDiffXd>() const;
+// Explicitly instantiate all variations of the scalar-converting constructor.
+using symbolic::Expression;
+template GeometryState<double>::GeometryState(const GeometryState<AutoDiffXd>&);
+template GeometryState<double>::GeometryState(const GeometryState<Expression>&);
+template GeometryState<AutoDiffXd>::GeometryState(const GeometryState<double>&);
+template GeometryState<AutoDiffXd>::GeometryState(const GeometryState<Expression>&);  // NOLINT
+template GeometryState<Expression>::GeometryState(const GeometryState<double>&);
+template GeometryState<Expression>::GeometryState(const GeometryState<AutoDiffXd>&);  // NOLINT
 
 }  // namespace geometry
 }  // namespace drake

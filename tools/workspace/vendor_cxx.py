@@ -31,7 +31,7 @@ def _designate_wrapped_lines(lines):
 
     # Regexs to match various kinds of code patterns.
     is_include = re.compile(r'^\s*#\s*include\s*["<].*$')
-    is_preprocessor = re.compile(r'^\s*#\s*[a-zA-Z].*$')
+    is_preprocessor = re.compile(r'^\s*#.*$')
     is_blank = re.compile(r'^\s*$')
     is_blank_cpp_comment = re.compile(r'^\s*//.*$')
     is_blank_c_comment_begin = re.compile(r'^\s*/\*.*$')
@@ -131,7 +131,7 @@ def _designate_wrapped_lines(lines):
     return [x == Flag.WRAP for x in flags]
 
 
-def _rewrite_one_text(*, text, edit_include):
+def _rewrite_one_text(*, text, edit_include, inline_namespace):
     """Rewrites the C++ file contents in `text` with specific alterations:
 
     - The paths in #include statements are replaced per the (old, new) pairs in
@@ -141,6 +141,13 @@ def _rewrite_one_text(*, text, edit_include):
     - Wraps an inline namespace "drake_vendor" with hidden symbol visibility
     around all of the code in file (but not any #include statements).
 
+      - Or when inline_namespace is False, simply marks all of the existing
+        namespaces as hidden without any extra inline namespace wrapping.
+        This does not hide the vendored library as thoroughly (it's still
+        a potential ODR conflict during static linking) but has the benefit
+        of working on more complicated projects that our wrapping heuristics
+        cannot handle.
+
     Returns the new C++ contents.
 
     These changes should suffice for the most typical flavors of C++ code.
@@ -149,25 +156,42 @@ def _rewrite_one_text(*, text, edit_include):
     """
     # Re-spell the project's own include statements.
     for old_inc, new_inc in edit_include:
-        text = text.replace(f'#include "{old_inc}', f'#include "{new_inc}')
-        text = text.replace(f'#include <{old_inc}', f'#include <{new_inc}')
+        pattern = r'^(\s*#\s*include\s*["<])' + re.escape(old_inc)
+        replacement = r'\1' + new_inc
+        text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
 
     # If the file is a mixed C/C++ header, then we need to leave it alone.
     if '\nextern "C" {\n' in text:
         return text
 
-    # We'll add an inline namespace around the C++ code in this file.
-    # Designate each line of the file for whether it should be wrapped.
+    # Prepare to edit one line at a time.
     lines = text.split('\n')
     if lines[-1] == '':
         lines.pop()
+    hidden = '__attribute__ ((visibility ("hidden")))'
+
+    # If we are only changing namespaces (not adding new ones), do that now:
+    if not inline_namespace:
+        # Match either 'namespace foo' or 'namespace foo {'.
+        regex = re.compile(r'^\s*namespace\s+([^{]+?)(\s*{)?$')
+        for i, line in enumerate(lines):
+            match = regex.match(line)
+            if not match:
+                continue
+            name, brace = match.groups()
+            lines[i] = f'namespace {name} {hidden}{brace or ""}'
+        text = '\n'.join(lines) + '\n'
+        return text
+
+    # We'll add an inline namespace around the C++ code in this file.
+    # Designate each line of the file for whether it should be wrapped.
     should_wrap = _designate_wrapped_lines(lines)
 
     # Anytime the sense of wrapping switches, we'll insert a line.
     # Do this in reverse order so that the indices into lines[] are stable.
     open_inline = ' '.join([
         'inline namespace drake_vendor',
-        '__attribute__ ((visibility ("hidden")))',
+        hidden,
         '{'])
     close_inline = '}  /* inline namespace drake_vendor */'
     for i in range(len(lines), -1, -1):
@@ -182,7 +206,8 @@ def _rewrite_one_text(*, text, edit_include):
     return text
 
 
-def _rewrite_one_file(*, old_filename, new_filename, edit_include):
+def _rewrite_one_file(*, old_filename, new_filename, edit_include,
+                      inline_namespace):
     """Reads in old_filename and write into new_filename with specific
     alterations as described by _rewrite_one_string().
     """
@@ -190,7 +215,8 @@ def _rewrite_one_file(*, old_filename, new_filename, edit_include):
     with open(old_filename, 'r', encoding='utf-8') as in_file:
         old_text = in_file.read()
 
-    new_text = _rewrite_one_text(text=old_text, edit_include=edit_include)
+    new_text = _rewrite_one_text(text=old_text, edit_include=edit_include,
+                                 inline_namespace=inline_namespace)
 
     # Write out the altered file.
     with open(new_filename, 'w', encoding='utf-8') as out_file:
@@ -211,12 +237,16 @@ def _main():
         type=_split_pair, metavar='OLD:NEW',
         help='Project-local include spellings rewrite')
     parser.add_argument(
+        '--no-inline-namespace', dest='inline_namespace', action='store_false',
+        help='Set visibility directly without an inline namespace wrapper')
+    parser.add_argument(
         'rewrite', nargs='+', type=_split_pair,
         help='Filename pairs to rewrite, given as IN:OUT')
     args = parser.parse_args()
     for old_filename, new_filename in args.rewrite:
         _rewrite_one_file(
             edit_include=args.edit_include,
+            inline_namespace=args.inline_namespace,
             old_filename=old_filename,
             new_filename=new_filename)
 

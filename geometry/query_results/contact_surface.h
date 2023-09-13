@@ -107,7 +107,7 @@ enum class HydroelasticContactRepresentation { kTriangle, kPolygon };
 
   Intersection between triangles and tetrahedra (or tetrahedra and tetrahedra)
   can produce polygons with up to eight sides. A %ContactSurface can represent
-  the resulting surface as a mesh of such polygons, or as a mesh of tesselated
+  the resulting surface as a mesh of such polygons, or as a mesh of tessellated
   triangles. The domains of the two representations are identical. The
   triangular version admits for simple, high-order integration over the domain.
   Every element is a triangle, and triangles will only disappear and reappear
@@ -242,8 +242,8 @@ class ContactSurface {
                  std::unique_ptr<TriangleSurfaceMeshFieldLinear<T, T>> e_MN,
                  std::unique_ptr<std::vector<Vector3<T>>> grad_eM_W = nullptr,
                  std::unique_ptr<std::vector<Vector3<T>>> grad_eN_W = nullptr)
-    : ContactSurface(id_M, id_N, std::move(mesh_W), std::move(e_MN),
-                     std::move(grad_eM_W), std::move(grad_eN_W), 1) {}
+      : ContactSurface(id_M, id_N, std::move(mesh_W), std::move(e_MN),
+                       std::move(grad_eM_W), std::move(grad_eN_W), 1) {}
 
   /** Constructs a %ContactSurface with a polygonal mesh representation. */
   ContactSurface(GeometryId id_M, GeometryId id_N,
@@ -251,8 +251,8 @@ class ContactSurface {
                  std::unique_ptr<PolygonSurfaceMeshFieldLinear<T, T>> e_MN,
                  std::unique_ptr<std::vector<Vector3<T>>> grad_eM_W = nullptr,
                  std::unique_ptr<std::vector<Vector3<T>>> grad_eN_W = nullptr)
-    : ContactSurface(id_M, id_N, std::move(mesh_W), std::move(e_MN),
-                     std::move(grad_eM_W), std::move(grad_eN_W), 1) {}
+      : ContactSurface(id_M, id_N, std::move(mesh_W), std::move(e_MN),
+                       std::move(grad_eM_W), std::move(grad_eN_W), 1) {}
 
   //@}
 
@@ -318,7 +318,7 @@ class ContactSurface {
    mesh and field. */
   //@{
 
-  /** Simpley reports if this contact surface's mesh representation is triangle.
+  /** Simply reports if this contact surface's mesh representation is triangle.
    Equivalent to:
 
        representation() == HydroelasticContactRepresentation::kTriangle
@@ -433,10 +433,10 @@ class ContactSurface {
                  std::unique_ptr<std::vector<Vector3<T>>> grad_eN_W, int)
       : id_M_(id_M),
         id_N_(id_N),
-        mesh_W_(move(mesh_W)),
-        e_MN_(move(e_MN)),
-        grad_eM_W_(move(grad_eM_W)),
-        grad_eN_W_(move(grad_eN_W)) {
+        mesh_W_(std::move(mesh_W)),
+        e_MN_(std::move(e_MN)),
+        grad_eM_W_(std::move(grad_eM_W)),
+        grad_eN_W_(std::move(grad_eN_W)) {
     // If defined the gradient values must map 1-to-1 onto elements.
     if (is_triangle()) {
       DRAKE_THROW_UNLESS(grad_eM_W_ == nullptr ||
@@ -462,7 +462,11 @@ class ContactSurface {
     // TODO(SeanCurtis-TRI): Determine if this work is necessary. It is neither
     // documented nor tested that the face winding is guaranteed to be one way
     // or the other. Alternatively, this should be documented and tested.
-    std::visit([](auto&& mesh) { mesh->ReverseFaceWinding(); }, mesh_W_);
+    std::visit(
+        [](auto&& mesh) {
+          mesh->ReverseFaceWinding();
+        },
+        mesh_W_);
 
     // Note: the scalar field does not depend on the order of M and N.
     std::swap(grad_eM_W_, grad_eN_W_);
@@ -486,7 +490,8 @@ class ContactSurface {
   std::unique_ptr<std::vector<Vector3<T>>> grad_eM_W_;
   std::unique_ptr<std::vector<Vector3<T>>> grad_eN_W_;
 
-  template <typename U> friend class ContactSurfaceTester;
+  template <typename U>
+  friend class ContactSurfaceTester;
 };
 
 }  // namespace geometry

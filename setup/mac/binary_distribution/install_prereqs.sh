@@ -26,7 +26,7 @@ if [[ "${EUID}" -eq 0 ]]; then
 fi
 
 if command -v conda &>/dev/null; then
-  echo 'WARNING: Anaconda is NOT supported for building and using the Drake Python bindings' >&2
+  echo 'NOTE: Drake is not tested regularly with Anaconda, so you may experience compatibility hiccups; when asking for help, be sure to mention that Conda is involved.' >&2
 fi
 
 if ! command -v brew &>/dev/null; then
@@ -60,19 +60,11 @@ if [[ "${with_update}" -eq 1 ]]; then
   binary_distribution_called_update=1
 fi
 
-# TODO(jwnimmer-tri): Remove lines tapping robotlocomotion/director and
-# uninstalling vtk@8.2.0 on or after 2022-11-01.
-brew tap robotlocomotion/director
-brew uninstall --force $(cat <<EOF
-robotlocomotion/director/vtk@8.2.0
-EOF
-)
-
 brew bundle --file="${BASH_SOURCE%/*}/Brewfile" --no-lock
 
-if ! command -v pip3.10 &>/dev/null; then
-  echo 'ERROR: pip3.10 is NOT installed. The post-install step for the python@3.10 formula may have failed.' >&2
+if ! command -v pip3.11 &>/dev/null; then
+  echo 'ERROR: pip3.11 is NOT installed. The post-install step for the python@3.11 formula may have failed.' >&2
   exit 2
 fi
 
-pip3.10 install -r "${BASH_SOURCE%/*}/requirements.txt"
+pip3.11 install -r "${BASH_SOURCE%/*}/requirements.txt"

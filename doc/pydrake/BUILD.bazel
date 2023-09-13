@@ -1,5 +1,3 @@
-# -*- python -*-
-
 package(default_visibility = ["//visibility:private"])
 
 load(
@@ -60,6 +58,7 @@ drake_py_binary(
         ":pydrake_sphinx_extension_py",
         "//bindings/pydrake",
         "//doc:defs",
+        "@stable_baselines3_internal//:stable_baselines3",
     ],
 )
 

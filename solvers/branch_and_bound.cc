@@ -5,7 +5,6 @@
 #include <vector>
 
 #include <fmt/format.h>
-#include <fmt/ostream.h>
 
 #include "drake/common/unused.h"
 #include "drake/solvers/choose_best_solver.h"
@@ -38,7 +37,7 @@ MixedIntegerBranchAndBoundNode::MixedIntegerBranchAndBoundNode(
       fixed_binary_variable_{},
       fixed_binary_value_{-1},
       remaining_binary_variables_{binary_variables},
-      solution_result_{SolutionResult::kUnknownError},
+      solution_result_{SolutionResult::kSolverSpecificError},
       optimal_solution_is_integral_{OptimalSolutionIsIntegral::kUnknown},
       solver_id_{solver_id} {
   // Check if there are still binary variables.
@@ -202,8 +201,8 @@ MixedIntegerBranchAndBoundNode::ConstructRootNode(
   }
   MixedIntegerBranchAndBoundNode* node = new MixedIntegerBranchAndBoundNode(
       new_prog, binary_variables_list, solver_id);
-  node->solution_result_ = SolveProgramWithSolver(
-      *node->prog_, solver_id, node->prog_result_.get());
+  node->solution_result_ =
+      SolveProgramWithSolver(*node->prog_, solver_id, node->prog_result_.get());
   if (node->solution_result_ == SolutionResult::kSolutionFound) {
     node->CheckOptimalSolutionIsIntegral();
   }
@@ -253,6 +252,22 @@ bool MixedIntegerBranchAndBoundNode::optimal_solution_is_integral() const {
   DRAKE_UNREACHABLE();
 }
 
+bool MixedIntegerBranchAndBoundNode::is_explored() const {
+  return prog_result_.get() != nullptr;
+}
+
+int MixedIntegerBranchAndBoundNode::NumExploredNodesInSubtree() const {
+  // First count this node as the root of the subtree.
+  int ret = is_explored();
+  if (left_child_.get() != nullptr) {
+    ret += left_child_->NumExploredNodesInSubtree();
+  }
+  if (right_child_.get() != nullptr) {
+    ret += right_child_->NumExploredNodesInSubtree();
+  }
+  return ret;
+}
+
 bool IsVariableInList(const std::list<symbolic::Variable>& variable_list,
                       const symbolic::Variable& variable) {
   for (const auto& var : variable_list) {
@@ -300,12 +315,12 @@ void MixedIntegerBranchAndBoundNode::Branch(
   right_child_->FixBinaryVariable(binary_variable, 1);
   left_child_->parent_ = this;
   right_child_->parent_ = this;
-  left_child_->solution_result_ = SolveProgramWithSolver(
-      *left_child_->prog_, left_child_->solver_id_,
-      left_child_->prog_result_.get());
-  right_child_->solution_result_ = SolveProgramWithSolver(
-      *right_child_->prog_, right_child_->solver_id_,
-      right_child_->prog_result_.get());
+  left_child_->solution_result_ =
+      SolveProgramWithSolver(*left_child_->prog_, left_child_->solver_id_,
+                             left_child_->prog_result_.get());
+  right_child_->solution_result_ =
+      SolveProgramWithSolver(*right_child_->prog_, right_child_->solver_id_,
+                             right_child_->prog_result_.get());
   if (left_child_->solution_result_ == SolutionResult::kSolutionFound) {
     left_child_->CheckOptimalSolutionIsIntegral();
   }
@@ -315,8 +330,10 @@ void MixedIntegerBranchAndBoundNode::Branch(
 }
 
 MixedIntegerBranchAndBound::MixedIntegerBranchAndBound(
-    const MathematicalProgram& prog, const SolverId& solver_id)
+    const MathematicalProgram& prog, const SolverId& solver_id,
+    MixedIntegerBranchAndBound::Options options)
     : root_{nullptr},
+      options_{std::move(options)},
       map_old_vars_to_new_vars_{},
       best_upper_bound_{std::numeric_limits<double>::infinity()},
       best_lower_bound_{-std::numeric_limits<double>::infinity()},
@@ -328,10 +345,9 @@ MixedIntegerBranchAndBound::MixedIntegerBranchAndBound(
     // If an integral solution is found, then update the best solutions,
     // together with the best upper bound.
     if (root_->optimal_solution_is_integral()) {
-      UpdateIntegralSolution(
-          root_->prog_result()->GetSolution(
-              root_->prog()->decision_variables()),
-          root_->prog_result()->get_optimal_cost());
+      UpdateIntegralSolution(root_->prog_result()->GetSolution(
+                                 root_->prog()->decision_variables()),
+                             root_->prog_result()->get_optimal_cost());
     }
   }
 }
@@ -362,18 +378,26 @@ SolutionResult MixedIntegerBranchAndBound::Solve() {
   }
   MixedIntegerBranchAndBoundNode* branching_node = PickBranchingNode();
   while (branching_node) {
-    // Found a branching node, branch on this node. If no branching node is
-    // found, then every leaf node is fathomed, the branch-and-bound process
-    // should terminate.
-    // TODO(hongkai.dai) We might need to have a function that picks the
-    // branching node together with the branching variable simultaneously.
-    const symbolic::Variable* branching_variable =
-        PickBranchingVariable(*branching_node);
-    BranchAndUpdate(branching_node, *branching_variable);
-    if (HasConverged()) {
-      return SolutionResult::kSolutionFound;
+    // Each branch will create two new nodes. So if the current number of nodes
+    // + 2 is larger than options_.max_explored_nodes, we don't branch
+    // any more.
+    if (options_.max_explored_nodes >= 1 &&
+        root_->NumExploredNodesInSubtree() + 2 > options_.max_explored_nodes) {
+      return SolutionResult::kIterationLimit;
+    } else {
+      // Found a branching node, branch on this node. If no branching node is
+      // found, then every leaf node is fathomed, the branch-and-bound process
+      // should terminate.
+      // TODO(hongkai.dai) We might need to have a function that picks the
+      // branching node together with the branching variable simultaneously.
+      const symbolic::Variable* branching_variable =
+          PickBranchingVariable(*branching_node);
+      BranchAndUpdate(branching_node, *branching_variable);
+      if (HasConverged()) {
+        return SolutionResult::kSolutionFound;
+      }
+      branching_node = PickBranchingNode();
     }
-    branching_node = PickBranchingNode();
   }
   // No node to branch.
   if (best_lower_bound_ == -std::numeric_limits<double>::infinity()) {
@@ -497,8 +521,8 @@ MixedIntegerBranchAndBoundNode* PickMinLowerBoundNodeInSubTree(
     if (left_min_lower_bound_node && right_min_lower_bound_node) {
       return (left_min_lower_bound_node->prog_result()->get_optimal_cost() <
               right_min_lower_bound_node->prog_result()->get_optimal_cost())
-          ? left_min_lower_bound_node
-          : right_min_lower_bound_node;
+                 ? left_min_lower_bound_node
+                 : right_min_lower_bound_node;
     } else if (left_min_lower_bound_node) {
       return left_min_lower_bound_node;
     } else if (right_min_lower_bound_node) {
@@ -668,9 +692,8 @@ void MixedIntegerBranchAndBound::BranchAndUpdate(
         child->optimal_solution_is_integral()) {
       const double child_node_optimal_cost =
           child->prog_result()->get_optimal_cost();
-      const Eigen::VectorXd x_sol =
-          child->prog_result()->GetSolution(
-              child->prog()->decision_variables());
+      const Eigen::VectorXd x_sol = child->prog_result()->GetSolution(
+          child->prog()->decision_variables());
       UpdateIntegralSolution(x_sol, child_node_optimal_cost);
     }
     if (search_integral_solution_by_rounding_) {
@@ -736,9 +759,8 @@ void MixedIntegerBranchAndBound::SearchIntegralSolutionByRounding(
          node.remaining_binary_variables()) {
       // Notice that roundoff_integer_val is of type double here. This is
       // because AddBoundingBoxConstraint(...) requires bounds of type double.
-      const double roundoff_integer_val =
-          std::round(node.prog_result()->GetSolution(
-              remaining_binary_variable));
+      const double roundoff_integer_val = std::round(
+          node.prog_result()->GetSolution(remaining_binary_variable));
       new_prog->AddBoundingBoxConstraint(roundoff_integer_val,
                                          roundoff_integer_val,
                                          remaining_binary_variable);
@@ -747,9 +769,8 @@ void MixedIntegerBranchAndBound::SearchIntegralSolutionByRounding(
     SolveProgramWithSolver(*new_prog, node.solver_id(), &result);
     if (result.is_success()) {
       // Found integral solution.
-      UpdateIntegralSolution(
-          result.GetSolution(new_prog->decision_variables()),
-          result.get_optimal_cost());
+      UpdateIntegralSolution(result.GetSolution(new_prog->decision_variables()),
+                             result.get_optimal_cost());
     }
   }
 }

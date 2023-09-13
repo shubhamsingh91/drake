@@ -1,10 +1,10 @@
 #include "drake/multibody/parsing/scoped_names.h"
 
+#include "drake/multibody/tree/scoped_name.h"
+
 namespace drake {
 namespace multibody {
 namespace parsing {
-
-using internal::kScopedNameDelim;
 
 const drake::multibody::Frame<double>*
 GetScopedFrameByNameMaybe(
@@ -12,57 +12,31 @@ GetScopedFrameByNameMaybe(
     const std::string& full_name) {
   if (full_name == "world")
     return &plant.world_frame();
-  auto result = ParseScopedName(full_name);
-  if (!result.instance_name.empty()) {
-    auto instance = plant.GetModelInstanceByName(result.instance_name);
-    if (plant.HasFrameNamed(result.name, instance)) {
-      return &plant.GetFrameByName(result.name, instance);
+  auto scoped_name = multibody::ScopedName::Parse(full_name);
+  if (!scoped_name.get_namespace().empty()) {
+    if (plant.HasModelInstanceNamed(scoped_name.get_namespace())) {
+      auto instance = plant.GetModelInstanceByName(scoped_name.get_namespace());
+      if (plant.HasFrameNamed(scoped_name.get_element(), instance)) {
+        return &plant.GetFrameByName(scoped_name.get_element(), instance);
+      }
     }
-  } else if (plant.HasFrameNamed(result.name)) {
-    return &plant.GetFrameByName(result.name);
+  } else if (plant.HasFrameNamed(scoped_name.get_element())) {
+    return &plant.GetFrameByName(scoped_name.get_element());
   }
   return nullptr;
 }
 
-std::string GetScopedFrameName(
+const drake::multibody::Frame<double>& GetScopedFrameByName(
     const drake::multibody::MultibodyPlant<double>& plant,
-    const drake::multibody::Frame<double>& frame) {
-  if (&frame == &plant.world_frame())
-    return "world";
-  return PrefixName(GetInstanceScopeName(
-      plant, frame.model_instance()), frame.name());
-}
-
-ScopedName ParseScopedName(const std::string& full_name) {
-  size_t pos = full_name.rfind(kScopedNameDelim);
-  ScopedName result;
-  if (pos == std::string::npos) {
-    result.name = full_name;
+    const std::string& full_name) {
+  if (full_name == "world")
+    return plant.world_frame();
+  auto scoped_name = multibody::ScopedName::Parse(full_name);
+  if (!scoped_name.get_namespace().empty()) {
+    auto instance = plant.GetModelInstanceByName(scoped_name.get_namespace());
+    return plant.GetFrameByName(scoped_name.get_element(), instance);
   } else {
-    result.instance_name = full_name.substr(0, pos);
-    // "Global scope" (e.g. "::my_frame") not supported.
-    DRAKE_DEMAND(!result.instance_name.empty());
-    result.name = full_name.substr(pos + std::string(kScopedNameDelim).size());
-  }
-  return result;
-}
-
-std::string PrefixName(const std::string& namespace_, const std::string& name) {
-  if (namespace_.empty())
-    return name;
-  else if (name.empty())
-    return namespace_;
-  else
-    return namespace_ + kScopedNameDelim + name;
-}
-
-std::string GetInstanceScopeName(
-    const MultibodyPlant<double>& plant,
-    ModelInstanceIndex instance) {
-  if (instance != plant.world_body().model_instance()) {
-    return plant.GetModelInstanceName(instance);
-  } else {
-    return "";
+    return plant.GetFrameByName(scoped_name.get_element());
   }
 }
 

@@ -138,7 +138,9 @@
  * </table>
  *
  * † This is a commercial solver which requires a license
- * (note that some have free licenses for academics).
+ * (note that some have free licenses for academics). See <a
+ * href="https://drake.mit.edu/bazel.html#proprietary-solvers"> the build system
+ * documentation</a> for details.
  *
  * ‡ <a href="https://drake.mit.edu/installation.html">Drake's pre-compiled
  * binary releases</a> incorporate a private build of SNOPT that does not
@@ -198,7 +200,9 @@
  * </table>
  *
  * † This is a commercial solver which requires a license
- * (note that some have free licenses for academics).
+ * (note that some have free licenses for academics). See <a
+ * href="https://drake.mit.edu/bazel.html#proprietary-solvers"> the build system
+ * documentation</a> for details.
  *
  * ♦ A preferred solver for the given category.
  *
@@ -237,15 +241,13 @@
  *    <td></td>
  *    <td align="center">♦</td>
  *    <td></td>
- * <tr><td><a href="https://dreal.github.io/">dReal</a></td>
- *    <td></td>
- *    <td></td>
- *    <td align="center">♦</td>
  * </tr>
  * </table>
  *
  * † This is a commercial solver which requires a license
- * (note that some have free licenses for academics).
+ * (note that some have free licenses for academics). See <a
+ * href="https://drake.mit.edu/bazel.html#proprietary-solvers"> the build system
+ * documentation</a> for details.
  *
  * ‡ <a href="https://drake.mit.edu/installation.html">Drake's pre-compiled
  * binary releases</a> incorporate a private build of SNOPT that does not

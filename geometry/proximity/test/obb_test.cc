@@ -114,7 +114,7 @@ GTEST_TEST(ObbMakerTest, VerifyEigenvalues) {
   // In all cases, points are measured and expressed in frame M,
   // and C is the centroid (average) of the points.
 
-  // Case 1: (rank 3, multiplicty 1).
+  // Case 1: (rank 3, multiplicity 1).
   // Covariance matrix of 8 vertices of the box [-1,-1]x[-2,2]x[-3,3]
   // has distinct eigenvalues in increasing order: 1, 2², 3².
   {
@@ -401,22 +401,24 @@ TEST_F(ObbMakerTestTriangle, CalcOrientationByPca) {
   // Check that Bz_F is the transform of Bz_M. It's the only unique
   // principal component (eigenvalue 0 without multiplicity).
   EXPECT_TRUE(CompareMatrices(Bz_F, R_FM * Bz_M, kEps) ||
-      CompareMatrices(Bz_F, -(R_FM * Bz_M), kEps));
+              CompareMatrices(Bz_F, -(R_FM * Bz_M), kEps));
   // The other two principal components are not unique. In our current
   // implementation, we do not get the invariance under rigid transform. If
   // we change PCA implementation, we might have to change these checks.
   EXPECT_FALSE(CompareMatrices(Bx_F, R_FM * Bx_M, kEps) ||
-      CompareMatrices(Bx_F, -(R_FM * Bx_M), kEps));
+               CompareMatrices(Bx_F, -(R_FM * Bx_M), kEps));
   EXPECT_FALSE(CompareMatrices(By_F, R_FM * By_M, kEps) ||
-      CompareMatrices(By_F, -(R_FM * By_M), kEps));
+               CompareMatrices(By_F, -(R_FM * By_M), kEps));
 }
 
 TEST_F(ObbMakerTestTriangle, CalcOrientedBox) {
+  // clang-format off
   const RotationMatrixd R_MB =
       RotationMatrixd::MakeFromOrthonormalColumns(
           Vector3d(1., -0.5, -0.5).normalized(),
           Vector3d(0., 1., -1.).normalized(),
           Vector3d(1., 1., 1.).normalized());
+  // clang-format on
 
   const Obb obb =
       ObbMakerTester<TriangleSurfaceMesh<double>>(mesh_M_, test_vertices_)
@@ -626,9 +628,11 @@ TEST_F(ObbMakerTestOctahedron, ObbMakerCompute) {
 
   const Obb obb_F = ObbMaker(mesh_F, test_vertices_).Compute();
   EXPECT_TRUE(Contain(obb_F, mesh_F, test_vertices_));
-  // The threshold was set empirically. It is much smaller than the
-  // previous test before vertex transform.
-  EXPECT_NEAR(obb_F.CalcVolume(), 9.741, 0.001);
+  // The threshold was set empirically. It is much smaller (about 9.7 m³)
+  // than the previous test before vertex transform (about 27 m³).
+  // We use about 10-percent tolerance (0.9 m³) because the numerical
+  // optimization varies among different computing platforms.
+  EXPECT_NEAR(obb_F.CalcVolume(), 9.741, 0.9);
 
   // Empirical tolerance for comparing unit vectors from characteristic
   // equation AX = λX and rigid transform.
@@ -706,9 +710,8 @@ GTEST_TEST(ObbMakerTest, TestVolumeMesh) {
 GTEST_TEST(ObbMakerTestAPI, ObbMakerCompute) {
   const TriangleSurfaceMesh<double> mesh(
       // The triangles are not relevant to the test.
-      {{0, 1, 2}, {0, 3, 1}},
-      {Vector3d::Zero(), Vector3d::UnitX(), 2. * Vector3d::UnitY(),
-       3. * Vector3d::UnitZ()});
+      {{0, 1, 2}, {0, 3, 1}}, {Vector3d::Zero(), Vector3d::UnitX(),
+                               2. * Vector3d::UnitY(), 3. * Vector3d::UnitZ()});
 
   const std::set<int> test_vertices{0, 1};
 
@@ -990,11 +993,10 @@ GTEST_TEST(ObbTest, TestObbOverlap) {
       X_AB =
           CalcEdgeTransform(a, b, a_axis, b_axis, false /* expect_overlap */);
       // Separate along a's y-axis and b's x-axis.
-      EXPECT_FALSE(Obb::HasOverlap(a, b, X_GA * X_AB * X_BH  /* X_GH */));
-      X_AB =
-          CalcEdgeTransform(a, b, a_axis, b_axis, true /* expect_overlap */);
+      EXPECT_FALSE(Obb::HasOverlap(a, b, X_GA * X_AB * X_BH /* X_GH */));
+      X_AB = CalcEdgeTransform(a, b, a_axis, b_axis, true /* expect_overlap */);
       // Separate along a's y-axis and b's x-axis.
-      EXPECT_TRUE(Obb::HasOverlap(a, b, X_GA * X_AB * X_BH  /* X_GH */));
+      EXPECT_TRUE(Obb::HasOverlap(a, b, X_GA * X_AB * X_BH /* X_GH */));
     }
   }
 }
@@ -1113,8 +1115,7 @@ GTEST_TEST(ObbTest, PlaneOverlap) {
       AngleAxisd{M_PI / 4, Vector3d::UnitY()},
       AngleAxisd{M_PI / 7, Vector3d{1, 2, 3}.normalized()},
       AngleAxisd{7 * M_PI / 6, Vector3d{-1, 2, -3}.normalized()},
-      AngleAxisd{12 * M_PI / 7, Vector3d{1, -2, 3}.normalized()}
-  };
+      AngleAxisd{12 * M_PI / 7, Vector3d{1, -2, 3}.normalized()}};
   // An arbitrary collection of poses of the plane in the query frame Q.
   std::vector<RigidTransformd> X_QPs{
       RigidTransformd{},  // Identity matrix.
@@ -1219,8 +1220,7 @@ GTEST_TEST(ObbTest, HalfSpaceOverlap) {
       AngleAxisd{M_PI / 4, Vector3d::UnitY()},
       AngleAxisd{M_PI / 7, Vector3d{1, 2, 3}.normalized()},
       AngleAxisd{7 * M_PI / 6, Vector3d{-1, 2, -3}.normalized()},
-      AngleAxisd{12 * M_PI / 7, Vector3d{1, -2, 3}.normalized()}
-  };
+      AngleAxisd{12 * M_PI / 7, Vector3d{1, -2, 3}.normalized()}};
   const HalfSpace hs_C;
 
   for (const auto& angle_axis_CH : R_CHs) {

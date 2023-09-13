@@ -13,7 +13,7 @@ namespace drake {
 namespace solvers {
 
 MosekSolver::MosekSolver()
-    : SolverBase(&id, &is_available, &is_enabled, &ProgramAttributesSatisfied,
+    : SolverBase(id(), &is_available, &is_enabled, &ProgramAttributesSatisfied,
                  &UnsatisfiedProgramAttributes) {}
 
 MosekSolver::~MosekSolver() = default;
@@ -39,6 +39,7 @@ bool CheckAttributes(const MathematicalProgram& prog,
       std::initializer_list<ProgramAttribute>{
           ProgramAttribute::kLinearEqualityConstraint,
           ProgramAttribute::kLinearConstraint,
+          ProgramAttribute::kQuadraticConstraint,
           ProgramAttribute::kLorentzConeConstraint,
           ProgramAttribute::kRotatedLorentzConeConstraint,
           ProgramAttribute::kPositiveSemidefiniteConstraint,

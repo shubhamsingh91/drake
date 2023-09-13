@@ -1,6 +1,3 @@
-#include "pybind11/eigen.h"
-#include "pybind11/pybind11.h"
-
 #include "drake/bindings/pydrake/common/serialize_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
@@ -31,9 +28,11 @@ void DefineVisualizationConfig(py::module m) {
       .def("ApplyVisualizationConfig", &ApplyVisualizationConfig,
           py::arg("config"), py::arg("builder"), py::arg("lcm_buses") = nullptr,
           py::arg("plant") = nullptr, py::arg("scene_graph") = nullptr,
-          py::arg("lcm") = nullptr, doc.ApplyVisualizationConfig.doc)
+          py::arg("meshcat") = nullptr, py::arg("lcm") = nullptr,
+          doc.ApplyVisualizationConfig.doc)
       .def("AddDefaultVisualization", &AddDefaultVisualization,
-          py::arg("builder"), doc.AddDefaultVisualization.doc);
+          py::arg("builder"), py::arg("meshcat") = nullptr,
+          doc.AddDefaultVisualization.doc);
 }
 
 }  // namespace internal

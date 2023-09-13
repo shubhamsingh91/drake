@@ -14,7 +14,6 @@ namespace drake {
 namespace  {
 
 using std::make_unique;
-using std::move;
 using std::regex;
 using std::regex_match;
 using std::stringstream;
@@ -1055,26 +1054,16 @@ GTEST_TEST(CopyableUniquePtrTest, ReleaseTest) {
 }
 
 // Tests the stream value.
-GTEST_TEST(CopyableUniquePtrTest, StreamTest) {
-  stringstream ss;
-  CloneOnly* raw = nullptr;
-  ss << raw;
-  std::string null_str = ss.str();
-  ss.str(std::string());
-
-  // Stream null pointer value.
+GTEST_TEST(CopyableUniquePtrTest, FormatterTest) {
+  // Try a null pointer value.
   cup<CloneOnly> ptr;
-  ss << ptr;
-  EXPECT_EQ(ss.str(), null_str);
-  ss.str(std::string());
+  const void* raw = ptr.get();
+  EXPECT_EQ(fmt::to_string(ptr), fmt::to_string(raw));
 
-  // Stream non-null value.
-  ptr.reset(raw = new CloneOnly(1));
-  ss << raw;
-  std::string raw_str = ss.str();
-  ss.str(std::string());
-  ss << ptr;
-  EXPECT_EQ(ss.str(), raw_str);
+  // Try a non-null value.
+  ptr.reset(new CloneOnly(1));
+  raw = ptr.get();
+  EXPECT_EQ(fmt::to_string(ptr), fmt::to_string(raw));
 }
 
 // Tests the == tests between copyable_unique_ptr and other entities.

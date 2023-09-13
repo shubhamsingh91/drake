@@ -88,8 +88,12 @@ class HydroelasticModelTests : public ::testing::Test {
 
     // Create a context for this system:
     diagram_context_ = diagram_->CreateDefaultContext();
+    // TODO(#20014): Enable caching here when input port dependencies are fixed.
+    diagram_context_->DisableCaching();
     plant_context_ =
         &diagram_->GetMutableSubsystemContext(*plant_, diagram_context_.get());
+    scene_graph_context_ = &diagram_->GetMutableSubsystemContext(
+        *scene_graph_, diagram_context_.get());
   }
 
   // @param compliant_hydroelastic_modulus is required for the compliant box
@@ -127,12 +131,11 @@ class HydroelasticModelTests : public ::testing::Test {
                                      double friction_coefficient) {
     // Inertial properties are only needed when verifying accelerations since
     // hydro forces are only a function of state.
-    const Vector3<double> p_BoBcm_B = Vector3<double>::Zero();
-    const UnitInertia<double> G_BBcm = UnitInertia<double>::SolidSphere(radius);
-    const SpatialInertia<double> M_BBcm_B(kMass, p_BoBcm_B, G_BBcm);
+    const SpatialInertia<double> M_BBcm =
+        SpatialInertia<double>::SolidSphereWithMass(kMass, radius);
 
     // Create a rigid body B with the mass properties of a uniform sphere.
-    const RigidBody<double>& body = plant->AddRigidBody("body", M_BBcm_B);
+    const RigidBody<double>& body = plant->AddRigidBody("body", M_BBcm);
 
     // Body B's visual geometry and collision geometry are a sphere.
     // The pose X_BG of block B's geometry frame G is an identity transform.
@@ -158,6 +161,10 @@ class HydroelasticModelTests : public ::testing::Test {
   void SetPose(double penetration) {
     RigidTransformd X_WB(Vector3d(0.0, 0.0, kSphereRadius - penetration));
     plant_->SetFreeBodyPose(plant_context_, *body_, X_WB);
+  }
+
+  void SetVelocity(const SpatialVelocity<double>& V_WB) {
+    plant_->SetFreeBodySpatialVelocity(plant_context_, *body_, V_WB);
   }
 
   // This method computes the repulsion force between a compliant sphere and a
@@ -206,7 +213,7 @@ class HydroelasticModelTests : public ::testing::Test {
     // Set initial condition.
     const RigidTransformd X_WB(Vector3d(0.0, 0.0, kSphereRadius));
     plant_->SetFreeBodyPose(&plant_context, *body_, X_WB);
-    diagram_->Publish(diagram_context);
+    diagram_->ForcedPublish(diagram_context);
 
     // Run simulation for long enough to reach the steady state.
     simulator.AdvanceTo(0.5);
@@ -218,7 +225,7 @@ class HydroelasticModelTests : public ::testing::Test {
     *p_WB_W = plant_->GetFreeBodyPose(plant_context, *body_).translation();
   }
 
-  const double kFrictionCoefficient{0.0};  // [-]
+  const double kFrictionCoefficient{0.5};  // [-]
   const double kSphereRadius{0.05};        // [m]
   const double kElasticModulus{1.e5};      // [Pa]
   // A non-zero dissipation value is used to quickly dissipate energy in tests
@@ -232,6 +239,7 @@ class HydroelasticModelTests : public ::testing::Test {
   unique_ptr<Diagram<double>> diagram_;
   unique_ptr<Context<double>> diagram_context_;
   Context<double>* plant_context_{nullptr};
+  Context<double>* scene_graph_context_{nullptr};
 };
 
 // This test verifies the value of the normal force computed numerically using
@@ -316,6 +324,82 @@ TEST_F(HydroelasticModelTests, ContactDynamics) {
       fhydro_BBo_W / kMass + plant_->gravity_field().gravity_vector();
   EXPECT_TRUE(CompareMatrices(a_WBo_expected, a_WBo,
                               40 * std::numeric_limits<double>::epsilon()));
+}
+
+// This tests that a change in ProximityParameters (hydroelastic_modulus,
+// dissipation, friction, etc.) made in SceneGraph propagate through MbP hydro
+// computations.
+TEST_F(HydroelasticModelTests, Parameters) {
+  SetUpModel(0.0, BoxType::kRigid, std::nullopt);
+  const double penetration = 0.02;
+  const double vx = 0.01;
+  const double vy = 0.03;
+  SetPose(penetration);
+  SetVelocity(SpatialVelocity<double>(Vector3d::Zero(), Vector3d(vx, vy, 0)));
+
+  const std::vector<geometry::GeometryId>& g_ids =
+      plant_->GetCollisionGeometriesForBody(*body_);
+  ASSERT_EQ(g_ids.size(), 1);
+  GeometryId gid = g_ids[0];
+  const ProximityProperties* old_props =
+      scene_graph_->model_inspector().GetProximityProperties(gid);
+
+  ASSERT_TRUE(old_props != nullptr);
+
+  const ContactResults<double> old_contact_results =
+      plant_->get_contact_results_output_port()
+          .template Eval<ContactResults<double>>(*plant_context_);
+
+  // Change in friction should affect only the tangential component of the
+  // traction at each quadrature point.
+  const CoulombFriction<double> mu_box(kFrictionCoefficient,
+                                       kFrictionCoefficient);
+  const CoulombFriction<double> mu_sphere(5.0, 5.0);
+  const CoulombFriction<double> mu_combined =
+      CalcContactFrictionFromSurfaceProperties(mu_box, mu_sphere);
+  ProximityProperties new_props(*old_props);
+  new_props.UpdateProperty(geometry::internal::kMaterialGroup,
+                           geometry::internal::kFriction, mu_sphere);
+  scene_graph_->AssignRole(scene_graph_context_,
+                           plant_->get_source_id().value(), gid, new_props,
+                           geometry::RoleAssign::kReplace);
+  const ContactResults<double>& new_contact_results =
+      plant_->get_contact_results_output_port()
+          .template Eval<ContactResults<double>>(*plant_context_);
+
+  ASSERT_EQ(old_contact_results.num_hydroelastic_contacts(),
+            new_contact_results.num_hydroelastic_contacts());
+  for (int i = 0; i < new_contact_results.num_hydroelastic_contacts(); ++i) {
+    const HydroelasticContactInfo<double>& old_contact_info =
+        old_contact_results.hydroelastic_contact_info(i);
+    const HydroelasticContactInfo<double>& new_contact_info =
+        new_contact_results.hydroelastic_contact_info(i);
+    ASSERT_EQ(old_contact_info.quadrature_point_data().size(),
+              new_contact_info.quadrature_point_data().size());
+    // Checking one quadrature point would likely be sufficient, but we check
+    // them all as further evidence of sanity.
+    for (int j = 0; j < ssize(new_contact_info.quadrature_point_data()); ++j) {
+      const HydroelasticQuadraturePointData<double>& old_data =
+          old_contact_info.quadrature_point_data()[j];
+      const HydroelasticQuadraturePointData<double>& new_data =
+          new_contact_info.quadrature_point_data()[j];
+      ASSERT_TRUE(CompareMatrices(old_data.p_WQ, new_data.p_WQ));
+      const Vector3d& n_hat_old =
+          old_contact_info.contact_surface().face_normal(old_data.face_index);
+      const Vector3d& n_hat_new =
+          new_contact_info.contact_surface().face_normal(new_data.face_index);
+      Vector3d ft_old = old_data.traction_Aq_W -
+                        n_hat_old.dot(old_data.traction_Aq_W) * n_hat_old;
+      Vector3d ft_new = new_data.traction_Aq_W -
+                        n_hat_new.dot(new_data.traction_Aq_W) * n_hat_new;
+      // The ratio of the magnitudes of the tangential traction calculation at
+      // each quadrature point should be equal to the ratio of the old and new
+      // combined friction coefficient.
+      EXPECT_NEAR(ft_old.norm() / ft_new.norm(),
+                  kFrictionCoefficient / mu_combined.dynamic_friction(),
+                  std::numeric_limits<double>::epsilon());
+    }
+  }
 }
 
 // Verify the results of a simulation using the discrete approximation of
@@ -465,12 +549,11 @@ class ContactModelTest : public ::testing::Test {
       MultibodyPlant<double>* plant) {
     // Inertial properties are only needed when verifying accelerations since
     // hydro forces are only a function of state.
-    const Vector3<double> p_BoBcm_B = Vector3<double>::Zero();
-    const UnitInertia<double> G_BBcm = UnitInertia<double>::SolidSphere(radius);
-    const SpatialInertia<double> M_BBcm_B(kMass, p_BoBcm_B, G_BBcm);
+    const SpatialInertia<double> M_BBcm =
+        SpatialInertia<double>::SolidSphereWithMass(kMass, radius);
 
     // Create a rigid body B with the mass properties of a uniform sphere.
-    const RigidBody<double>& body = plant->AddRigidBody(name, M_BBcm_B);
+    const RigidBody<double>& body = plant->AddRigidBody(name, M_BBcm);
 
     // Body B's collision geometry is a sphere.
     // The pose X_BG of block B's geometry frame G is an identity transform.

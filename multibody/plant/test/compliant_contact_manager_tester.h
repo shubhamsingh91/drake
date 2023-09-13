@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "drake/common/eigen_types.h"
+#include "drake/geometry/geometry_ids.h"
 #include "drake/multibody/plant/compliant_contact_manager.h"
 
 namespace drake {
@@ -17,6 +18,12 @@ class CompliantContactManagerTester {
   static const internal::MultibodyTreeTopology& topology(
       const CompliantContactManager<double>& manager) {
     return manager.tree_topology();
+  }
+
+  static BodyIndex FindBodyByGeometryId(
+      const CompliantContactManager<double>& manager,
+      geometry::GeometryId id) {
+    return manager.FindBodyByGeometryId(id);
   }
 
   static const std::vector<geometry::ContactSurface<double>>&
@@ -34,14 +41,23 @@ class CompliantContactManagerTester {
   static void CalcNonContactForces(
       const CompliantContactManager<double>& manager,
       const drake::systems::Context<double>& context,
+      bool include_joint_limit_penalty_forces,
       MultibodyForces<double>* forces) {
-    manager.CalcNonContactForces(context, forces);
+    manager.CalcNonContactForces(context, include_joint_limit_penalty_forces,
+                                 forces);
   }
 
   static std::vector<ContactPairKinematics<double>> CalcContactKinematics(
       const CompliantContactManager<double>& manager,
       const drake::systems::Context<double>& context) {
     return manager.CalcContactKinematics(context);
+  }
+
+  static void DoCalcContactResults(
+      const CompliantContactManager<double>& manager,
+      const drake::systems::Context<double>& context,
+      ContactResults<double>* contact_results) {
+    return manager.DoCalcContactResults(context, contact_results);
   }
 
   static const DeformableDriver<double>* deformable_driver(
@@ -51,7 +67,14 @@ class CompliantContactManagerTester {
 
   static const SapDriver<double>& sap_driver(
       const CompliantContactManager<double>& manager) {
+    DRAKE_DEMAND(manager.sap_driver_ != nullptr);
     return *manager.sap_driver_;
+  }
+
+  static const TamsiDriver<double>& tamsi_driver(
+      const CompliantContactManager<double>& manager) {
+    DRAKE_DEMAND(manager.tamsi_driver_ != nullptr);
+    return *manager.tamsi_driver_;
   }
 
   // Returns the Jacobian J_AcBc_C. This method takes the Jacobian blocks
@@ -75,7 +98,8 @@ class CompliantContactManagerTester {
         const int col_offset =
             topology.tree_velocities_start(tree_jacobian.tree);
         const int tree_nv = topology.num_tree_velocities(tree_jacobian.tree);
-        J_AcBc_C.block(row_offset, col_offset, 3, tree_nv) = tree_jacobian.J;
+        J_AcBc_C.block(row_offset, col_offset, 3, tree_nv) =
+            tree_jacobian.J.MakeDenseMatrix();
       }
     }
     return J_AcBc_C;

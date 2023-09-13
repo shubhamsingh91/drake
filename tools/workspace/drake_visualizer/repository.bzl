@@ -1,6 +1,3 @@
-# -*- mode: python -*-
-# vi: set ft=python :
-
 """
 Downloads and unpacks a precompiled version of drake-visualizer (a subset of
 Director, https://git.io/vNKjq) and makes it available to be used as a
@@ -66,8 +63,9 @@ def _impl(repository_ctx):
     patch(
         repository_ctx,
         patches = [
-            Label("@drake//tools/workspace/drake_visualizer:use_drake_lcmtypes.patch"),  # noqa
-            Label("@drake//tools/workspace/drake_visualizer:draw_lcm_mesh.patch"),  # noqa
+            Label("@drake//tools/workspace/drake_visualizer:patches/use_drake_lcmtypes.patch"),  # noqa
+            Label("@drake//tools/workspace/drake_visualizer:patches/draw_lcm_mesh.patch"),  # noqa
+            Label("@drake//tools/workspace/drake_visualizer:patches/warn_gltf.patch"),  # noqa
         ],
         patch_args = [
             "--directory=lib/python{}/site-packages/director".format(

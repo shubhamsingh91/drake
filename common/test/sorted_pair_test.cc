@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <fmt/ranges.h>
 #include <gtest/gtest.h>
 
 namespace drake {
@@ -139,12 +140,12 @@ GTEST_TEST(SortedPair, MakeSortedPair) {
   EXPECT_EQ(SortedPair<int>(1, 2), MakeSortedPair(1, 2));
 }
 
-// Tests the streaming support.
-GTEST_TEST(SortedPair, WriteToStream) {
+// Tests that formatting support is reasonable.
+GTEST_TEST(SortedPair, Format) {
   SortedPair<int> pair{8, 7};
-  std::stringstream ss;
-  ss << pair;
-  EXPECT_EQ(ss.str(), "(7, 8)");
+  // We don't care exactly what fmt does here, just that it looks sensible.
+  // It's OK to to update this goal string in case fmt changes a bit over time.
+  EXPECT_EQ(fmt::to_string(pair), "(7, 8)");
 }
 
 GTEST_TEST(SortedPair, StructuredBinding) {
@@ -153,15 +154,6 @@ GTEST_TEST(SortedPair, StructuredBinding) {
   // Copy access.
   {
     auto [a, b] = pair;
-    EXPECT_EQ(a, pair.first());
-    EXPECT_EQ(b, pair.second());
-  }
-
-  // Mutable reference access.
-  {
-    auto& [a, b] = pair;
-    a = 13;
-    b = 14;
     EXPECT_EQ(a, pair.first());
     EXPECT_EQ(b, pair.second());
   }

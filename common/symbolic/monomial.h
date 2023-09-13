@@ -8,6 +8,7 @@
 #include <Eigen/Core>
 
 #include "drake/common/drake_copyable.h"
+#include "drake/common/fmt_ostream.h"
 #include "drake/common/hash.h"
 #include "drake/common/symbolic/expression.h"
 
@@ -141,8 +142,8 @@ class Monomial {
 
   /** Implements the @ref hash_append concept. */
   template <class HashAlgorithm>
-  friend void hash_append(
-      HashAlgorithm& hasher, const Monomial& item) noexcept {
+  friend void hash_append(HashAlgorithm& hasher,
+                          const Monomial& item) noexcept {
     using drake::hash_append;
     // We do not send total_degree_ to the hasher, because it is already fully
     // represented by powers_ -- it is just a cached tally of the exponents.
@@ -170,8 +171,7 @@ Monomial pow(Monomial m, int p);
 namespace std {
 /* Provides std::hash<drake::symbolic::Monomial>. */
 template <>
-struct hash<drake::symbolic::Monomial>
-    : public drake::DefaultHash {};
+struct hash<drake::symbolic::Monomial> : public drake::DefaultHash {};
 }  // namespace std
 
 #if !defined(DRAKE_DOXYGEN_CXX)
@@ -193,4 +193,11 @@ EIGEN_DEVICE_FUNC inline drake::symbolic::Expression cast(
 }
 }  // namespace internal
 }  // namespace Eigen
+
+// TODO(jwnimmer-tri) Add a real formatter and deprecate the operator<<.
+namespace fmt {
+template <>
+struct formatter<drake::symbolic::Monomial> : drake::ostream_formatter {};
+}  // namespace fmt
+
 #endif  // !defined(DRAKE_DOXYGEN_CXX)

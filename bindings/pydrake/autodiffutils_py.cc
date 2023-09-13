@@ -1,11 +1,9 @@
-#include "pybind11/eigen.h"
-#include "pybind11/operators.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
+#include <Eigen/Core>
 #include <unsupported/Eigen/AutoDiff>
 
 #include "drake/bindings/pydrake/autodiff_types_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
+#include "drake/bindings/pydrake/math_operators_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/common/drake_throw.h"
 #include "drake/math/autodiff.h"
@@ -37,8 +35,15 @@ PYBIND11_MODULE(autodiffutils, m) {
   // TODO(m-chaturvedi) Add Pybind11 documentation.
   py::class_<AutoDiffXd> autodiff(m, "AutoDiffXd");
   autodiff  // BR
-      .def(py::init<double>())
-      .def(py::init<const double&, const VectorXd&>())
+      .def(py::init<double>(), py::arg("value"),
+          "Constructs a value with empty derivatives.")
+      .def(py::init<const double&, const VectorXd&>(), py::arg("value"),
+          py::arg("derivatives"),
+          "Constructs a value with the given derivatives.")
+      .def(py::init<double, Eigen::Index, Eigen::Index>(), py::arg("value"),
+          py::arg("size"), py::arg("offset"),
+          "Constructs a value with a single partial derivative of 1.0 at the "
+          "given `offset` in a vector of `size` otherwise-zero derivatives.")
       .def("value", [](const AutoDiffXd& self) { return self.value(); })
       .def("derivatives",
           [](const AutoDiffXd& self) { return self.derivatives(); })
@@ -100,7 +105,7 @@ PYBIND11_MODULE(autodiffutils, m) {
   py::implicitly_convertible<double, AutoDiffXd>();
   py::implicitly_convertible<int, AutoDiffXd>();
 
-  pydrake::internal::BindAutoDiffMathOverloads(&autodiff);
+  pydrake::internal::BindMathOperators<AutoDiffXd>(&autodiff);
 
   // Mirror for numpy.
   autodiff.attr("arcsin") = autodiff.attr("asin");

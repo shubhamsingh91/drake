@@ -10,6 +10,7 @@
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/systems/framework/diagram_builder.h"
+#include "drake/systems/framework/test_utilities/initialization_test_system.h"
 
 namespace drake {
 namespace multibody {
@@ -33,8 +34,8 @@ class JointSlidersTest : public ::testing::Test {
 
   void Add(const std::string& resource_path,
            const std::string& model_name = {}) {
-    Parser parser(&plant_);
-    parser.AddModelFromFile(FindResourceOrThrow(resource_path), model_name);
+    Parser parser(&plant_, model_name);
+    parser.AddModels(FindResourceOrThrow(resource_path));
   }
 
   void AddAcrobot() {
@@ -211,9 +212,11 @@ TEST_F(JointSlidersTest, DuplicatedJointNames) {
   // Add the sliders.
   const JointSliders<double> dut(meshcat_, &plant_);
 
+  // TODO(rpoyner-tri): We would probably prefer slashes for names nesting on
+  // sliders labels.
   // Confirm that the names are unique.
-  const std::string alpha = "/alpha";
-  const std::string bravo = "/bravo";
+  const std::string alpha = "/alpha::acrobot";
+  const std::string bravo = "/bravo::acrobot";
   EXPECT_EQ(meshcat_->GetSliderValue(kAcrobotJoint1 + alpha), 0.0);
   EXPECT_EQ(meshcat_->GetSliderValue(kAcrobotJoint2 + alpha), 0.0);
   EXPECT_EQ(meshcat_->GetSliderValue(kAcrobotJoint1 + bravo), 0.0);
@@ -275,13 +278,25 @@ TEST_F(JointSlidersTest, Destructor) {
 TEST_F(JointSlidersTest, Run) {
   // Add the acrobot visualizer and sliders.
   AddAcrobot();
+
+  Vector2d initial_value{0.12, 0.34};
   MeshcatVisualizer<double>::AddToBuilder(&builder_, scene_graph_, meshcat_);
-  auto* dut = builder_.AddSystem<JointSliders<double>>(meshcat_, &plant_);
+  auto* dut = builder_.AddSystem<JointSliders<double>>(meshcat_, &plant_,
+                                                       initial_value);
+
+  auto init_system = builder_.AddSystem<systems::InitializationTestSystem>();
+
   auto diagram = builder_.Build();
 
   // Run for a while.
   const double timeout = 1.0;
-  dut->Run(*diagram, timeout);
+  Eigen::VectorXd q = dut->Run(*diagram, timeout);
+  EXPECT_TRUE(CompareMatrices(q, initial_value));
+
+  // Confirm that initialization events were triggered.
+  EXPECT_TRUE(init_system->get_pub_init());
+  EXPECT_TRUE(init_system->get_dis_update_init());
+  EXPECT_TRUE(init_system->get_unres_update_init());
 
   // Note: the stop button is deleted on timeout, so we cannot easily check
   // that it was created correctly here.
@@ -295,7 +310,8 @@ TEST_F(JointSlidersTest, Run) {
   meshcat_->SetSliderValue(kAcrobotJoint1, 0.25);
 
   // Run for a while (with a non-default stop_button_keycode).
-  dut->Run(*diagram, timeout, "KeyP");
+  q = dut->Run(*diagram, timeout, "KeyP");
+  EXPECT_TRUE(CompareMatrices(q, Vector2d{0.25, initial_value[1]}));
 
   // Check that the slider's transform had any effect, i.e., that the
   // MeshcatVisualizer::Publish was called.

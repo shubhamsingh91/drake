@@ -4,11 +4,13 @@
 #include <functional>
 #include <map>
 #include <ostream>
+#include <unordered_map>
 #include <utility>
 
 #include <Eigen/Core>
 
 #include "drake/common/drake_copyable.h"
+#include "drake/common/fmt_ostream.h"
 #include "drake/common/symbolic/expression.h"
 #define DRAKE_COMMON_SYMBOLIC_POLYNOMIAL_H
 #include "drake/common/symbolic/monomial.h"
@@ -103,6 +105,10 @@ class Polynomial {
   // NOLINTNEXTLINE(runtime/explicit)
   Polynomial(const Monomial& m);
 
+  /// Constructs a polynomial from a varaible @p v. Note that v is considered an
+  /// indeterminate.
+  explicit Polynomial(const Variable& v);
+
   /// Constructs a polynomial from an expression @p e. Note that all variables
   /// in `e` are considered as indeterminates.
   ///
@@ -151,7 +157,7 @@ class Polynomial {
 
   /// Returns the mapping from a Monomial to its corresponding coefficient of
   /// this polynomial.
-  /// We maintain the invariance that for ancy [monomial, coeff] pair in
+  /// We maintain the invariance that for any [monomial, coeff] pair in
   /// monomial_to_coefficient_map(), symbolic:is_zero(coeff) is false.
   [[nodiscard]] const MapType& monomial_to_coefficient_map() const;
 
@@ -258,6 +264,58 @@ class Polynomial {
   /// Adds @p coeff * @p m to this polynomial.
   Polynomial& AddProduct(const Expression& coeff, const Monomial& m);
 
+  /// An encapsulated data type for use with the method SubstituteAndExpand.
+  struct SubstituteAndExpandCacheData {
+   public:
+    std::map<Monomial, Polynomial, internal::CompareMonomial>* get_data() {
+      return &data_;
+    }
+
+   private:
+    friend class Polynomial;
+    std::map<Monomial, Polynomial, internal::CompareMonomial> data_;
+  };
+
+  /// Substitute the monomials of this polynomial with new polynomial
+  /// expressions and expand the polynomial to the monomial basis. For example,
+  /// consider the substitution x = a(1-y) into the polynomial x¹⁴ +
+  /// (x−1)². Repeatedly expanding the powers of x can take a long time using
+  /// factory methods, so we store intermediate computations in the substitution
+  /// map to avoid recomputing very high powers.
+  /// @param indeterminate_substitution The substitutions of every indeterminate
+  /// with the new desired expression. This map must contain each element
+  /// of `indeterminates()`. For performance reasons, it is recommended that
+  /// this map contains Expanded polynomials as its values, but this is not
+  /// necessary.
+  /// @param[in,out] substitutions_cached_data A container caching the higher
+  /// order expansions of the `indeterminate_substitutions`. Typically, the
+  /// first time an indeterminate_substitution is performed, this will be empty.
+  /// If the same indeterminate_substitutions is used for multiple polynomials,
+  /// passing this value will enable the user to re-use the expansions across
+  /// multiple calls. For example, suppose we wish to perform the substitution x
+  /// = a(1-y) into the polynomials p1 = x¹⁴ + (x−1)² and p2 = x⁷. A user may
+  /// call p1.SubstituteAndExpand({x : a(1-y), substitutions_cached_data}) where
+  /// substitutions_cached_data is a pointer to an empty container. As part of
+  /// computing the expansion of p1, the expansion of x⁷ may get computed and
+  /// stored in substitutions_cached_data, and so a subsequent call of
+  /// p2.SubstituteAndExpand({x : a(1-y)}, substitutions_cached_data) would be
+  /// very fast.
+  ///
+  /// Never reuse substitutions_cached_data if indeterminate_substitutions
+  /// changes as this function will then compute an incorrect result.
+  ///
+  /// Note that this function is NOT responsible for ensuring that @param
+  /// substitutions_cached_data is consistent i.e. this method will not throw an
+  /// error if substitutions_cached_data contains the inconsistent substitutions
+  /// {x: y, x²: 2y}. To ensure correct results, ensure that the passed
+  /// substitutions_cached_data object is consistent with
+  /// indeterminate_substitutions. The easiest way to do this is to pass a
+  /// pointer to an empty substitutions_cached_data or nullopt to this function.
+  [[nodiscard]] Polynomial SubstituteAndExpand(
+      const std::unordered_map<Variable, Polynomial>&
+          indeterminate_substitution,
+      SubstituteAndExpandCacheData* substitutions_cached_data = nullptr) const;
+
   /// Expands each coefficient expression and returns the expanded polynomial.
   /// If any coefficient is equal to 0 after expansion, then remove that term
   /// from the returned polynomial.
@@ -285,6 +343,14 @@ class Polynomial {
   /// Returns false otherwise.
   /// Note that this is different from the p.TotalDegree() being an odd number.
   [[nodiscard]] bool IsOdd() const;
+
+  /// Returns the roots of a _univariate_ polynomial with constant coefficients
+  /// as a column vector. There is no specific guarantee on the order of the
+  /// returned roots.
+  ///
+  /// @throws std::exception if `this` is not univariate with constant
+  /// coefficients.
+  [[nodiscard]] Eigen::VectorXcd Roots() const;
 
   Polynomial& operator+=(const Polynomial& p);
   Polynomial& operator+=(const Monomial& m);
@@ -368,6 +434,8 @@ class Polynomial {
 [[nodiscard]] Polynomial operator+(double c, const Monomial& m);
 [[nodiscard]] Polynomial operator+(Polynomial p, const Variable& v);
 [[nodiscard]] Polynomial operator+(const Variable& v, Polynomial p);
+[[nodiscard]] Expression operator+(const Expression& e, const Polynomial& p);
+[[nodiscard]] Expression operator+(const Polynomial& p, const Expression& e);
 
 [[nodiscard]] Polynomial operator-(Polynomial p1, const Polynomial& p2);
 [[nodiscard]] Polynomial operator-(Polynomial p, const Monomial& m);
@@ -379,11 +447,14 @@ class Polynomial {
 [[nodiscard]] Polynomial operator-(double c, const Monomial& m);
 [[nodiscard]] Polynomial operator-(Polynomial p, const Variable& v);
 [[nodiscard]] Polynomial operator-(const Variable& v, const Polynomial& p);
+[[nodiscard]] Expression operator-(const Expression& e, const Polynomial& p);
+[[nodiscard]] Expression operator-(const Polynomial& p, const Expression& e);
 
 [[nodiscard]] Polynomial operator*(Polynomial p1, const Polynomial& p2);
 [[nodiscard]] Polynomial operator*(Polynomial p, const Monomial& m);
 [[nodiscard]] Polynomial operator*(Polynomial p, double c);
 [[nodiscard]] Polynomial operator*(const Monomial& m, Polynomial p);
+
 // Note that `Monomial * Monomial -> Monomial` is provided in
 // monomial.h file.
 [[nodiscard]] Polynomial operator*(const Monomial& m, double c);
@@ -391,22 +462,31 @@ class Polynomial {
 [[nodiscard]] Polynomial operator*(double c, const Monomial& m);
 [[nodiscard]] Polynomial operator*(Polynomial p, const Variable& v);
 [[nodiscard]] Polynomial operator*(const Variable& v, Polynomial p);
+[[nodiscard]] Expression operator*(const Expression& e, const Polynomial& p);
+[[nodiscard]] Expression operator*(const Polynomial& p, const Expression& e);
 
 /// Returns `p / v`.
 [[nodiscard]] Polynomial operator/(Polynomial p, double v);
+[[nodiscard]] Expression operator/(double v, const Polynomial& p);
+[[nodiscard]] Expression operator/(const Expression& e, const Polynomial& p);
+[[nodiscard]] Expression operator/(const Polynomial& p, const Expression& e);
 
-/// Returns polynomial @p rasied to @p n.
+/// Returns polynomial @p raised to @p n.
 [[nodiscard]] Polynomial pow(const Polynomial& p, int n);
 
 std::ostream& operator<<(std::ostream& os, const Polynomial& p);
 
-/// Provides the following seven operations:
+/// Provides the following matrix operations:
 ///
 /// - Matrix<Polynomial> * Matrix<Monomial> => Matrix<Polynomial>
+/// - Matrix<Polynomial> * Matrix<Variable> => Matrix<Polynomial>
 /// - Matrix<Polynomial> * Matrix<double> => Matrix<Polynomial>
 /// - Matrix<Monomial> * Matrix<Polynomial> => Matrix<Polynomial>
 /// - Matrix<Monomial> * Matrix<Monomial> => Matrix<Polynomial>
+/// - Matrix<Monomial> * Matrix<Variable> => Matrix<Polynomial>
 /// - Matrix<Monomial> * Matrix<double> => Matrix<Polynomial>
+/// - Matrix<Variable> * Matrix<Polynomial> => Matrix<Polynomial>
+/// - Matrix<Variable> * Matrix<Monomial> => Matrix<Polynomial>
 /// - Matrix<double> * Matrix<Polynomial> => Matrix<Polynomial>
 /// - Matrix<double> * Matrix<Monomial> => Matrix<Polynomial>
 ///
@@ -420,33 +500,74 @@ Eigen::Matrix<Polynomial, MatrixL::RowsAtCompileTime,
               MatrixR::ColsAtCompileTime>
 operator*(const MatrixL& lhs, const MatrixR& rhs);
 #else
+// clang-format off
 template <typename MatrixL, typename MatrixR>
 typename std::enable_if_t<
     std::is_base_of_v<Eigen::MatrixBase<MatrixL>, MatrixL> &&
-        std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
-        // {Polynomial, Monomial, double} x {Polynomial, Monomial, double}
-        (std::is_same_v<typename MatrixL::Scalar, Polynomial> ||
-         std::is_same_v<typename MatrixL::Scalar, Monomial> ||
-         std::is_same_v<typename MatrixL::Scalar, double>) &&
-        (std::is_same_v<typename MatrixR::Scalar, Polynomial> ||
-         std::is_same_v<typename MatrixR::Scalar, Monomial> ||
-         std::is_same_v<typename MatrixR::Scalar, double>) &&
-        // Exclude Polynomial x Polynomial case (because the other seven
-        // operations call this case. If we include this case here, we will have
-        // self-recursion).
-        !(std::is_same_v<typename MatrixL::Scalar, Polynomial> &&
-          std::is_same_v<typename MatrixR::Scalar, Polynomial>) &&
-        // Exclude double x double case.
-        !(std::is_same_v<typename MatrixL::Scalar, double> &&
-          std::is_same_v<typename MatrixR::Scalar, double>),
-    Eigen::Matrix<Polynomial, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
+    // The LHS and RHS must be one of {Polynomial, Monomial, Variable, double}.
+    (std::is_same_v<typename MatrixL::Scalar, Polynomial> ||
+     std::is_same_v<typename MatrixL::Scalar, Monomial> ||
+     std::is_same_v<typename MatrixL::Scalar, Variable> ||
+     std::is_same_v<typename MatrixL::Scalar, double>) &&
+    (std::is_same_v<typename MatrixR::Scalar, Polynomial> ||
+     std::is_same_v<typename MatrixR::Scalar, Monomial> ||
+     std::is_same_v<typename MatrixR::Scalar, Variable> ||
+     std::is_same_v<typename MatrixR::Scalar, double>) &&
+    // The LHS or RHS must be one of {Polynomial, Monomial}.
+    (std::is_same_v<typename MatrixL::Scalar, Polynomial> ||
+     std::is_same_v<typename MatrixL::Scalar, Monomial> ||
+     std::is_same_v<typename MatrixR::Scalar, Polynomial> ||
+     std::is_same_v<typename MatrixR::Scalar, Monomial>) &&
+    // No specialization for Polynomial x Polynomial.
+    !(std::is_same_v<typename MatrixL::Scalar, Polynomial> &&
+      std::is_same_v<typename MatrixR::Scalar, Polynomial>),
+Eigen::Matrix<Polynomial, MatrixL::RowsAtCompileTime,
+              MatrixR::ColsAtCompileTime>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  // "foo.template cast<Polynomial>()" is redundant if foo is of Polynomial.
-  // However, we have checked that `-O2` compiler optimization reduces it into a
-  // no-op.
   return lhs.template cast<Polynomial>() * rhs.template cast<Polynomial>();
 }
+// clang-format on
+#endif
+
+/// Provides the following matrix operations:
+///
+/// - Matrix<Expression> * Matrix<Polynomial> => Matrix<Expression>
+/// - Matrix<Expression> * Matrix<Monomial> => Matrix<Expression>
+/// - Matrix<Polynomial> * Matrix<Expression> => Matrix<Expression>
+/// - Matrix<Monomial> * Matrix<Expression> => Matrix<Expression>
+///
+/// @note that these operator overloadings are necessary even after providing
+/// Eigen::ScalarBinaryOpTraits. See
+/// https://stackoverflow.com/questions/41494288/mixing-scalar-types-in-eigen
+/// for more information.
+#if defined(DRAKE_DOXYGEN_CXX)
+template <typename MatrixL, typename MatrixR>
+Eigen::Matrix<Polynomial, MatrixL::RowsAtCompileTime,
+              MatrixR::ColsAtCompileTime>
+operator*(const MatrixL& lhs, const MatrixR& rhs);
+#else
+// clang-format off
+template <typename MatrixL, typename MatrixR>
+typename std::enable_if_t<
+    std::is_base_of_v<Eigen::MatrixBase<MatrixL>, MatrixL> &&
+    std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
+    // The LHS and RHS must be one of {Expression, Polynomial, Monomial}.
+    (std::is_same_v<typename MatrixL::Scalar, Expression> ||
+     std::is_same_v<typename MatrixL::Scalar, Polynomial> ||
+     std::is_same_v<typename MatrixL::Scalar, Monomial>) &&
+    (std::is_same_v<typename MatrixR::Scalar, Expression> ||
+     std::is_same_v<typename MatrixR::Scalar, Polynomial> ||
+     std::is_same_v<typename MatrixR::Scalar, Monomial>) &&
+    // Exactly one of the two sides must be an Expresion.
+    (std::is_same_v<typename MatrixL::Scalar, Expression> ^
+     std::is_same_v<typename MatrixR::Scalar, Expression>),
+Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
+              MatrixR::ColsAtCompileTime>>
+operator*(const MatrixL& lhs, const MatrixR& rhs) {
+  return lhs.template cast<Expression>() * rhs.template cast<Expression>();
+}
+// clang-format on
 #endif
 
 }  // namespace symbolic
@@ -504,6 +625,12 @@ DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
     drake::symbolic::Polynomial, drake::symbolic::Monomial,
     drake::symbolic::Polynomial)
 
+// Informs Eigen that Polynomial op Variable gets Polynomial
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Polynomial, drake::symbolic::Variable,
+    drake::symbolic::Polynomial)
+
 // Informs Eigen that Polynomial op double gets Polynomial
 // where op ∈ {+, -, *, conj_product}.
 DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
@@ -515,17 +642,35 @@ DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
     drake::symbolic::Monomial, drake::symbolic::Polynomial,
     drake::symbolic::Polynomial)
 
+// Informs Eigen that Variable op Polynomial gets Polynomial
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Variable, drake::symbolic::Polynomial,
+    drake::symbolic::Polynomial)
+
 // Informs Eigen that Monomial op Monomial gets Polynomial
 // where op ∈ {+, -, *, conj_product}.
 //
 // Note that we inform Eigen that the return type of Monomial op Monomial is
 // Polynomial, not Monomial, while Monomial * Monomial gets a Monomial in our
-// implementation. This discrepency is due to the implementation of Eigen's
+// implementation. This discrepancy is due to the implementation of Eigen's
 // dot() method whose return type is scalar_product_op::ReturnType. For more
 // information, check line 67 of Eigen/src/Core/Dot.h and line 767 of
 // Eigen/src/Core/util/XprHelper.h.
 DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
     drake::symbolic::Monomial, drake::symbolic::Monomial,
+    drake::symbolic::Polynomial)
+
+// Informs Eigen that Variable op Monomial gets Polynomial
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Variable, drake::symbolic::Monomial,
+    drake::symbolic::Polynomial)
+
+// Informs Eigen that Monomial op Variable gets Polynomial
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Monomial, drake::symbolic::Variable,
     drake::symbolic::Polynomial)
 
 // Informs Eigen that Monomial op double gets Polynomial
@@ -543,6 +688,30 @@ DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
 DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
     double, drake::symbolic::Monomial, drake::symbolic::Polynomial)
 
+// Informs Eigen that Polynomial op Expression gets Expression
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Polynomial, drake::symbolic::Expression,
+    drake::symbolic::Expression)
+
+// Informs Eigen that Expression op Polynomial gets Expression
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Expression, drake::symbolic::Polynomial,
+    drake::symbolic::Expression)
+
+// Informs Eigen that Monomial op Expression gets Expression
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Monomial, drake::symbolic::Expression,
+    drake::symbolic::Expression)
+
+// Informs Eigen that Expression op Monomial gets Expression
+// where op ∈ {+, -, *, conj_product}.
+DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS(
+    drake::symbolic::Expression, drake::symbolic::Monomial,
+    drake::symbolic::Expression)
+
 #undef DRAKE_SYMBOLIC_SCALAR_SUM_DIFF_PRODUCT_CONJ_PRODUCT_TRAITS
 #undef DRAKE_SYMBOLIC_SCALAR_BINARY_OP_TRAITS
 
@@ -555,6 +724,17 @@ EIGEN_DEVICE_FUNC inline drake::symbolic::Expression cast(
   return p.ToExpression();
 }
 }  // namespace internal
+namespace numext {
+template <>
+bool equal_strict(const drake::symbolic::Polynomial& x,
+                  const drake::symbolic::Polynomial& y);
+template <>
+EIGEN_STRONG_INLINE bool not_equal_strict(
+    const drake::symbolic::Polynomial& x,
+    const drake::symbolic::Polynomial& y) {
+  return !Eigen::numext::equal_strict(x, y);
+}
+}  // namespace numext
 }  // namespace Eigen
 #endif  // !defined(DRAKE_DOXYGEN_CXX)
 
@@ -570,7 +750,9 @@ template <typename Derived>
     std::is_same_v<typename Derived::Scalar, Polynomial>,
     MatrixLikewise<double, Derived>>
 Evaluate(const Eigen::MatrixBase<Derived>& m, const Environment& env) {
-  return m.unaryExpr([&env](const Polynomial& p) { return p.Evaluate(env); });
+  return m.unaryExpr([&env](const Polynomial& p) {
+    return p.Evaluate(env);
+  });
 }
 
 /// Computes the Jacobian matrix J of the vector function @p f with respect to
@@ -582,5 +764,48 @@ Evaluate(const Eigen::MatrixBase<Derived>& m, const Environment& env) {
     const Eigen::Ref<const VectorX<Polynomial>>& f,
     const Eigen::Ref<const VectorX<Variable>>& vars);
 
+/**
+ Returns the polynomial m(x)ᵀ * Q * m(x), where m(x) is the monomial basis,
+ and Q is the Gram matrix.
+ @param monomial_basis m(x) in the documentation. A vector of monomials.
+ @param gram_lower The lower triangular entries in Q, stacked columnwise
+ into a vector.
+ */
+template <typename Derived1, typename Derived2>
+[[nodiscard]] typename std::enable_if<
+    is_eigen_vector_of<Derived1, symbolic::Monomial>::value &&
+        (is_eigen_vector_of<Derived2, double>::value ||
+         is_eigen_vector_of<Derived2, symbolic::Variable>::value ||
+         is_eigen_vector_of<Derived2, symbolic::Expression>::value),
+    symbolic::Polynomial>::type
+CalcPolynomialWLowerTriangularPart(
+    const Eigen::MatrixBase<Derived1>& monomial_basis,
+    const Eigen::MatrixBase<Derived2>& gram_lower) {
+  DRAKE_DEMAND(monomial_basis.rows() * (monomial_basis.rows() + 1) / 2 ==
+               gram_lower.rows());
+  Polynomial::MapType monomial_coeff_map;
+  for (int j = 0; j < monomial_basis.rows(); ++j) {
+    for (int i = j; i < monomial_basis.rows(); ++i) {
+      // Compute 2 * mᵢ(x) * Qᵢⱼ * mⱼ(x) if i != j, or mᵢ(x)²*Qᵢᵢ
+      const auto monomial_product = monomial_basis(i) * monomial_basis(j);
+      const auto& Qij =
+          gram_lower(monomial_basis.rows() * j + i - (j + 1) * j / 2);
+      const symbolic::Expression coeff = i == j ? Qij : 2 * Qij;
+      auto it = monomial_coeff_map.find(monomial_product);
+      if (it == monomial_coeff_map.end()) {
+        monomial_coeff_map.emplace_hint(it, monomial_product, coeff);
+      } else {
+        it->second += coeff;
+      }
+    }
+  }
+  return Polynomial(monomial_coeff_map);
+}
 }  // namespace symbolic
 }  // namespace drake
+
+// TODO(jwnimmer-tri) Add a real formatter and deprecate the operator<<.
+namespace fmt {
+template <>
+struct formatter<drake::symbolic::Polynomial> : drake::ostream_formatter {};
+}  // namespace fmt

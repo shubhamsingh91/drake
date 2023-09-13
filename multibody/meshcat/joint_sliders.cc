@@ -8,6 +8,7 @@
 
 #include <fmt/format.h>
 
+#include "drake/common/autodiff_overloads.h"
 #include "drake/common/scope_exit.h"
 #include "drake/common/unused.h"
 
@@ -56,8 +57,9 @@ bool HasAnyDuplicatedValues(const std::map<int, std::string>& data) {
 }
 
 // Returns a mapping from an index within the plant's position vector to the
-// slider name that refers to it.  Note that the map is sparse; positions
-// without joints (e.g., a floating base) are not represented here.
+// slider name that refers to it. The map only includes positions associated
+// with *joints*. Positions without joints (e.g., deformable vertex positions)
+// are not represented here.
 //
 // When use_model_instance_name is set, both the joint name and model name will
 // be used to to form the slider name; otherwise, only the joint name is used,
@@ -141,17 +143,17 @@ JointSliders<T>::JointSliders(
     : meshcat_(std::move(meshcat)),
       plant_(plant),
       position_names_(GetPositionNames(plant)),
-      initial_value_(
+      nominal_value_(
           std::move(initial_value).value_or(GetDefaultPositions(plant))),
       is_registered_{true} {
   DRAKE_THROW_UNLESS(meshcat_ != nullptr);
   DRAKE_THROW_UNLESS(plant_ != nullptr);
 
   const int nq = plant->num_positions();
-  if (initial_value_.size() != nq) {
+  if (nominal_value_.size() != nq) {
     throw std::logic_error(fmt::format(
         "Expected initial_value of size {}, but got size {} instead",
-        nq, initial_value_.size()));
+        nq, nominal_value_.size()));
   }
 
   // Default any missing arguments; check (or widen) them to be of size == nq.
@@ -191,7 +193,7 @@ JointSliders<T>::JointSliders(
         upper_broadcast[position_index],
         upper_plant[position_index]);
     const double one_step = step_broadcast[position_index];
-    const double one_value = initial_value_[position_index];
+    const double one_value = nominal_value_[position_index];
     const std::string one_decrement_keycode =
         decrement_keycodes.size()
             ? std::move(decrement_keycodes[position_index])
@@ -235,7 +237,7 @@ void JointSliders<T>::CalcOutput(
   const int nq = plant_->num_positions();
   DRAKE_DEMAND(output->size() == nq);
   for (int i = 0; i < nq; ++i) {
-    (*output)[i] = initial_value_[i];
+    (*output)[i] = nominal_value_[i];
   }
   if (is_registered_) {
     for (const auto& [position_index, slider_name] : position_names_) {
@@ -247,9 +249,9 @@ void JointSliders<T>::CalcOutput(
 }
 
 template <typename T>
-void JointSliders<T>::Run(const Diagram<T>& diagram,
-                          std::optional<double> timeout,
-                          std::string stop_button_keycode) const {
+Eigen::VectorXd JointSliders<T>::Run(const Diagram<T>& diagram,
+                                std::optional<double> timeout,
+                                std::string stop_button_keycode) const {
   // Make a context and create reference shortcuts to some pieces of it.
   // TODO(jwnimmer-tri) If the user has forgotten to add the plant or sliders
   // to the diagram, our error message here is awful. Ideally, we should be
@@ -272,13 +274,19 @@ void JointSliders<T>::Run(const Diagram<T>& diagram,
     meshcat_->DeleteButton(kButtonName);
   });
 
-  // Grab the current time, to implement the timout.
+  // Grab the current time, to implement the timeout.
   using Clock = std::chrono::steady_clock;
   using Duration = std::chrono::duration<double>;
   const auto start_time = Clock::now();
 
+  diagram.ExecuteInitializationEvents(root_context.get());
+
+  // Set the context to the initial slider values.
+  plant_->SetPositions(&plant_context,
+                       this->get_output_port().Eval(sliders_context));
+
   // Loop until the button is clicked, or the timeout (when given) is reached.
-  diagram.Publish(diagram_context);
+  diagram.ForcedPublish(diagram_context);
   while (meshcat_->GetButtonClicks(kButtonName) < 1) {
     if (timeout.has_value()) {
       const auto elapsed = Duration(Clock::now() - start_time).count();
@@ -297,8 +305,10 @@ void JointSliders<T>::Run(const Diagram<T>& diagram,
 
     // Publish the new positions.
     plant_->SetPositions(&plant_context, new_positions);
-    diagram.Publish(diagram_context);
+    diagram.ForcedPublish(diagram_context);
   }
+
+  return ExtractDoubleOrThrow(plant_->GetPositions(plant_context).eval());
 }
 
 template <typename T>
@@ -309,9 +319,8 @@ void JointSliders<T>::SetPositions(const Eigen::VectorXd& q) {
         "Expected q of size {}, but got size {} instead",
         nq, q.size()));
   }
-  /* For all positions provided in q, update their value in initial_value_
-    including items without an associated slider (e.g., a floating base). */
-  initial_value_ = q;
+  /* For *all* positions provided in q, update their value in nominal_value_. */
+  nominal_value_ = q;
   if (is_registered_) {
     // For items with an associated slider, update the meshcat UI.
     // TODO(jwnimmer-tri) If SetPositions is in flight concurrently with a

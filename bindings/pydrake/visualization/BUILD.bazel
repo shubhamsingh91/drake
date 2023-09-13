@@ -1,9 +1,6 @@
-# -*- python -*-
-
-load("@drake//tools/install:install.bzl", "install")
+load("@drake//tools/install:install.bzl", "install", "install_files")
 load(
     "@drake//tools/skylark:pybind.bzl",
-    "add_pybind_coverage_data",
     "drake_pybind_library",
     "get_drake_py_installs",
     "get_pybind_package_info",
@@ -13,6 +10,11 @@ load(
     "drake_py_binary",
     "drake_py_library",
     "drake_py_unittest",
+)
+load("@python//:version.bzl", "PYTHON_SITE_PACKAGES_RELPATH")
+load(
+    "@drake//tools/workspace:cmake_configure_file.bzl",
+    "cmake_configure_file",
 )
 load("//bindings/pydrake:pydrake.bzl", "add_lint_tests_pydrake")
 
@@ -28,6 +30,7 @@ drake_pybind_library(
     name = "visualization",
     cc_deps = [
         "//bindings/pydrake:documentation_pybind",
+        "//bindings/pydrake/common:default_scalars_pybind",
         "//bindings/pydrake/common:serialize_pybind",
     ],
     cc_so_name = "__init__",
@@ -37,19 +40,28 @@ drake_pybind_library(
         "visualization_py.h",
     ],
     package_info = PACKAGE_INFO,
+    py_data = [
+        "_rgbd_camera_sliders.dmd.yaml",
+        "_rgbd_camera_sliders.sdf",
+    ],
     py_deps = [
         "//bindings/pydrake/multibody",
+        "//bindings/pydrake/planning",
         "//bindings/pydrake/solvers",
-        "//bindings/pydrake:geometry_py",
+        "//bindings/pydrake/systems",
+        "//bindings/pydrake/geometry",
         "//bindings/pydrake:lcm_py",
         "//bindings/pydrake:symbolic_py",
         "//lcmtypes:lcmtypes_drake_py",
     ],
     py_srcs = [
         "meldis.py",
-        "plotting.py",
+        "model_visualizer.py",
         "_meldis.py",
+        "_model_visualizer.py",
         "_plotting.py",
+        "_triad.py",
+        "_video.py",
         "_visualization_extra.py",
     ],
 )
@@ -61,15 +73,83 @@ drake_py_binary(
     deps = [":visualization"],
 )
 
+drake_py_binary(
+    name = "model_visualizer",
+    srcs = ["model_visualizer.py"],
+    data = ["//:all_models"],
+    visibility = ["//tools:__pkg__"],
+    deps = [":visualization"],
+)
+
+drake_py_binary(
+    name = "lcm_image_array_viewer",
+    srcs = ["_lcm_image_array_viewer.py"],
+    deps = [":visualization"],
+)
+
+# TODO(jwnimmer-tri) For now, this is a private library for testing only. Once
+# Meldis needs this it should move up into the main "visualization" library.
+drake_py_library(
+    name = "_lcm_image_array_viewer_py",
+    srcs = ["_lcm_image_array_viewer.py"],
+    deps = [":visualization"],
+)
+
+cmake_configure_file(
+    name = "generate_run_installed_meldis",
+    src = "run_installed_meldis.py.in",
+    out = "run_installed_meldis.py",
+    defines = [
+        "PYTHON_SITE_PACKAGES_RELPATH=" + PYTHON_SITE_PACKAGES_RELPATH,
+    ],
+)
+
+cmake_configure_file(
+    name = "generate_run_installed_model_visualizer",
+    src = "run_installed_model_visualizer.py.in",
+    out = "run_installed_model_visualizer.py",
+    defines = [
+        "PYTHON_SITE_PACKAGES_RELPATH=" + PYTHON_SITE_PACKAGES_RELPATH,
+    ],
+)
+
+install_files(
+    name = "install_wrapper_scripts",
+    dest = "bin",
+    files = [
+        "run_installed_meldis.py",
+        "run_installed_model_visualizer.py",
+    ],
+    rename = {
+        "bin/run_installed_meldis.py": "meldis",
+        "bin/run_installed_model_visualizer.py": "model_visualizer",
+    },
+)
+
+install_files(
+    name = "install_models",
+    dest = "share/drake/bindings/pydrake/visualization",
+    files = [
+        "_rgbd_camera_sliders.dmd.yaml",
+        "_rgbd_camera_sliders.sdf",
+    ],
+)
+
 PY_LIBRARIES = [
     ":visualization",
 ]
 
 install(
     name = "install",
+    install_tests = [
+        ":test/visualization_install_tests.py",
+    ],
     targets = [":visualization"],
     py_dest = PACKAGE_INFO.py_dest,
-    deps = get_drake_py_installs([":visualization"]),
+    deps = get_drake_py_installs(PY_LIBRARIES) + [
+        ":install_models",
+        ":install_wrapper_scripts",
+    ],
 )
 
 drake_py_unittest(
@@ -88,7 +168,28 @@ drake_py_unittest(
     ],
     deps = [
         ":visualization",
-        "//bindings/pydrake/common/test_utilities:deprecation_py",
+    ],
+)
+
+drake_py_unittest(
+    name = "model_visualizer_test",
+    timeout = "moderate",
+    data = [
+        ":model_visualizer",
+        "//geometry:meshcat_websocket_client",
+        "//manipulation/util:test_models",
+        "//multibody/benchmarks/acrobot:models",
+    ],
+    deps = [
+        ":model_visualizer",
+    ],
+)
+
+drake_py_unittest(
+    name = "model_visualizer_camera_test",
+    flaky = True,
+    deps = [
+        ":model_visualizer",
     ],
 )
 
@@ -96,10 +197,45 @@ drake_py_unittest(
     name = "plotting_test",
     deps = [
         ":visualization",
-        "//bindings/pydrake/common/test_utilities:deprecation_py",
     ],
 )
 
-add_pybind_coverage_data()
+drake_py_unittest(
+    name = "triad_test",
+    data = [
+        "//multibody/benchmarks/acrobot:models",
+    ],
+    deps = [
+        ":visualization",
+    ],
+)
 
-add_lint_tests_pydrake()
+drake_py_unittest(
+    name = "video_test",
+    deps = [
+        ":visualization",
+        "//bindings/pydrake/common/test_utilities:numpy_compare_py",
+    ],
+)
+
+drake_py_unittest(
+    name = "visualization_test",
+    deps = [
+        ":visualization",
+    ],
+)
+
+drake_py_unittest(
+    name = "lcm_image_array_viewer_test",
+    deps = [
+        ":_lcm_image_array_viewer_py",
+    ],
+)
+
+add_lint_tests_pydrake(
+    python_lint_extra_srcs = [
+        "run_installed_meldis.py.in",
+        "run_installed_model_visualizer.py.in",
+        "test/visualization_install_tests.py",
+    ],
+)

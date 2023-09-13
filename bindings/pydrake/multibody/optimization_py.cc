@@ -1,6 +1,3 @@
-#include "pybind11/eigen.h"
-#include "pybind11/pybind11.h"
-
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/serialize_pybind.h"
 #include "drake/bindings/pydrake/common/sorted_pair_pybind.h"
@@ -9,6 +6,7 @@
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/multibody/optimization/centroidal_momentum_constraint.h"
 #include "drake/multibody/optimization/quaternion_integration_constraint.h"
+#include "drake/multibody/optimization/spatial_velocity_constraint.h"
 #include "drake/multibody/optimization/static_equilibrium_problem.h"
 #include "drake/multibody/optimization/toppra.h"
 
@@ -93,7 +91,61 @@ PYBIND11_MODULE(optimization, m) {
     py::class_<Class, solvers::Constraint, Ptr>(
         m, "QuaternionEulerIntegrationConstraint", cls_doc.doc)
         .def(py::init<bool>(), py::arg("allow_quaternion_negation"),
-            cls_doc.ctor.doc);
+            cls_doc.ctor.doc)
+        .def("allow_quaternion_negation", &Class::allow_quaternion_negation,
+            cls_doc.allow_quaternion_negation.doc)
+        .def("ComposeVariable", &Class::ComposeVariable<double>,
+            py::arg("quat1"), py::arg("quat2"), py::arg("angular_vel"),
+            py::arg("h"), cls_doc.ComposeVariable.doc)
+        .def("ComposeVariable", &Class::ComposeVariable<symbolic::Variable>,
+            py::arg("quat1"), py::arg("quat2"), py::arg("angular_vel"),
+            py::arg("h"), cls_doc.ComposeVariable.doc)
+        .def("ComposeVariable", &Class::ComposeVariable<symbolic::Expression>,
+            py::arg("quat1"), py::arg("quat2"), py::arg("angular_vel"),
+            py::arg("h"), cls_doc.ComposeVariable.doc);
+  }
+
+  {
+    using Class = SpatialVelocityConstraint;
+    constexpr auto& cls_doc = doc.SpatialVelocityConstraint;
+    using Ptr = std::shared_ptr<Class>;
+    py::class_<Class, solvers::Constraint, Ptr> cls(
+        m, "SpatialVelocityConstraint", cls_doc.doc);
+    cls.def(py::init([](const MultibodyPlant<AutoDiffXd>* plant,
+                         const Frame<AutoDiffXd>& frameA,
+                         const Eigen::Ref<const Eigen::Vector3d>& v_AC_lower,
+                         const Eigen::Ref<const Eigen::Vector3d>& v_AC_upper,
+                         const Frame<AutoDiffXd>& frameB,
+                         const Eigen::Ref<const Eigen::Vector3d>& p_BCo,
+                         systems::Context<AutoDiffXd>* plant_context,
+                         const std::optional<
+                             SpatialVelocityConstraint::AngularVelocityBounds>&
+                             w_AC_bounds) {
+      return std::make_unique<Class>(plant, frameA, v_AC_lower, v_AC_upper,
+          frameB, p_BCo, plant_context, w_AC_bounds);
+    }),
+        py::arg("plant"), py::arg("frameA"), py::arg("v_AC_lower"),
+        py::arg("v_AC_upper"), py::arg("frameB"), py::arg("p_BCo"),
+        py::arg("plant_context"), py::arg("w_AC_bounds") = std::nullopt,
+        // Keep alive, reference: `self` keeps `plant` alive.
+        py::keep_alive<1, 2>(),
+        // Keep alive, reference: `self` keeps `plant_context` alive.
+        py::keep_alive<1, 8>(), cls_doc.ctor.doc);
+
+    using Avb = SpatialVelocityConstraint::AngularVelocityBounds;
+    constexpr auto& avb_doc =
+        doc.SpatialVelocityConstraint.AngularVelocityBounds;
+    py::class_<SpatialVelocityConstraint::AngularVelocityBounds>(
+        cls, "AngularVelocityBounds", avb_doc.doc)
+        .def(py::init<>(), cls_doc.ctor.doc)
+        .def_readwrite("magnitude_lower", &Avb::magnitude_lower,
+            avb_doc.magnitude_lower.doc)
+        .def_readwrite("magnitude_upper", &Avb::magnitude_upper,
+            avb_doc.magnitude_upper.doc)
+        .def_readwrite("reference_direction", &Avb::reference_direction,
+            avb_doc.reference_direction.doc)
+        .def_readwrite(
+            "theta_bound", &Avb::theta_bound, avb_doc.theta_bound.doc);
   }
 
   {
@@ -156,14 +208,32 @@ PYBIND11_MODULE(optimization, m) {
             py::arg("constraint_frame"), py::arg("lower_limit"),
             py::arg("upper_limit"), cls_doc.AddFrameVelocityLimit.doc)
         .def("AddFrameTranslationalSpeedLimit",
-            &Class::AddFrameTranslationalSpeedLimit,
+            py::overload_cast<const Frame<double>&, const double&>(
+                &Class::AddFrameTranslationalSpeedLimit),
             py::arg("constraint_frame"), py::arg("upper_limit"),
-            cls_doc.AddFrameTranslationalSpeedLimit.doc)
-        .def("AddFrameAccelerationLimit", &Class::AddFrameAccelerationLimit,
+            cls_doc.AddFrameTranslationalSpeedLimit.doc_const)
+        .def("AddFrameTranslationalSpeedLimit",
+            py::overload_cast<const Frame<double>&, const Trajectory<double>&>(
+                &Class::AddFrameTranslationalSpeedLimit),
+            py::arg("constraint_frame"), py::arg("upper_limit"),
+            cls_doc.AddFrameTranslationalSpeedLimit.doc_trajectory)
+        .def("AddFrameAccelerationLimit",
+            py::overload_cast<const Frame<double>&,
+                const Eigen::Ref<const Vector6d>&,
+                const Eigen::Ref<const Vector6d>&, ToppraDiscretization>(
+                &Class::AddFrameAccelerationLimit),
             py::arg("constraint_frame"), py::arg("lower_limit"),
             py::arg("upper_limit"),
             py::arg("discretization") = ToppraDiscretization::kInterpolation,
-            cls_doc.AddFrameAccelerationLimit.doc);
+            cls_doc.AddFrameAccelerationLimit.doc_const)
+        .def("AddFrameAccelerationLimit",
+            py::overload_cast<const Frame<double>&, const Trajectory<double>&,
+                const Trajectory<double>&, ToppraDiscretization>(
+                &Class::AddFrameAccelerationLimit),
+            py::arg("constraint_frame"), py::arg("lower_limit"),
+            py::arg("upper_limit"),
+            py::arg("discretization") = ToppraDiscretization::kInterpolation,
+            cls_doc.AddFrameAccelerationLimit.doc_trajectory);
   }
 }
 }  // namespace

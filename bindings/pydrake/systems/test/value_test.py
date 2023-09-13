@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 from pydrake.autodiffutils import AutoDiffXd
-from pydrake.common.value import AbstractValue, Value
+from pydrake.common.value import Value
 from pydrake.common.test_utilities import numpy_compare
 from pydrake.symbolic import Expression
 from pydrake.systems.framework import (
@@ -119,18 +119,17 @@ class TestValue(unittest.TestCase):
         vector_f = [1.]
         value_f = BasicVector_[float](vector_f)
         self.assertEqual(str(value_f), "[1.0]")
-        self.assertEqual(repr(value_f), "BasicVector_[float]([1.0])")
+        self.assertEqual(repr(value_f), "BasicVector([1.0])")
         # Check repr() invariant.
         self.assert_basic_vector_equal(value_f, eval(repr(value_f)))
         # - Empty.
         value_f_empty = BasicVector_[float]([])
         self.assertEqual(str(value_f_empty), "[]")
-        self.assertEqual(repr(value_f_empty), "BasicVector_[float]([])")
+        self.assertEqual(repr(value_f_empty), "BasicVector([])")
         # - Multiple values.
         value_f_multi = BasicVector_[float]([1., 2.])
         self.assertEqual(str(value_f_multi), "[1.0, 2.0]")
-        self.assertEqual(
-            repr(value_f_multi), "BasicVector_[float]([1.0, 2.0])")
+        self.assertEqual(repr(value_f_multi), "BasicVector([1.0, 2.0])")
         # TODO(eric.cousineau): Make repr() for AutoDiffXd and Expression be
         # semi-usable.
         # T=AutoDiffXd
@@ -161,7 +160,7 @@ class TestValue(unittest.TestCase):
                 self.assertEqual(actual.get_value(), expected.get_value())
 
         model_numeric = BasicVector([0.])
-        model_abstract = AbstractValue.Make("Hello")
+        model_abstract = Value("Hello")
 
         params = Parameters(
             numeric=[model_numeric.Clone()], abstract=[model_abstract.Clone()])

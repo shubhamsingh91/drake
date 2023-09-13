@@ -9,9 +9,9 @@
 #include <gtest/gtest.h>
 
 #include "drake/common/find_resource.h"
+#include "drake/common/test_utilities/expect_no_throw.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/math/rigid_transform.h"
-#include "drake/multibody/parsing/scoped_names.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/multibody/tree/revolute_joint.h"
 
@@ -312,6 +312,20 @@ GTEST_TEST(ProcessModelDirectivesTest, CollisionFilterGroupSmokeTest) {
 }
 
 // Test collision filter groups in ModelDirectives.
+GTEST_TEST(ProcessModelDirectivesTest, CollisionFilterGroupNoSceneGraph) {
+  ModelDirectives directives = LoadModelDirectives(
+      FindResourceOrThrow(std::string(kTestDir) +
+                          "/collision_filter_group.dmd.yaml"));
+
+
+  MultibodyPlant<double> plant(0.0);
+  ASSERT_FALSE(plant.geometry_source_is_registered());
+  DRAKE_EXPECT_NO_THROW(
+      ProcessModelDirectives(directives, &plant,
+                             nullptr, make_parser(&plant).get()));
+}
+
+// Test collision filter groups in ModelDirectives.
 GTEST_TEST(ProcessModelDirectivesTest, DefaultPositions) {
   ModelDirectives directives = LoadModelDirectives(
       FindResourceOrThrow(std::string(kTestDir) +
@@ -353,8 +367,35 @@ GTEST_TEST(ProcessModelDirectivesTest, ErrorMessages) {
     DRAKE_EXPECT_THROWS_MESSAGE(
         ProcessModelDirectives(directives, &plant, nullptr,
                                make_parser(&plant).get()),
-        ".*unknown package 'nonexistant'.*");
+        ".*unknown package 'nonexistent'.*");
   }
+}
+
+// Test model directives failure to load welds with a deep nested child.
+GTEST_TEST(ProcessModelDirectivesTest, DeepNestedChildWelds) {
+  ModelDirectives directives = LoadModelDirectives(
+      FindResourceOrThrow(std::string(kTestDir) +
+                          "/deep_child_weld.dmd.yaml"));
+  MultibodyPlant<double> plant(0.0);
+
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      ProcessModelDirectives(directives, &plant, nullptr,
+        make_parser(&plant).get()),
+        R"(.*Failure at .* in AddWeld\(\): condition 'found' failed.*)");
+}
+
+// Test model directives failure to load welds with a child to a
+// deep nested frame.
+GTEST_TEST(ProcessModelDirectivesTest, DeepNestedChildFrameWelds) {
+  ModelDirectives directives = LoadModelDirectives(
+      FindResourceOrThrow(std::string(kTestDir) +
+                          "/deep_child_frame_weld.dmd.yaml"));
+  MultibodyPlant<double> plant(0.0);
+
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      ProcessModelDirectives(directives, &plant, nullptr,
+        make_parser(&plant).get()),
+        R"(.*Failure at .* in AddWeld\(\): condition 'found' failed.*)");
 }
 
 }  // namespace

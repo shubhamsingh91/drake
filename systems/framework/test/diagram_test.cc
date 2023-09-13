@@ -15,6 +15,7 @@
 #include "drake/systems/framework/fixed_input_port_value.h"
 #include "drake/systems/framework/leaf_system.h"
 #include "drake/systems/framework/output_port.h"
+#include "drake/systems/framework/test_utilities/initialization_test_system.h"
 #include "drake/systems/framework/test_utilities/pack_value.h"
 #include "drake/systems/framework/test_utilities/scalar_conversion.h"
 #include "drake/systems/primitives/adder.h"
@@ -50,12 +51,18 @@ class EmptySystem : public LeafSystem<T> {
   void AddPeriodicDiscreteUpdate() {
     const double default_period = 1.125;
     const double default_offset = 2.25;
-    this->DeclarePeriodicDiscreteUpdate(default_period, default_offset);
+    this->DeclarePeriodicDiscreteUpdateEvent(default_period, default_offset,
+                                             &EmptySystem::Noop);
   }
 
   // Adds a specific periodic discrete update.
   void AddPeriodicDiscreteUpdate(double period, double offset) {
-    this->DeclarePeriodicDiscreteUpdate(period, offset);
+    this->DeclarePeriodicDiscreteUpdateEvent(period, offset,
+                                             &EmptySystem::Noop);
+  }
+
+  EventStatus Noop(const Context<T>&, DiscreteValues<T>*) const {
+    return EventStatus::DidNothing();
   }
 };
 
@@ -261,19 +268,19 @@ GTEST_TEST(EmptySystemDiagramTest, CheckPeriodicTriggerDiscreteUpdate) {
 
     // None of these should have a unique periodic event.
     EXPECT_FALSE(d_sys1upd.GetUniquePeriodicDiscreteUpdateAttribute());
-    EXPECT_EQ(d_sys1upd.GetPeriodicEvents().size(), i + 1);
+    EXPECT_EQ(d_sys1upd.MapPeriodicEventsByTiming().size(), i + 1);
     EXPECT_FALSE(d_sys2upd.GetUniquePeriodicDiscreteUpdateAttribute());
-    EXPECT_EQ(d_sys2upd.GetPeriodicEvents().size(), i + 1);
+    EXPECT_EQ(d_sys2upd.MapPeriodicEventsByTiming().size(), i + 1);
     EXPECT_FALSE(d_bothupd.GetUniquePeriodicDiscreteUpdateAttribute());
-    EXPECT_EQ(d_bothupd.GetPeriodicEvents().size(), 2 * (i + 1));
+    EXPECT_EQ(d_bothupd.MapPeriodicEventsByTiming().size(), 2 * (i + 1));
     EXPECT_FALSE(d_both_last.GetUniquePeriodicDiscreteUpdateAttribute());
-    EXPECT_EQ(d_both_last.GetPeriodicEvents().size(), 2);
+    EXPECT_EQ(d_both_last.MapPeriodicEventsByTiming().size(), 2);
 
     // All of these should have a unique periodic event.
     EXPECT_TRUE(d_sys1_last.GetUniquePeriodicDiscreteUpdateAttribute());
-    EXPECT_EQ(d_sys1_last.GetPeriodicEvents().size(), 1);
+    EXPECT_EQ(d_sys1_last.MapPeriodicEventsByTiming().size(), 1);
     EXPECT_TRUE(d_sys2_last.GetUniquePeriodicDiscreteUpdateAttribute());
-    EXPECT_EQ(d_sys2_last.GetPeriodicEvents().size(), 1);
+    EXPECT_EQ(d_sys2_last.MapPeriodicEventsByTiming().size(), 1);
   }
 }
 
@@ -973,14 +980,18 @@ TEST_F(DiagramTest, AllocateInputs) {
 }
 
 TEST_F(DiagramTest, GetSubsystemByName) {
+  EXPECT_TRUE(diagram_->HasSubsystemNamed("stateless"));
   const System<double>& stateless = diagram_->GetSubsystemByName("stateless");
   EXPECT_NE(
       dynamic_cast<const StatelessSystem<double>*>(&stateless),
       nullptr);
 
+  EXPECT_FALSE(diagram_->HasSubsystemNamed("not_a_subsystem"));
   DRAKE_EXPECT_THROWS_MESSAGE(
       diagram_->GetSubsystemByName("not_a_subsystem"),
-      "System .* does not have a subsystem named not_a_subsystem");
+      "System .* does not have a subsystem named not_a_subsystem. The existing "
+      "subsystems are named \\{adder0, adder1, adder2, stateless, integrator0, "
+      "integrator1, sink, kitchen_sink\\}.");
 }
 
 TEST_F(DiagramTest, GetDowncastSubsystemByName) {
@@ -994,7 +1005,20 @@ TEST_F(DiagramTest, GetDowncastSubsystemByName) {
 
   DRAKE_EXPECT_THROWS_MESSAGE(
       diagram_->GetDowncastSubsystemByName<StatelessSystem>("not_a_subsystem"),
-      "System .* does not have a subsystem named not_a_subsystem");
+      "System .* does not have a subsystem named not_a_subsystem. The existing "
+      "subsystems are named \\{adder0, adder1, adder2, stateless, integrator0, "
+      "integrator1, sink, kitchen_sink\\}.");
+
+  // Now downcast a non-templatized system (invokes a different overload).
+  // This will only compile if the subsystem's scalar type matches the
+  // Diagram's scalar type.
+  const StatelessSystem<double>& also_stateless =
+      diagram_->GetDowncastSubsystemByName<StatelessSystem<double>>
+          ("stateless");
+  EXPECT_EQ(also_stateless.get_name(), "stateless");
+
+  // Both overloads use the same implementation and depend on
+  // GetSubsystemByName() for the error checking tested above.
 }
 
 // Tests that ContextBase methods for affecting cache behavior propagate
@@ -1514,7 +1538,7 @@ GTEST_TEST(DiagramPublishTest, Publish) {
   PublishNumberDiagram publishing_diagram(42.0);
   EXPECT_EQ(0, publishing_diagram.get());
   auto context = publishing_diagram.CreateDefaultContext();
-  publishing_diagram.Publish(*context);
+  publishing_diagram.ForcedPublish(*context);
   EXPECT_EQ(42.0, publishing_diagram.get());
 }
 
@@ -1564,7 +1588,7 @@ class FeedbackDiagram : public Diagram<T> {
   // Scalar-converting copy constructor.
   template <typename U>
   explicit FeedbackDiagram(const FeedbackDiagram<U>& other)
-      : Diagram<T>(other) {}
+      : Diagram<T>(SystemTypeTag<FeedbackDiagram>{}, other) {}
 };
 
 // Tests that since there are no outputs, there is no direct feedthrough.
@@ -1591,6 +1615,11 @@ TEST_F(DiagramTest, SubclassTransmogrificationTest) {
   EXPECT_TRUE(is_symbolic_convertible(dut, [](const auto& converted) {
     EXPECT_FALSE(converted.HasAnyDirectFeedthrough());
   }));
+
+  // Check that the subtype makes it all the way through cloning.
+  // Any mismatched subtype will fail-fast within the Clone implementation.
+  std::unique_ptr<FeedbackDiagram<double>> copy = System<double>::Clone(dut);
+  EXPECT_NE(copy, nullptr);
 
   // Diagram subclasses that declare a specific SystemTypeTag but then use a
   // subclass at runtime will fail-fast.
@@ -1863,7 +1892,7 @@ class TestPublishingSystem final : public LeafSystem<double> {
   TestPublishingSystem() {
     this->DeclarePeriodicPublishEvent(
         kTestPublishPeriod, 0.0, &TestPublishingSystem::HandlePeriodPublish);
-    this->DeclarePeriodicPublish(kTestPublishPeriod);
+    this->DeclarePeriodicPublishNoHandler(kTestPublishPeriod);
 
     // Verify that no periodic discrete updates are registered.
     EXPECT_FALSE(this->GetUniquePeriodicDiscreteUpdateAttribute());
@@ -2038,7 +2067,7 @@ TEST_F(DiscreteStateTest, UpdateDiscreteVariables) {
 
   // Fast forward to 9.0 sec and do the update.
   context_->SetTime(9.0);
-  diagram_.CalcDiscreteVariableUpdates(
+  diagram_.CalcDiscreteVariableUpdate(
       *context_, events->get_discrete_update_events(), updates.get());
 
   // Note that non-participating hold1's state should not have been
@@ -2063,7 +2092,7 @@ TEST_F(DiscreteStateTest, UpdateDiscreteVariables) {
 
   // Fast forward to 12.0 sec and do the update again.
   context_->SetTime(12.0);
-  diagram_.CalcDiscreteVariableUpdates(
+  diagram_.CalcDiscreteVariableUpdate(
       *context_, events->get_discrete_update_events(), updates.get());
   EXPECT_EQ(17.0, updates1[0]);
   EXPECT_EQ(23.0, updates2[0]);
@@ -2108,7 +2137,7 @@ TEST_F(DiscreteStateTest, DiscreteUpdateNotificationsAreLocalized) {
 
   // Fast forward to 2.0 sec and collect the update.
   context_->SetTime(2.0);
-  diagram_.CalcDiscreteVariableUpdates(
+  diagram_.CalcDiscreteVariableUpdate(
       *context_, discrete_events, updates.get());
 
   // Of course nothing should have been notified since nothing's changed yet.
@@ -2140,11 +2169,19 @@ class SystemWithDiscreteState : public LeafSystem<double> {
   SystemWithDiscreteState(int id, double update_period) : id_(id) {
     // Just one discrete variable, initialized to id.
     DeclareDiscreteState(Vector1d(id_));
-    DeclarePeriodicDiscreteUpdateEvent(
-        update_period, 0, &SystemWithDiscreteState::AddTimeToDiscreteVariable);
+    if (update_period > 0.0) {
+      DeclarePeriodicDiscreteUpdateEvent(
+          update_period, 0,
+          &SystemWithDiscreteState::AddTimeToDiscreteVariable);
+    }
+
+    DeclarePerStepDiscreteUpdateEvent(
+        &SystemWithDiscreteState::IncrementCounter);
   }
 
   int get_id() const { return id_; }
+
+  int counter() const { return counter_; }
 
  private:
   // Discrete state is set to input state value + time. We expect that the
@@ -2156,7 +2193,14 @@ class SystemWithDiscreteState : public LeafSystem<double> {
     (*discrete_state)[0] += context.get_time();
   }
 
+  EventStatus IncrementCounter(
+      const Context<double>&, DiscreteValues<double>*) const {
+    ++counter_;
+    return EventStatus::Succeeded();
+  }
+
   const int id_;
+  mutable int counter_{0};
 };
 
 class TwoDiscreteSystemDiagram : public Diagram<double> {
@@ -2216,13 +2260,13 @@ GTEST_TEST(DiscreteStateDiagramTest, IsDifferenceEquationSystem) {
   EXPECT_FALSE(one_period_two_state_diagram->IsDifferenceEquationSystem());
 }
 
-// Tests CalcDiscreteVariableUpdates() when there are multiple subsystems and
+// Tests CalcDiscreteVariableUpdate() when there are multiple subsystems and
 // only one has an event to handle (call that the "participating subsystem"). We
 // want to verify that only the participating subsystem's State gets copied,
 // that the copied value matches the current value in the context, and
 // that the update gets performed properly. We also check that it works properly
 // when multiple subsystems have events to handle.
-GTEST_TEST(DiscreteStateDiagramTest, CalcDiscreteVariableUpdates) {
+GTEST_TEST(DiscreteStateDiagramTest, CalcDiscreteVariableUpdate) {
   TwoDiscreteSystemDiagram diagram;
   const int kSys1Id = TwoDiscreteSystemDiagram::kSys1Id;
   const int kSys2Id = TwoDiscreteSystemDiagram::kSys2Id;
@@ -2259,7 +2303,7 @@ GTEST_TEST(DiscreteStateDiagramTest, CalcDiscreteVariableUpdates) {
   // Fast forward to the event time, and record it for the test below.
   double time = 2.0;
   context->SetTime(time);
-  diagram.CalcDiscreteVariableUpdates(
+  diagram.CalcDiscreteVariableUpdate(
       *context, events->get_discrete_update_events(), x_buf.get());
 
   // The non-participating sys2 state shouldn't have been copied (if it had
@@ -2288,13 +2332,75 @@ GTEST_TEST(DiscreteStateDiagramTest, CalcDiscreteVariableUpdates) {
   // Fast forward to the new event time, and record it for the tests below.
   time = 6.0;
   context->SetTime(time);
-  diagram.CalcDiscreteVariableUpdates(
+  diagram.CalcDiscreteVariableUpdate(
       *context, events->get_discrete_update_events(), x_buf.get());
   // Both sys1 and sys2's discrete data should be updated.
   diagram.ApplyDiscreteVariableUpdate(events->get_discrete_update_events(),
                                       x_buf.get(), context.get());
   EXPECT_EQ(context->get_discrete_state(0)[0], kSys1Id + 2 + time);
   EXPECT_EQ(context->get_discrete_state(1)[0], kSys2Id + time);
+}
+
+// Tests that EvalUniquePeriodicDiscreteUpdate() rejects systems that don't
+// have exactly one periodic timing that triggers discrete updates.
+GTEST_TEST(DiscreteStateDiagramTest, EvalUniquePeriodicDiscreteUpdateErrors) {
+  TestPublishingSystem no_discrete_updates;
+  auto no_discrete_updates_context = no_discrete_updates.CreateDefaultContext();
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      no_discrete_updates.EvalUniquePeriodicDiscreteUpdate(
+          *no_discrete_updates_context),
+      ".*no periodic discrete update events.*");
+
+  // Two unique periods.
+  DiagramBuilder<double> two_period_builder;
+  two_period_builder.template AddSystem<SystemWithDiscreteState>(1, 2.0);
+  two_period_builder.template AddSystem<SystemWithDiscreteState>(2, 3.0);
+  const auto two_period_diagram = two_period_builder.Build();
+  auto two_period_context = two_period_diagram->CreateDefaultContext();
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      two_period_diagram->EvalUniquePeriodicDiscreteUpdate(*two_period_context),
+      ".*more than one periodic timing.*");
+}
+
+// Tests that EvalUniquePeriodicDiscreteUpdate()
+//  - properly copies the old discrete state before calling handlers,
+//  - executes _all_ discrete update events triggered by the unique timing,
+//  - ignores non-periodic discrete updates.
+GTEST_TEST(DiscreteStateDiagramTest, EvalUniquePeriodicDiscreteUpdate) {
+  // Two discrete variables in different subsystems, initialized to 7 and 8,
+  // with periodic discrete updates that have identical period 5s. There is
+  // also a per-step discrete update event in each system whose handler
+  // increments a counter if triggered.
+  DiagramBuilder<double> builder;
+  auto* system0 = builder.template AddSystem<SystemWithDiscreteState>(7, 5.0);
+  auto* system1 = builder.template AddSystem<SystemWithDiscreteState>(8, 5.0);
+  // The third system doesn't have a periodic update at all.
+  auto* system2 = builder.template AddSystem<SystemWithDiscreteState>(9, 0.0);
+  const auto two_discretes = builder.Build();
+  auto context = two_discretes->CreateDefaultContext();
+
+  EXPECT_EQ(context->get_discrete_state(0)[0], 7.0);
+  EXPECT_EQ(context->get_discrete_state(1)[0], 8.0);
+  EXPECT_EQ(context->get_discrete_state(2)[0], 9.0);
+
+  // The update methods add time to the variable values.
+  context->SetTime(4.);
+  const DiscreteValues<double>& result =
+      two_discretes->EvalUniquePeriodicDiscreteUpdate(*context);
+
+  EXPECT_EQ(result.value(0)[0], 11.0);  // updated
+  EXPECT_EQ(result.value(1)[0], 12.0);  // updated
+  EXPECT_EQ(result.value(2)[0], 9.0);   // just copied
+
+  // Emphasize that the original Context discrete state remains unchanged.
+  EXPECT_EQ(context->get_discrete_state(0)[0], 7.0);
+  EXPECT_EQ(context->get_discrete_state(1)[0], 8.0);
+  EXPECT_EQ(context->get_discrete_state(2)[0], 9.0);
+
+  // Verify that the per-step discrete update events didn't get executed at all.
+  EXPECT_EQ(system0->counter(), 0);
+  EXPECT_EQ(system1->counter(), 0);
+  EXPECT_EQ(system2->counter(), 0);
 }
 
 // Tests that a publish action is taken at 19 sec.
@@ -2326,12 +2432,12 @@ class ForcedPublishingSystemDiagramTest : public ::testing::Test {
 };
 
 // Tests that a forced publish is processed through the event handler.
-TEST_F(ForcedPublishingSystemDiagramTest, Publish) {
+TEST_F(ForcedPublishingSystemDiagramTest, ForcedPublish) {
   auto* forced_publishing_system_one = diagram_.publishing_system_one();
   auto* forced_publishing_system_two = diagram_.publishing_system_two();
   EXPECT_FALSE(forced_publishing_system_one->published());
   EXPECT_FALSE(forced_publishing_system_two->published());
-  diagram_.Publish(*context_);
+  diagram_.ForcedPublish(*context_);
   EXPECT_TRUE(forced_publishing_system_one->published());
   EXPECT_TRUE(forced_publishing_system_two->published());
 }
@@ -2339,7 +2445,7 @@ TEST_F(ForcedPublishingSystemDiagramTest, Publish) {
 class SystemWithAbstractState : public LeafSystem<double> {
  public:
   SystemWithAbstractState(int id, double update_period) : id_(id) {
-    DeclarePeriodicUnrestrictedUpdate(update_period, 0);
+    DeclarePeriodicUnrestrictedUpdateNoHandler(update_period, 0);
     DeclareAbstractState(Value<double>(id_));
 
     // Verify that no periodic discrete updates are registered.
@@ -3117,8 +3223,8 @@ class PerStepActionTestSystem : public LeafSystem<double> {
 // systems. To that end, we create a diagram with a nested diagram and sibling
 // leaf systems. Each leaf system has a unique set of events (None, discrete and
 // and unrestricted, and unrestricted and publish, respectively). By invoking
-// the various forced event-generating methods (CalcUnrestrictedUpdate,
-// CalcDiscreteVariableUpdates, and Publish), we can observe the results by
+// the various forced event-generating methods (CalcUnrestrictedUpdate(),
+// CalcDiscreteVariableUpdate(), and Publish(), we can observe the results by
 // observing the context for the system (and its for-the-unit-test, hacked
 // internal state). The fact that these unit tests use events triggered by
 // per-step events is wholly irrelevant -- at this tested level of the API, the
@@ -3170,9 +3276,9 @@ GTEST_TEST(DiagramEventEvaluation, Propagation) {
   context->get_mutable_state().SetFrom(*tmp_state);
 
   // Does discrete updates second.
-  diagram->CalcDiscreteVariableUpdates(*context,
-                                       events->get_discrete_update_events(),
-                                       tmp_discrete_state.get());
+  diagram->CalcDiscreteVariableUpdate(*context,
+                                      events->get_discrete_update_events(),
+                                      tmp_discrete_state.get());
   context->get_mutable_discrete_state().SetFrom(*tmp_discrete_state);
 
   // Publishes last.
@@ -3251,11 +3357,10 @@ GTEST_TEST(MyEventTest, MyEventTestLeaf) {
     EXPECT_EQ(events->get_system_id(), context->get_system_id());
 
     // If period is zero, we still need to evaluate the per step events.
-    double time = dut.CalcNextUpdateTime(*context, periodic_events.get());
+    dut.GetPeriodicEvents(*context, periodic_events.get());
     dut.GetPerStepEvents(*context, per_step_events.get());
     events->AddToEnd(*periodic_events);
     events->AddToEnd(*per_step_events);
-    context->SetTime(time);
     dut.Publish(*context, events->get_publish_events());
 
     EXPECT_EQ(dut.get_periodic_count(), period > 0 ? 1 : 0);
@@ -3295,12 +3400,14 @@ GTEST_TEST(MyEventTest, MyEventTestDiagram) {
 
   auto context = dut->CreateDefaultContext();
 
+  // Returns only the events that trigger at 0.1s.
   double time = dut->CalcNextUpdateTime(*context, periodic_events.get());
   dut->GetPerStepEvents(*context, per_step_events.get());
 
   events->AddToEnd(*periodic_events);
   events->AddToEnd(*per_step_events);
 
+  // FYI time not actually needed here; events to handle already selected.
   context->SetTime(time);
   dut->Publish(*context, events->get_publish_events());
 
@@ -3318,8 +3425,26 @@ GTEST_TEST(MyEventTest, MyEventTestDiagram) {
   EXPECT_EQ(sys[3]->get_periodic_count(), 1);
   EXPECT_EQ(sys[3]->get_per_step_count(), 0);
 
-  // Sys4 has only a per-step event, it gets triggered because we're taking a
-  // step.
+  // Sys4 has only a per-step publish event, it got triggered by the explicit
+  // Publish() call above.
+  EXPECT_EQ(sys[4]->get_periodic_count(), 0);
+  EXPECT_EQ(sys[4]->get_per_step_count(), 1);
+
+  // Next, re-use this Diagram using GetPeriodicEvents() rather than
+  // CalcNextUpdateTime(). periodic_events should get cleared first so that
+  // it doesn't contain the ones leftover from the CalcNextUpdateTime() call.
+  // (If it doesn't get cleared some of the counts will be incremented twice.)
+  dut->GetPeriodicEvents(*context, periodic_events.get());
+  dut->Publish(*context, periodic_events->get_publish_events());
+
+  EXPECT_EQ(sys[0]->get_periodic_count(), 1);
+  EXPECT_EQ(sys[0]->get_per_step_count(), 0);
+  EXPECT_EQ(sys[1]->get_periodic_count(), 2);
+  EXPECT_EQ(sys[1]->get_per_step_count(), 0);
+  EXPECT_EQ(sys[2]->get_periodic_count(), 2);
+  EXPECT_EQ(sys[2]->get_per_step_count(), 0);
+  EXPECT_EQ(sys[3]->get_periodic_count(), 2);
+  EXPECT_EQ(sys[3]->get_per_step_count(), 0);
   EXPECT_EQ(sys[4]->get_periodic_count(), 0);
   EXPECT_EQ(sys[4]->get_per_step_count(), 1);
 }
@@ -3587,59 +3712,6 @@ GTEST_TEST(RandomContextTest, SetRandomTest) {
 
 // Tests initialization works properly for all subsystems.
 GTEST_TEST(InitializationTest, InitializationTest) {
-  // Note: this class is duplicated in leaf_system_test.
-  class InitializationTestSystem : public LeafSystem<double> {
-   public:
-    InitializationTestSystem() {
-      PublishEvent<double> pub_event(
-          TriggerType::kInitialization,
-          std::bind(&InitializationTestSystem::InitPublish, this,
-                    std::placeholders::_1, std::placeholders::_2));
-      DeclareInitializationEvent(pub_event);
-
-      DeclareInitializationEvent(DiscreteUpdateEvent<double>(
-          TriggerType::kInitialization));
-      DeclareInitializationEvent(UnrestrictedUpdateEvent<double>(
-          TriggerType::kInitialization));
-    }
-
-    bool get_pub_init() const { return pub_init_; }
-    bool get_dis_update_init() const { return dis_update_init_; }
-    bool get_unres_update_init() const { return unres_update_init_; }
-
-   private:
-    void InitPublish(const Context<double>&,
-                     const PublishEvent<double>& event) const {
-      EXPECT_EQ(event.get_trigger_type(),
-                TriggerType::kInitialization);
-      pub_init_ = true;
-    }
-
-    void DoCalcDiscreteVariableUpdates(
-        const Context<double>&,
-        const std::vector<const DiscreteUpdateEvent<double>*>& events,
-        DiscreteValues<double>*) const final {
-      EXPECT_EQ(events.size(), 1);
-      EXPECT_EQ(events.front()->get_trigger_type(),
-                TriggerType::kInitialization);
-      dis_update_init_ = true;
-    }
-
-    void DoCalcUnrestrictedUpdate(
-        const Context<double>&,
-        const std::vector<const UnrestrictedUpdateEvent<double>*>& events,
-        State<double>*) const final {
-      EXPECT_EQ(events.size(), 1);
-      EXPECT_EQ(events.front()->get_trigger_type(),
-                TriggerType::kInitialization);
-      unres_update_init_ = true;
-    }
-
-    mutable bool pub_init_{false};
-    mutable bool dis_update_init_{false};
-    mutable bool unres_update_init_{false};
-  };
-
   DiagramBuilder<double> builder;
 
   auto sys0 = builder.AddSystem<InitializationTestSystem>();
@@ -3648,17 +3720,7 @@ GTEST_TEST(InitializationTest, InitializationTest) {
   auto dut = builder.Build();
 
   auto context = dut->CreateDefaultContext();
-  auto discrete_updates = dut->AllocateDiscreteVariables();
-  auto state = context->CloneState();
-  auto init_events = dut->AllocateCompositeEventCollection();
-  dut->GetInitializationEvents(*context, init_events.get());
-
-  dut->Publish(*context, init_events->get_publish_events());
-  dut->CalcDiscreteVariableUpdates(*context,
-                                   init_events->get_discrete_update_events(),
-                                   discrete_updates.get());
-  dut->CalcUnrestrictedUpdate(
-      *context, init_events->get_unrestricted_update_events(), state.get());
+  dut->ExecuteInitializationEvents(context.get());
 
   EXPECT_TRUE(sys0->get_pub_init());
   EXPECT_TRUE(sys0->get_dis_update_init());

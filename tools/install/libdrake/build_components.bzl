@@ -1,5 +1,3 @@
-# -*- python -*-
-
 # This file governs the contents of libdrake.so.
 
 # Do not update this list by hand; instead, from the drake workspace run
@@ -44,11 +42,11 @@ LIBDRAKE_COMPONENTS = [
     "//geometry/query_results",
     "//geometry/render/shaders",
     "//geometry/render_gl",
+    "//geometry/render_gltf_client",
     "//geometry/render_vtk",
     "//lcm",
     "//manipulation/kinova_jaco",
     "//manipulation/kuka_iiwa",
-    "//manipulation/planner",
     "//manipulation/schunk_wsg",
     "//manipulation/util",
     "//math",
@@ -76,6 +74,7 @@ LIBDRAKE_COMPONENTS = [
     "//multibody/triangle_quadrature",
     "//perception",
     "//planning",
+    "//planning/trajectory_optimization",
     "//solvers",
     "//systems/analysis",
     "//systems/controllers",
@@ -86,6 +85,5 @@ LIBDRAKE_COMPONENTS = [
     "//systems/primitives",
     "//systems/rendering",
     "//systems/sensors",
-    "//systems/trajectory_optimization",
     "//visualization",
 ]

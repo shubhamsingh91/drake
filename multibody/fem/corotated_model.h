@@ -15,6 +15,7 @@ template <typename T, int num_locations>
 struct CorotatedModelTraits {
   using Scalar = T;
   using Data = CorotatedModelData<T, num_locations>;
+  static constexpr int is_linear = false;
 };
 
 /* Implements the fixed corotated hyperelastic constitutive model as
@@ -50,12 +51,12 @@ class CorotatedModel final
 
   const T& poissons_ratio() const { return nu_; }
 
-  /* Returns the shear modulus (Lame's second parameter) which is given by
+  /* Returns the shear modulus (Lamé's second parameter) which is given by
    `E/(2*(1+nu))` where `E` is the Young's modulus and `nu` is the Poisson's
    ratio. See `fem::internal::CalcLameParameters()`. */
   const T& shear_modulus() const { return mu_; }
 
-  /* Returns the Lame's first parameter which is given by
+  /* Returns the Lamé's first parameter which is given by
    `E*nu/((1+nu)*(1-2*nu))` where `E` is the Young's modulus and `nu` is the
    Poisson's ratio. See `fem::internal::CalcLameParameters()`. */
   const T& lame_first_parameter() const { return lambda_; }

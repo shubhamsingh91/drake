@@ -70,9 +70,8 @@ GTEST_TEST(JointLimitsTest, PrismaticJointConvergenceTest) {
     MultibodyPlant<double> plant(time_step);
     plant.mutable_gravity_field().set_gravity_vector(
         Vector3<double>::Zero());
-    const auto M_B = SpatialInertia<double>::MakeFromCentralInertia(
-        mass, Vector3<double>::Zero(),
-        mass * UnitInertia<double>::SolidBox(box_size, box_size, box_size));
+    const SpatialInertia<double> M_B =
+        SpatialInertia<double>::SolidCubeWithMass(mass, box_size);
     const RigidBody<double>& body = plant.AddRigidBody("Body", M_B);
     const PrismaticJoint<double>& slider = plant.AddJoint<PrismaticJoint>(
         "Slider", plant.world_body(), std::nullopt, body, std::nullopt,
@@ -139,13 +138,10 @@ GTEST_TEST(JointLimitsTest, RevoluteJoint) {
 
   for (double time_step : {2.5e-4, 5.0e-4, 1.0e-3}) {
     MultibodyPlant<double> plant(time_step);
-    // The COM of the rod is right at its center, though we place the body frame
-    // B on the left end of the rod to connect it to the world with a revolute
-    // joint.
-    const auto M_B = SpatialInertia<double>::MakeFromCentralInertia(
-        mass, Vector3<double>(rod_length / 2.0, 0.0, 0.0),
-        mass * UnitInertia<double>::SolidCylinder(
-            rod_radius, rod_length, Vector3<double>::UnitX()));
+    // The rod's center of mass is at its centroid. The rod's body frame B is at
+    // the rod's left end and connects to the world with a revolute joint.
+    const auto M_B = SpatialInertia<double>::SolidCylinderWithMassAboutEnd(
+        mass, rod_radius, rod_length, Vector3<double>::UnitX());
     const RigidBody<double>& body = plant.AddRigidBody("Body", M_B);
     const RevoluteJoint<double>& pin = plant.AddJoint<RevoluteJoint>(
         "Pin", plant.world_body(), std::nullopt, body, std::nullopt,
@@ -199,12 +195,25 @@ VectorX<double> KukaPositionUpperLimits() {
   return -KukaPositionLowerLimits();
 }
 
+void SetReflectedInertiaToZero(MultibodyPlant<double>* plant) {
+  DRAKE_DEMAND(plant != nullptr);
+  for (JointActuatorIndex index(0); index < plant->num_actuators(); ++index) {
+    JointActuator<double>& joint_actuator =
+        plant->get_mutable_joint_actuator(index);
+    joint_actuator.set_default_rotor_inertia(0.0);
+    joint_actuator.set_default_gear_ratio(1.0);
+  }
+}
+
 // We test joint limits for the case of a Kuka arm model. In order to reach
 // the joint limits we drive the joints by applying a constant torque for a
 // given length of simulation time.
 // Tolerances are rather loose given we use a relatively large time step and
 // a short simulation time to keep wall clock times low, specially for debug
 // builds.
+// This test sets the value of reflected inertia to zero (even though model has
+// non zero reflected inertia) to avoid testing with small step sizes that take
+// longer to run.
 GTEST_TEST(JointLimitsTest, KukaArm) {
   const double time_step = 2.0e-3;
   const double simulation_time = 35;
@@ -222,11 +231,12 @@ GTEST_TEST(JointLimitsTest, KukaArm) {
   const double kRelativePositionTolerance = 0.055;
 
   MultibodyPlant<double> plant(time_step);
-  Parser(&plant).AddModelFromFile(FindResourceOrThrow(kIiwaFilePath));
+  Parser(&plant).AddModels(FindResourceOrThrow(kIiwaFilePath));
   plant.WeldFrames(plant.world_frame(),
                    plant.GetFrameByName("iiwa_link_0"));
   plant.mutable_gravity_field().set_gravity_vector(
       Vector3<double>::Zero());
+  SetReflectedInertiaToZero(&plant);
   plant.Finalize();
 
   // Some sanity check on model sizes.
@@ -296,7 +306,7 @@ GTEST_TEST(JointLimitsTest, KukaArm) {
 GTEST_TEST(JointLimitsTest, KukaArmFloating) {
   // Check limits for a model with a floating base.
   MultibodyPlant<double> plant(0.0);
-  Parser(&plant).AddModelFromFile(FindResourceOrThrow(kIiwaFilePath));
+  Parser(&plant).AddModels(FindResourceOrThrow(kIiwaFilePath));
   plant.Finalize();
   const int nq = 14;
   const int nq_floating = 7;
@@ -319,7 +329,7 @@ GTEST_TEST(JointLimitsTest, KukaArmFloating) {
 // for a continuous plant. This is merely to confirm that nothing crashes.
 GTEST_TEST(JointLimitsTest, ContinuousLimitsDoNotFault) {
   MultibodyPlant<double> plant(0.0);
-  Parser(&plant).AddModelFromFile(FindResourceOrThrow(kIiwaFilePath));
+  Parser(&plant).AddModels(FindResourceOrThrow(kIiwaFilePath));
   plant.Finalize();
   auto context = plant.CreateDefaultContext();
   plant.get_actuation_input_port().FixValue(context.get(),

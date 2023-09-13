@@ -41,14 +41,14 @@ class FindResourceResult {
   /// @pre neither string parameter is empty
   /// @param resource_path the value passed to FindResource
   /// @param base_path an absolute base path that precedes resource_path
-  static FindResourceResult make_success(
-      std::string resource_path, std::string absolute_path);
+  static FindResourceResult make_success(std::string resource_path,
+                                         std::string absolute_path);
 
   /// Returns an error result (the requested resource was NOT found).
   /// @pre neither string parameter is empty
   /// @param resource_path the value passed to FindResource
-  static FindResourceResult make_error(
-      std::string resource_path, std::string error_message);
+  static FindResourceResult make_error(std::string resource_path,
+                                       std::string error_message);
 
   /// Returns an empty error result (no requested resource).
   static FindResourceResult make_empty();
@@ -72,12 +72,12 @@ class FindResourceResult {
   std::optional<std::string> error_message_;
 };
 
-/// Attempts to locate a Drake resource named by the given @p resource_path.
-/// The @p resource_path refers to the relative path within the Drake source
-/// repository, prepended with `drake/`.  For example, to find the source
-/// file `examples/pendulum/Pendulum.urdf`, the @p resource_path would be
+/// (Advanced) Attempts to locate a Drake resource named by the given
+/// `resource_path`. The `resource_path` refers to the relative path within the
+/// Drake source repository, prepended with `drake/`.  For example, to find the
+/// source file `examples/pendulum/Pendulum.urdf`, the `resource_path` would be
 /// `drake/examples/pendulum/Pendulum.urdf`.  Paths that do not start with
-/// `drake/` will return an error result.  The @p resource_path must refer
+/// `drake/` will return an error result.  The `resource_path` must refer
 /// to a file (not a directory).
 ///
 /// The search scans for the resource in the following resource roots and in
@@ -94,8 +94,16 @@ class FindResourceResult {
 /// error result.
 FindResourceResult FindResource(const std::string& resource_path);
 
-/// Convenient wrapper for querying FindResource(resource_path) followed by
-/// FindResourceResult::get_absolute_path_or_throw().
+/// (Advanced) Convenient wrapper for querying FindResource(resource_path)
+/// followed by FindResourceResult::get_absolute_path_or_throw().
+///
+/// The primary purpose of this function is for Drake's software internals to
+/// locate Drake resources (e.g., config files) within Drake's build system.
+/// In most cases, end users should not need to use it.
+///
+/// Do NOT use this function to feed into a drake::multibody::parsing::Parser.
+/// Instead, use parser.AddModelsFromUrl() in coordination with the parser's
+/// PackageMap.
 std::string FindResourceOrThrow(const std::string& resource_path);
 
 /// The name of the environment variable that provides the first place where

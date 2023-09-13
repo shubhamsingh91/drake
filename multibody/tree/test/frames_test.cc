@@ -13,7 +13,7 @@
 #include "drake/multibody/tree/fixed_offset_frame.h"
 #include "drake/multibody/tree/multibody_tree-inl.h"
 #include "drake/multibody/tree/multibody_tree_system.h"
-#include "drake/multibody/tree/revolute_mobilizer.h"
+#include "drake/multibody/tree/revolute_joint.h"
 #include "drake/multibody/tree/rigid_body.h"
 #include "drake/systems/framework/context.h"
 
@@ -48,17 +48,12 @@ class FrameTests : public ::testing::Test {
     // Create an empty model.
     auto model = std::make_unique<internal::MultibodyTree<double>>();
 
-    // TODO(jwnimmer-tri) After deprecation expires on 2022-12-01, pass
-    // body_name="B" to this RigidBody constructor and nix the name-check
-    bodyB_ = &model->AddBody<RigidBody>(M_Bo_B);
-    EXPECT_GT(bodyB_->name().size(), 0);
+    bodyB_ = &model->AddBody<RigidBody>("B", M_Bo_B);
     frameB_ = &bodyB_->body_frame();
 
-    // Mobilizer connecting bodyB to the world.
-    // The mobilizer is only needed because it is a requirement of MultibodyTree
-    // that all bodies in the model must have an inboard mobilizer.
-    model->AddMobilizer<RevoluteMobilizer>(
-        model->world_frame(), bodyB_->body_frame(),
+    // Joint connecting bodyB to the world.
+    model->AddJoint<RevoluteJoint>("joint0",
+        model->world_body(), {}, *bodyB_, {},
         Vector3d::UnitZ() /*revolute axis*/);
 
     // Some arbitrary pose of frame P in the body frame B.
@@ -66,11 +61,8 @@ class FrameTests : public ::testing::Test {
                             AngleAxisd(M_PI / 5.0, Vector3d::UnitX()) *
                             Translation3d(0.0, -1.0, 0.0));
     // Frame P is rigidly attached to B with pose X_BP.
-    // TODO(jwnimmer-tri) After deprecation expires on 2022-12-01, pass
-    // name="P" to this FixedOffsetFrame constructor and nix the name-check
     frameP_ =
-        &model->AddFrame<FixedOffsetFrame>(bodyB_->body_frame(), X_BP_);
-    EXPECT_GT(frameP_->name().size(), 0);
+        &model->AddFrame<FixedOffsetFrame>("P", bodyB_->body_frame(), X_BP_);
 
     // Some arbitrary pose of frame Q in frame P.
     X_PQ_ = RigidTransformd(AngleAxisd(-M_PI / 3.0, Vector3d::UnitZ()) *
@@ -89,9 +81,12 @@ class FrameTests : public ::testing::Test {
     frameS_ = &model->AddFrame<FixedOffsetFrame>(
         "S", model->world_frame(), math::RigidTransformd::Identity(),
         extra_instance_);
+    EXPECT_EQ(frameS_->scoped_name().get_full(), "extra_instance::S");
     // Ensure that the model instance propagates implicitly.
     frameSChild_ = &model->AddFrame<FixedOffsetFrame>(
         "SChild", *frameS_, math::RigidTransformd::Identity());
+    EXPECT_EQ(frameSChild_->scoped_name().get_full(),
+              "extra_instance::SChild");
 
     // We are done adding modeling elements. Transfer tree to system and get
     // a Context.

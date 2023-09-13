@@ -24,13 +24,25 @@ not be compiled if debugging is turned off (-DNDEBUG is set):
 </pre>
 
 The format string syntax is fmtlib; see https://fmt.dev/latest/syntax.html.
-In particular, any class that overloads `operator<<` for `ostream` can be
-printed without any special handling.  (Note that the documentation link
-provides syntax for the latest version of fmtlib; the version of fmtlib
-used by Drake might be older.)
-*/
+(Note that the documentation link provides syntax for the latest version of
+fmtlib; the version of fmtlib used by Drake might be older.)
+
+When formatting an Eigen matrix into a string you must wrap the Eigen object
+with fmt_eigen(); see its documentation for details. This holds true whether it
+be for logging, error messages, etc.
+
+When logging a third-party type whose only affordance for string output is
+`operator<<`, use fmt_streamed(); see its documentation for details. This is
+very rare (only a couple uses in Drake so far).
+
+When implementing a string output for a Drake type, eventually this page will
+demonstrate how to use fmt::formatter<T>. In the meantime, you can implement
+`operator<<` and use drake::ostream_formatter, or else use the macro helper
+DRAKE_FORMATTER_AS(). Grep around in Drake's existing code to find examples. */
 
 #include <string>
+
+#include "drake/common/fmt.h"
 
 #ifndef DRAKE_DOXYGEN_CXX
 #ifdef HAVE_SPDLOG
@@ -41,25 +53,25 @@ used by Drake might be older.)
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
 
 // Provide operative macros only when spdlog is available and Debug is enabled.
-#define DRAKE_LOGGER_TRACE(...)                                               \
-  do {                                                                        \
-    /* Capture the drake::log() in a temporary, using a relatively unique */  \
-    /* variable name to avoid potential variable name shadowing warnings. */  \
-    ::drake::logging::logger* const drake_spdlog_macro_logger_alias =         \
-        ::drake::log();                                                       \
-    if (drake_spdlog_macro_logger_alias->level() <= spdlog::level::trace) {   \
-      SPDLOG_LOGGER_TRACE(drake_spdlog_macro_logger_alias, __VA_ARGS__);      \
-    }                                                                         \
+#define DRAKE_LOGGER_TRACE(...)                                              \
+  do {                                                                       \
+    /* Capture the drake::log() in a temporary, using a relatively unique */ \
+    /* variable name to avoid potential variable name shadowing warnings. */ \
+    ::drake::logging::logger* const drake_spdlog_macro_logger_alias =        \
+        ::drake::log();                                                      \
+    if (drake_spdlog_macro_logger_alias->level() <= spdlog::level::trace) {  \
+      SPDLOG_LOGGER_TRACE(drake_spdlog_macro_logger_alias, __VA_ARGS__);     \
+    }                                                                        \
   } while (0)
-#define DRAKE_LOGGER_DEBUG(...)                                               \
-  do {                                                                        \
-    /* Capture the drake::log() in a temporary, using a relatively unique */  \
-    /* variable name to avoid potential variable name shadowing warnings. */  \
-    ::drake::logging::logger* const drake_spdlog_macro_logger_alias =         \
-        ::drake::log();                                                       \
-    if (drake_spdlog_macro_logger_alias->level() <= spdlog::level::debug) {   \
-      SPDLOG_LOGGER_DEBUG(drake_spdlog_macro_logger_alias, __VA_ARGS__);      \
-    }                                                                         \
+#define DRAKE_LOGGER_DEBUG(...)                                              \
+  do {                                                                       \
+    /* Capture the drake::log() in a temporary, using a relatively unique */ \
+    /* variable name to avoid potential variable name shadowing warnings. */ \
+    ::drake::logging::logger* const drake_spdlog_macro_logger_alias =        \
+        ::drake::log();                                                      \
+    if (drake_spdlog_macro_logger_alias->level() <= spdlog::level::debug) {  \
+      SPDLOG_LOGGER_DEBUG(drake_spdlog_macro_logger_alias, __VA_ARGS__);     \
+    }                                                                        \
   } while (0)
 
 #else
@@ -70,20 +82,7 @@ used by Drake might be older.)
 
 #endif
 
-/* clang-format off */
 #include <spdlog/spdlog.h>
-#include <spdlog/fmt/ostr.h>
-/* clang-format on */
-
-#else  // HAVE_SPDLOG
-
-// We always want text_logging.h to provide fmt support to those who include
-// it, even if spdlog is disabled.
-
-/* clang-format off */
-#include <fmt/format.h>
-#include <fmt/ostream.h>
-/* clang-format on */
 
 #endif  // HAVE_SPDLOG
 #endif  // DRAKE_DOXYGEN_CXX
@@ -91,14 +90,6 @@ used by Drake might be older.)
 #include "drake/common/drake_copyable.h"
 
 namespace drake {
-
-#if FMT_VERSION >= 80000 || defined(DRAKE_DOXYGEN_CXX)
-/// When using fmt >= 8, this is an alias for fmt::runtime.
-/// When using fmt < 8, this is a no-op.
-inline auto fmt_runtime(std::string_view s) { return fmt::runtime(s); }
-#else
-inline auto fmt_runtime(std::string_view s) { return s; }
-#endif
 
 #ifdef HAVE_SPDLOG
 namespace logging {
@@ -144,12 +135,18 @@ class logger {
   template <typename... Args>
   void critical(const char*, const Args&...) {}
 
-  template <typename T> void trace(const T&) {}
-  template <typename T> void debug(const T&) {}
-  template <typename T> void info(const T&) {}
-  template <typename T> void warn(const T&) {}
-  template <typename T> void error(const T&) {}
-  template <typename T> void critical(const T&) {}
+  template <typename T>
+  void trace(const T&) {}
+  template <typename T>
+  void debug(const T&) {}
+  template <typename T>
+  void info(const T&) {}
+  template <typename T>
+  void warn(const T&) {}
+  template <typename T>
+  void error(const T&) {}
+  template <typename T>
+  void critical(const T&) {}
 };
 
 // A stubbed-out version of `spdlog::sinks::sink`.
@@ -200,7 +197,7 @@ sink* get_dist_sink();
 ///   return data;
 /// }
 /// </pre>
-struct Warn {
+struct[[maybe_unused]] Warn {
   template <typename... Args>
   Warn(const char* a, const Args&... b) {
     // TODO(jwnimmer-tri) Ideally we would compile-time check our Warn format

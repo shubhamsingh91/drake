@@ -6,6 +6,7 @@
 #include <string>
 
 #include "drake/common/drake_copyable.h"
+#include "drake/common/fmt_ostream.h"
 #include "drake/common/hash.h"
 #include "drake/systems/sensors/pixel_types.h"
 
@@ -105,8 +106,8 @@ class RenderLabel {
 
   /** Implements the @ref hash_append concept. */
   template <class HashAlgorithm>
-  friend void hash_append(
-      HashAlgorithm& hasher, const RenderLabel& item) noexcept {
+  friend void hash_append(HashAlgorithm& hasher,
+                          const RenderLabel& item) noexcept {
     using drake::hash_append;
     hash_append(hasher, item.value_);
   }
@@ -178,7 +179,14 @@ namespace std {
 /** Enables use of the label to serve as a key in STL containers.
  @relates RenderLabel  */
 template <>
-struct hash<drake::geometry::render::RenderLabel>
-  : public drake::DefaultHash {};
+struct hash<drake::geometry::render::RenderLabel> : public drake::DefaultHash {
+};
 
 }  // namespace std
+
+// TODO(jwnimmer-tri) Add a real formatter and deprecate the operator<<.
+namespace fmt {
+template <>
+struct formatter<drake::geometry::render::RenderLabel>
+    : drake::ostream_formatter {};
+}  // namespace fmt

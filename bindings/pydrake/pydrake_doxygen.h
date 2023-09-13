@@ -357,7 +357,7 @@ be named `.doc_deprecated...` instead of just `.doc...`.
 @anchor PydrakeDeprecation
 ## Deprecation
 
-Decorators and utilites for deprecation in pure Python are available in
+Decorators and utilities for deprecation in pure Python are available in
 [`pydrake.common.deprecation`](https://drake.mit.edu/pydrake/pydrake.common.deprecation.html).
 
 Deprecations for Python bindings in C++ are available in
@@ -440,7 +440,7 @@ C++ has the ability to distinguish `T` and `const T` for both function arguments
 and class methods. However, Python does not have a native mechanism for this. It
 is possible to provide a feature like this in Python (see discussion and
 prototypes in [#7793](https://github.com/RobotLocomotion/drake/issues/7793));
-however, its pros (similarity to C++) have not yet outweighted the cons (awkard
+however, its pros (similarity to C++) have not yet outweighted the cons (awkward
 non-Pythonic types and workflows).
 
 When a function is overloaded only by its `const`-ness, choose to bind the
@@ -634,3 +634,22 @@ covered.
 
 // TODO(eric.cousineau): If it ever stops redirecting stdin, use
 // `bazel run --run_under='gdb --args python' --script_path=...`.
+
+/**
+@addtogroup environment_variables
+@{
+@defgroup pydrake_python_logging DRAKE_PYTHON_LOGGING
+
+By default, pydrake will redirect spdlog logging (from C++) to Python's
+`logging` module. However, if this environment variable is set to "0",
+then logging will not be redirected.
+
+For example, to disable logging redirect, you can set the following in
+your terminal before you run your process that uses pydrake:
+```
+export DRAKE_PYTHON_LOGGING=0
+```
+
+See also <a href="/pydrake/pydrake.common.html#pydrake.common.use_native_cpp_logging">pydrake.common.use_native_cpp_logging</a>.
+
+@} */

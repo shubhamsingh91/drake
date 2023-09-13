@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load("@drake//tools/workspace:github.bzl", "github_archive")
 
 # Note that for rules_pkg, we do NOT install its LICENSE file as part of the
@@ -8,10 +6,13 @@ load("@drake//tools/workspace:github.bzl", "github_archive")
 def rules_pkg_repository(
         name,
         mirrors = None):
+    """The @rules_pkg external is deprecated in Drake's WORKSPACE and will be
+    removed on or after 2023-11-01.
+    """
     github_archive(
         name = name,
         repository = "bazelbuild/rules_pkg",  # License: Apache-2.0
-        commit = "0.7.1",
-        sha256 = "d258fb6965cf3d7ebdbe146ec7e28b605f0644cb880101604e166e35d4ca62bc",  # noqa
+        commit = "0.8.1",
+        sha256 = "99d56f7cba0854dd1db96cf245fd52157cef58808c8015e96994518d28e3c7ab",  # noqa
         mirrors = mirrors,
     )

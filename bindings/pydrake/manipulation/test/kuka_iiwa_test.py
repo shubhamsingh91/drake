@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-import pydrake.manipulation.kuka_iiwa as mut
+import pydrake.manipulation as mut
 
 import unittest
 import numpy as np
@@ -23,8 +23,27 @@ from pydrake.systems.lcm import LcmBuses
 
 
 class TestKukaIiwa(unittest.TestCase):
+    def test_constants(self):
+        self.assertEqual(mut.kIiwaArmNumJoints, 7)
+        self.assertIsInstance(mut.get_iiwa_max_joint_velocities(), np.ndarray)
+        self.assertEqual(mut.kIiwaLcmStatusPeriod, 0.005)
+        self.assertIsInstance(
+            mut.IiwaControlMode.kPositionOnly, mut.IiwaControlMode)
+        self.assertIsInstance(
+            mut.IiwaControlMode.kTorqueOnly, mut.IiwaControlMode)
+        self.assertIsInstance(
+            mut.IiwaControlMode.kPositionAndTorque, mut.IiwaControlMode)
+        control_mode = mut.IiwaControlMode.kPositionAndTorque
+        self.assertTrue(mut.position_enabled(control_mode=control_mode))
+        self.assertTrue(mut.torque_enabled(control_mode=control_mode))
+        self.assertEqual(
+            mut.ParseIiwaControlMode(control_mode="position_and_torque"),
+            control_mode)
+
     def test_kuka_iiwa_lcm(self):
-        command_rec = mut.IiwaCommandReceiver()
+        command_rec = mut.IiwaCommandReceiver(
+            num_joints=mut.kIiwaArmNumJoints,
+            control_mode=mut.IiwaControlMode.kPositionAndTorque)
         self.assertIsInstance(
             command_rec.get_message_input_port(), InputPort)
         self.assertIsInstance(
@@ -33,14 +52,20 @@ class TestKukaIiwa(unittest.TestCase):
             command_rec.get_commanded_position_output_port(), OutputPort)
         self.assertIsInstance(
             command_rec.get_commanded_torque_output_port(), OutputPort)
+        self.assertIsInstance(
+            command_rec.get_time_output_port(), OutputPort)
 
         command_send = mut.IiwaCommandSender()
         self.assertIsInstance(
-            command_send.get_time_measured_input_port(), InputPort)
+            command_send.get_time_input_port(), InputPort)
         self.assertIsInstance(
             command_send.get_position_input_port(), InputPort)
         self.assertIsInstance(
             command_send.get_torque_input_port(), InputPort)
+        # Constructor variants.
+        mut.IiwaCommandSender(
+            num_joints=mut.kIiwaArmNumJoints,
+            control_mode=mut.IiwaControlMode.kPositionAndTorque)
 
         status_rec = mut.IiwaStatusReceiver()
         self.assertIsInstance(
@@ -87,7 +112,7 @@ class TestKukaIiwa(unittest.TestCase):
         plant.Finalize()
         controller_plant = MultibodyPlant(1.)
         parser = Parser(controller_plant)
-        parser.AddModelFromFile(FindResourceOrThrow(
+        parser.AddModels(FindResourceOrThrow(
             "drake/manipulation/models/iiwa_description/iiwa7/"
             "iiwa7_no_collision.sdf"))
         controller_plant.WeldFrames(
@@ -99,8 +124,9 @@ class TestKukaIiwa(unittest.TestCase):
         mut.BuildIiwaControl(
             plant=plant, iiwa_instance=plant.GetModelInstanceByName("iiwa7"),
             controller_plant=controller_plant, lcm=DrakeLcm(), builder=builder,
-            ext_joint_filter_tau=0.12, desired_iiwa_kp_gains=np.arange(7))
-        self.assertEqual(len(builder.GetSystems()), 11)
+            ext_joint_filter_tau=0.12, desired_iiwa_kp_gains=np.arange(7),
+            control_mode=mut.IiwaControlMode.kPositionAndTorque)
+        self.assertEqual(len(builder.GetSystems()), 12)
 
     def test_kuka_iiwa_driver(self):
         dut = mut.IiwaDriver()
@@ -127,4 +153,4 @@ class TestKukaIiwa(unittest.TestCase):
             driver_config=dut, model_instance_name="iiwa7",
             sim_plant=plant, models_from_directives=model_dict, lcms=lcm_bus,
             builder=builder)
-        self.assertEqual(len(builder.GetSystems()), 12)
+        self.assertEqual(len(builder.GetSystems()), 13)

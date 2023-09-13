@@ -1,11 +1,10 @@
 #include <memory>
 #include <string>
 
-#include "fmt/ostream.h"
+#include <fmt/format.h>
 #include <gflags/gflags.h>
 
 #include "drake/common/drake_assert.h"
-#include "drake/common/find_resource.h"
 #include "drake/geometry/scene_graph.h"
 #include "drake/math/roll_pitch_yaw.h"
 #include "drake/math/rotation_matrix.h"
@@ -102,7 +101,7 @@ DEFINE_string(discrete_solver, "sap",
               "Discrete contact solver. Options are: 'tamsi', 'sap'.");
 DEFINE_double(
     coupler_gear_ratio, -1.0,
-    "When using SAP, the left finger's position qₗ is constrainted to qₗ = "
+    "When using SAP, the left finger's position qₗ is constrained to qₗ = "
     "ρ⋅qᵣ, where qᵣ is the right finger's position and ρ is this "
     "coupler_gear_ration parameter (dimensionless). If TAMSI used, "
     "then the right finger is locked, only the left finger moves and this "
@@ -169,13 +168,10 @@ int do_main() {
       multibody::AddMultibodyPlant(plant_config, &builder);
 
   Parser parser(&plant);
-  std::string full_name =
-      FindResourceOrThrow("drake/examples/simple_gripper/simple_gripper.sdf");
-  parser.AddModelFromFile(full_name);
-
-  full_name =
-      FindResourceOrThrow("drake/examples/simple_gripper/simple_mug.sdf");
-  ModelInstanceIndex mug_model = parser.AddModelFromFile(full_name);
+  parser.AddModelsFromUrl(
+      "package://drake/examples/simple_gripper/simple_gripper.sdf");
+  parser.AddModelsFromUrl(
+      "package://drake/examples/simple_gripper/simple_mug.sdf");
 
   // Obtain the "translate_joint" axis so that we know the direction of the
   // forced motions. We do not apply gravity if motions are forced in the
@@ -335,6 +331,7 @@ int do_main() {
   right_slider.set_translation(&plant_context, finger_offset);
 
   // Initialize the mug pose to be right in the middle between the fingers.
+  const multibody::Body<double>& mug = plant.GetBodyByName("simple_mug");
   const Vector3d& p_WBr =
       plant.EvalBodyPoseInWorld(plant_context, right_finger).translation();
   const Vector3d& p_WBl =
@@ -345,8 +342,7 @@ int do_main() {
       RollPitchYawd(FLAGS_rx * M_PI / 180, FLAGS_ry * M_PI / 180,
                     (FLAGS_rz * M_PI / 180) + M_PI),
       Vector3d(0.0, mug_y_W, 0.0));
-  plant.SetFreeBodyPose(&plant_context,
-                        plant.GetUniqueFreeBaseBodyOrThrow(mug_model), X_WM);
+  plant.SetFreeBodyPose(&plant_context, mug, X_WM);
 
   // Set the initial height of the gripper and its initial velocity so that with
   // the applied harmonic forces it continues to move in a harmonic oscillation

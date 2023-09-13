@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,8 +39,9 @@ struct MeshcatParams {
   std::string host{"*"};
 
   /** Meshcat will listen on the given http `port`. If no port is specified,
-  then it will listen on the first available port starting at 7000 (up to 7099).
-  @pre We require `port` >= 1024. */
+  then it will listen on the first available port starting at 7000 (up to 7999).
+  If port 0 is specified, it will listen on an arbitrary "ephemeral" port.
+  @pre We require `port` == 0 || `port` >= 1024. */
   std::optional<int> port{std::nullopt};
 
   /** The `web_url_pattern` may be used to change the web_url() (and therefore
@@ -65,7 +67,7 @@ struct MeshcatParams {
   bool show_stats_plot{true};
 };
 
-/** Provides an interface to %Meshcat (https://github.com/rdeits/meshcat).
+/** Provides an interface to %Meshcat (https://github.com/meshcat-dev/meshcat).
 
 Each instance of this class spawns a thread which runs an http/websocket server.
 Users can navigate their browser to the hosted URL to visualize the Meshcat
@@ -79,7 +81,7 @@ supported. We may generalize this in the future.
 
 @section meshcat_path Meshcat paths and the scene tree
 
-https://github.com/rdeits/meshcat#api provides a nice introduction to the
+https://github.com/meshcat-dev/meshcat#api provides a nice introduction to the
 websocket API that we wrap with this class.  One of the core concepts is the
 "scene tree" -- a directory-like structure of objects, transforms, and
 properties. The scene tree is viewable in the browser by clicking on "Open
@@ -110,8 +112,8 @@ properties.
 The root directory contains a number of elements that are set up automatically
 in the browser.  These include "/Background", "/Lights", "/Grid", and
 "/Cameras".  To find more details please see the @link
-https://github.com/rdeits/meshcat#api meshcat documentation @endlink and the
-@link https://threejs.org/docs/index.html three.js documentation @endlink.
+https://github.com/meshcat-dev/meshcat#api meshcat documentation @endlink and
+the @link https://threejs.org/docs/index.html three.js documentation @endlink.
 - You can modify these elements, create new lights/cameras, and even delete
 these elements (one at a time).
 - Delete("/") is not allowed.  It will be silently ignored.
@@ -126,14 +128,25 @@ in the visualizer.
 - All user objects can easily be cleared by a single, parameter-free call to
 Delete(). You are welcome to use absolute paths to organize your data, but the
 burden on tracking and cleaning them up lie on you.
-*/
+
+@section network_access Network access
+
+See MeshcatParams for options to control the hostname and port to bind to.
+
+See \ref allow_network "DRAKE_ALLOW_NETWORK" for an environment variable
+option to deny %Meshcat entirely. */
 class Meshcat {
  public:
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(Meshcat)
 
+  // Defines which side of faces will be rendered - front, back or both.
+  // From https://github.com/mrdoob/three.js/blob/dev/src/constants.js
+  enum SideOfFaceToRender { kFrontSide = 0, kBackSide = 1, kDoubleSide = 2 };
+
   /** Constructs the %Meshcat instance on `port`. If no port is specified,
-  it will listen on the first available port starting at 7000 (up to 7099).
-  @pre We require `port` >= 1024.
+  it will listen on the first available port starting at 7000 (up to 7999).
+  If port 0 is specified, it will listen on an arbitrary "ephemeral" port.
+  @pre We require `port` == 0 || `port` >= 1024.
   @throws std::exception if no requested `port` is available. */
   explicit Meshcat(std::optional<int> port = std::nullopt);
 
@@ -170,6 +183,9 @@ class Meshcat {
               See @ref meshcat_path "Meshcat paths" for the semantics.
   @param shape a Shape that specifies the geometry of the object.
   @param rgba an Rgba that specifies the (solid) color of the object.
+  @note If `shape` is a mesh, the file referred to can be either an .obj file
+  or an _embedded_ .gltf file (it has all geometry data and texture data
+  contained within the single .gltf file).
   @pydrake_mkdoc_identifier{shape}
   */
   void SetObject(std::string_view path, const Shape& shape,
@@ -210,7 +226,8 @@ class Meshcat {
   */
   void SetObject(std::string_view path, const TriangleSurfaceMesh<double>& mesh,
                  const Rgba& rgba = Rgba(0.1, 0.1, 0.1, 1.0),
-                 bool wireframe = false, double wireframe_line_width = 1.0);
+                 bool wireframe = false, double wireframe_line_width = 1.0,
+                 SideOfFaceToRender side = kDoubleSide);
 
   /** Sets the "object" at `path` in the scene tree to a piecewise-linear
   interpolation between the `vertices`.
@@ -268,10 +285,11 @@ class Meshcat {
                        const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
                        const Rgba& rgba = Rgba(0.1, 0.1, 0.1, 1.0),
                        bool wireframe = false,
-                       double wireframe_line_width = 1.0);
+                       double wireframe_line_width = 1.0,
+                       SideOfFaceToRender side = kDoubleSide);
 
   /** Sets the "object" at `path` in the scene tree to a triangular mesh with
-      per-vertex coloring.
+  per-vertex coloring.
 
   @param path a "/"-delimited string indicating the path in the scene tree. See
               @ref meshcat_path "Meshcat paths" for the semantics.
@@ -288,11 +306,49 @@ class Meshcat {
                               WebGL implementations, the line width may be 1
                               regardless of the set value. */
   void SetTriangleColorMesh(std::string_view path,
-                       const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
-                       const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
-                       const Eigen::Ref<const Eigen::Matrix3Xd>& colors,
-                       bool wireframe = false,
-                       double wireframe_line_width = 1.0);
+                            const Eigen::Ref<const Eigen::Matrix3Xd>& vertices,
+                            const Eigen::Ref<const Eigen::Matrix3Xi>& faces,
+                            const Eigen::Ref<const Eigen::Matrix3Xd>& colors,
+                            bool wireframe = false,
+                            double wireframe_line_width = 1.0,
+                            SideOfFaceToRender side = kDoubleSide);
+
+  // TODO(russt): Add support for per vertex colors / colormaps.
+  /** Sets the "object" at `path` to be a triangle surface mesh representing a
+  3D surface, via an API that roughly follows matplotlib's plot_surface()
+  method.
+
+  @param X matrix of `x` coordinate values defining the vertices of the mesh.
+  @param Y matrix of `y` coordinate values.
+  @param Z matrix of `z` coordinate values.
+  @param rgba is the mesh face or wireframe color.
+  @param wireframe if "true", then only the triangle edges are visualized, not
+                   the faces.
+  @param wireframe_line_width is the width in pixels.  Due to limitations in
+                              WebGL implementations, the line width may be 1
+                              regardless of the set value.
+
+  Typically, X and Y are obtained via, e.g.
+  @code
+  constexpr int nx = 15, ny = 11;
+  X = RowVector<double, nx>::LinSpaced(0, 1).replicate<ny, 1>();
+  Y = Vector<double, ny>::LinSpaced(0, 1).replicate<1, nx>();
+  @endcode
+  in C++ or e.g.
+  @code
+  xs = np.linspace(0, 1, 15)
+  ys = np.linspace(0, 1, 11)
+  [X, Y] = np.meshgrid(xs, ys)
+  @endcode
+  in Python, and Z is the surface evaluated on each X, Y value.
+
+  @pre X, Y, and Z must be the same shape. */
+  void PlotSurface(std::string_view path,
+                   const Eigen::Ref<const Eigen::MatrixXd>& X,
+                   const Eigen::Ref<const Eigen::MatrixXd>& Y,
+                   const Eigen::Ref<const Eigen::MatrixXd>& Z,
+                   const Rgba& rgba = Rgba(0.1, 0.1, 0.9, 1.0),
+                   bool wireframe = false, double wireframe_line_width = 1.0);
 
   // TODO(russt): Provide a more general SetObject(std::string_view path,
   // msgpack::object object) that would allow users to pass through anything
@@ -376,23 +432,71 @@ class Meshcat {
                        double xmin = -1, double xmax = 1, double ymin = -1,
                        double ymax = 1);
 
-  /** Resets the default camera, background, grid lines, and axes to their
-   default settings. */
+  /** Resets the default camera, camera target, background, grid lines, and axes
+   to their default settings. */
   void ResetRenderMode();
+
+  // TODO(SeanCurtis-TRI): Once meshcat supports animation of camera target,
+  // add the ability to animate this and SetCameraPose().
+
+  /** Positions the camera's view target point T to the location in
+   `target_in_world` (`p_WT`).
+
+   If the camera is orthographic (i.e., by calling Set2DRenderMode() or
+   SetCamera(OrthographicCamera)), this will have no effect.
+
+   @warning Setting the target position to be coincident with the camera
+   position will lead to undefined behavior.
+
+   @param target_in_world the position of the target point T in Drake's z-up
+               world frame (p_WT). */
+  void SetCameraTarget(const Eigen::Vector3d& target_in_world);
+
+  /** A convenience function for positioning the camera and its view target
+   in the world frame. The camera is placed at `camera_in_world` and looks
+   toward `target_in_world`. The camera is oriented around this view direction
+   so that the camera's up vector points in the positive Wz direction as much
+   as possible.
+
+   Unlike SetCameraTarget() this can be used to orient orthographic cameras
+   as well.
+
+   @note This is Drake's z-up world frame and not the three.js world frame
+   you'd have to use if you set the "position" on the camera directly.
+
+   @warning The behavior is undefined if camera and target positions are
+   coincident.
+
+   @param camera_in_world the position of the camera's origin C in Drake's z-up
+               world frame (p_WC).
+   @param target_in_world the position of the target point T in Drake's z-up
+               world frame (p_WT). */
+  void SetCameraPose(const Eigen::Vector3d& camera_in_world,
+                     const Eigen::Vector3d& target_in_world);
+
+  // TODO(SeanCurtis-TRI): Consider the API:
+  //  void SetCameraPose(const RigidTransformd& X_WC, bool target_distance = 1);
+  // We'll have to confirm that picking arbitrary rotations R_WC doesn't
+  // fight badly with the camera controller.
 
   /** Set the RigidTransform for a given path in the scene tree relative to its
   parent path. An object's pose is the concatenation of all of the transforms
   along its path, so setting the transform of "/foo" will move the objects at
   "/foo/box1" and "/foo/robots/HAL9000".
-  @param path a "/"-delimited string indicating the path in the scene tree.
-              See @ref meshcat_path "Meshcat paths" for the semantics.
+  @param path a "/"-delimited string indicating the path in the scene tree. See
+              @ref meshcat_path "Meshcat paths" for the semantics.
   @param X_ParentPath the relative transform from the path to its immediate
-  parent.
+              parent.
+  @param time_in_recording (optional). If recording (see StartRecording()), then
+              in addition to publishing the transform to any meshcat browsers
+              immediately, this transform is saved to the current animation at
+              `time_in_recording`.
 
   @pydrake_mkdoc_identifier{RigidTransform}
   */
-  void SetTransform(std::string_view path,
-                    const math::RigidTransformd& X_ParentPath);
+  void SetTransform(
+      std::string_view path, const math::RigidTransformd& X_ParentPath,
+      const std::optional<double>& time_in_recording = std::nullopt);
 
   /** Set the homogeneous transform for a given path in the scene tree relative
   to its parent path. An object's pose is the concatenation of all of the
@@ -406,6 +510,9 @@ class Meshcat {
   Note: Prefer to use the overload which takes a RigidTransformd unless you need
   the fully parameterized homogeneous transform (which additionally allows
   scale and sheer).
+
+  Note: Meshcat does not properly support non-uniform scaling. See Drake issue
+  #18095.
 
   @pydrake_mkdoc_identifier{matrix}
   */
@@ -426,6 +533,12 @@ class Meshcat {
   percentage (multiplied by 100) */
   void SetRealtimeRate(double rate);
 
+  /** Gets the realtime rate that is displayed in the meshcat visualizer stats
+   strip chart. See SetRealtimeRate(). Note that this value might be a smoothing
+   function across multiple calls to SetRealtimeRate() rather than the most
+   recent argument value, in case this class ever adds smoothing capability. */
+  double GetRealtimeRate() const;
+
   /** Sets a single named property of the object at the given path. For example,
   @verbatim
   meshcat.SetProperty("/Background", "visible", false);
@@ -437,10 +550,16 @@ class Meshcat {
               See @ref meshcat_path for the semantics.
   @param property the string name of the property to set
   @param value the new value.
+  @param time_in_recording (optional). If recording (see StartRecording()), then
+              in addition to publishing the property to any meshcat browsers
+              immediately, this transform is saved to the current animation at
+              `time_in_recording`.
 
   @pydrake_mkdoc_identifier{bool}
   */
-  void SetProperty(std::string_view path, std::string property, bool value);
+  void SetProperty(
+      std::string_view path, std::string property, bool value,
+      const std::optional<double>& time_in_recording = std::nullopt);
 
   /** Sets a single named property of the object at the given path. For example,
   @verbatim
@@ -453,10 +572,16 @@ class Meshcat {
               See @ref meshcat_path for the semantics.
   @param property the string name of the property to set
   @param value the new value.
+  @param time_in_recording (optional) the time at which this property should
+              be applied, if Meshcat is current recording (see
+              StartRecording()). If Meshcat is not currently recording, then
+              this value is simply ignored.
 
   @pydrake_mkdoc_identifier{double}
   */
-  void SetProperty(std::string_view path, std::string property, double value);
+  void SetProperty(
+      std::string_view path, std::string property, double value,
+      const std::optional<double>& time_in_recording = std::nullopt);
 
   /** Sets a single named property of the object at the given path. For example,
   @verbatim
@@ -469,16 +594,44 @@ class Meshcat {
               See @ref meshcat_path for the semantics.
   @param property the string name of the property to set
   @param value the new value.
+  @param time_in_recording (optional) the time at which this property should
+              be applied, if Meshcat is current recording (see
+              StartRecording()). If Meshcat is not currently recording, then
+              this value is simply ignored.
 
   @pydrake_mkdoc_identifier{vector_double}
   */
-  void SetProperty(std::string_view path, std::string property,
-                   const std::vector<double>& value);
+  void SetProperty(
+      std::string_view path, std::string property,
+      const std::vector<double>& value,
+      const std::optional<double>& time_in_recording = std::nullopt);
+
+  /** Sets the *environment* texture. For objects with physically-based
+   rendering (PBR) material properties (e.g., metallic surfaces), this defines
+   the luminance environment, contributing to total illumination and appearing
+   in reflections.
+
+   The image should be of a format typically supported by web browsers: e.g.,
+   jpg, png, etc. Furthermore, the image must be an
+   <a href="https://en.wikipedia.org/wiki/Equirectangular_projection">
+   equirectangular image</a> (as opposed to a
+   <a href="https://en.wikipedia.org/wiki/Cube_mapping">cube-map</a>).
+
+   If the path is empty, the environment map will be cleared.
+
+   @throws if `image_path` is *not* empty and the file isn't accessible.
+   @pre If `image_path` names an accessible file, it is an appropriate image
+        type. */
+  void SetEnvironmentMap(const std::filesystem::path& image_path);
 
   // TODO(russt): Support multiple animations, by name.  Currently "default" is
   // hard-coded in the meshcat javascript.
   /** Sets the MeshcatAnimation, which creates a slider interface element to
-  play/pause/rewind through a series of animation frames in the visualizer. */
+  play/pause/rewind through a series of animation frames in the visualizer.
+
+  See also StartRecording(), which records supported calls to `this` into a
+  MeshcatAnimation, and PublishRecording(), which calls SetAnimation() with the
+  recording. */
   void SetAnimation(const MeshcatAnimation& animation);
 
   /** @name Meshcat Controls
@@ -516,7 +669,7 @@ class Meshcat {
    GUI, from the time that it was added to `this`.  If multiple browsers are
    open, then this number is the cumulative number of clicks in all browsers.
    @throws std::exception if `name` is not a registered button. */
-  int GetButtonClicks(std::string_view name);
+  int GetButtonClicks(std::string_view name) const;
 
   /** Removes the button `name` from the GUI.
    @throws std::exception if `name` is not a registered button. */
@@ -548,7 +701,10 @@ class Meshcat {
 
   /** Gets the current `value` of the slider `name`.
    @throws std::exception if `name` is not a registered slider. */
-  double GetSliderValue(std::string_view name);
+  double GetSliderValue(std::string_view name) const;
+
+  /** Returns the names of all sliders. */
+  std::vector<std::string> GetSliderNames() const;
 
   /** Removes the slider `name` from the GUI.
    @throws std::exception if `name` is not a registered slider. */
@@ -558,6 +714,78 @@ class Meshcat {
    this Meshcat instance. It does *not* clear the default GUI elements set in
    the meshcat browser (e.g. for cameras and lights). */
   void DeleteAddedControls();
+
+  /** Status of a gamepad obtained from the Meshcat javascript client. */
+  struct Gamepad {
+    /** Passes this object to an Archive.
+    Refer to @ref yaml_serialization "YAML Serialization" for background. */
+    template <typename Archive>
+    void Serialize(Archive* a) {
+      a->Visit(DRAKE_NVP(index));
+      a->Visit(DRAKE_NVP(button_values));
+      a->Visit(DRAKE_NVP(axes));
+    }
+
+    // Descriptions of these properties were adapted from
+    // https://developer.mozilla.org/en-US/docs/Web/API/Gamepad.
+
+    /** An an integer that is auto-incremented to be unique for each device
+    currently connected to the system. If `index.has_value() == false`, then we
+    have not yet received any gamepad status from the Meshcat browser. */
+    std::optional<int> index;
+
+    /** An array of floating point values representing analog buttons, such as
+    the triggers on many modern gamepads. The values are normalized to the
+    range [0.0, 1.0], with 0.0 representing a button that is not pressed, and
+    1.0 representing a button that is fully pressed.
+
+    See https://w3c.github.io/gamepad/#dfn-standard-gamepad for the standard
+    mapping of gamepad buttons to this vector.
+    */
+    std::vector<double> button_values;
+
+    /** An array of floating point values representing e.g. analog thumbsticks.
+    Each entry in the array is a floating point value in the range -1.0 – 1.0,
+    representing the axis position from the lowest value (-1.0) to the highest
+    value (1.0).
+
+    In the standard gamepad mapping, we have:
+    - axes[0] Left stick x (negative left/positive right)
+    - axes[1] Left stick y (negative up/positive down)
+    - axes[2] Right stick x (negative left/positive right)
+    - axes[3] Right stick y (negative up/positive down)
+
+    Note that a stick that is left alone may not output all zeros.
+    https://beej.us/blog/data/javascript-gamepad/ gives some useful advice for
+    applying a deadzone to these values.
+    */
+    std::vector<double> axes;
+  };
+
+  /** Returns the status from the most recently updated gamepad data in the
+  Meshcat. See Gamepad for details on the returned values.
+
+  Note that in javascript, gamepads are not detected until users "opt-in" by
+  pressing a gamepad button or moving the thumbstick in the Meshcat window. If
+  no gamepad information is available in javascript, then no messages are sent
+  and the returned gamepad index will not have a value.
+
+  Currently Meshcat only attempts to support one gamepad. If multiple gamepads
+  are detected in the same Meshcat window, then only the status of the first
+  connected gamepad in `navigator.GetGamepads()` is returned. If multiple
+  Meshcat windows are connected to this Meshcat instance, and gamepads are
+  being used in multiple windows, then the returned status will be the most
+  recently received status message. Therefore using multiple gamepads
+  simultaneously is not recommended.
+
+  This feature is provided primarily to support applications where Drake is
+  running on a remote machine (e.g. in the cloud), and the Meshcat javascript
+  in the browser is the only code running on the local machine which has access
+  to the gamepad.
+
+  For more details on javascript support for gamepads (or to test that your
+  gamepad is working), see https://beej.us/blog/data/javascript-gamepad/. */
+  Gamepad GetGamepad() const;
 
   //@}
 
@@ -569,6 +797,50 @@ class Meshcat {
   Note that controls (e.g. sliders and buttons) are not included in the HTML
   output, because their usefulness relies on a connection to the server. */
   std::string StaticHtml();
+
+  /** Sets a flag indicating that subsequent calls to SetTransform and
+  SetProperty should also be "recorded" into a MeshcatAnimation when their
+  optional time_in_recording argument is supplied.  The data in these events
+  will be combined with any frames previously added to the animation; if the
+  same transform/property is set at the same time, then it will overwrite the
+  existing frame in the animation.
+
+  @param set_visualizations_while_recording if true, then each method will send
+  the visualization immediately to Meshcat *and* record the visualization in
+  the animation. Set to false to avoid updating the visualization during
+  recording. One exception is calls to SetObject, which will always be sent to
+  the visualizer immediately (because meshcat animations do not support
+  SetObject).
+  */
+  void StartRecording(double frames_per_second = 32.0,
+                      bool set_visualizations_while_recording = true);
+
+  /** Sets a flag to pause/stop recording.  When stopped, publish events will
+  not add frames to the animation. */
+  void StopRecording() { recording_ = false; }
+
+  /** Sends the recording to Meshcat as an animation. The published animation
+  only includes transforms and properties; the objects that they modify must be
+  sent to the visualizer separately (e.g. by calling Publish()). */
+  void PublishRecording();
+
+  /** Deletes the current animation holding the recorded frames.  Animation
+  options (autoplay, repetitions, etc) will also be reset, and any pointers
+  obtained from get_mutable_recording() will be rendered invalid. This does
+  *not* currently remove the animation from Meshcat. */
+  void DeleteRecording();
+
+  /** Returns a mutable pointer to this Meshcat's unique MeshcatAnimation
+  object, if it exists, in which the frames will be recorded. This pointer can
+  be used to set animation properties (like autoplay, the loop mode, number of
+  repetitions, etc).
+
+  The MeshcatAnimation object will only remain valid for the lifetime of `this`
+  or until DeleteRecording() is called.
+
+  @throws std::exception if meshcat does not have a recording.
+  */
+  MeshcatAnimation& get_mutable_recording();
 
   /* These remaining public methods are intended to primarily for testing. These
   calls must safely acquire the data from the websocket thread and will block
@@ -624,6 +896,15 @@ class Meshcat {
   // Always a non-nullptr Impl, but stored as void* to enforce that the
   // impl() accessors are always used.
   void* const impl_{};
+
+  /* MeshcatAnimation object for recording. It must be mutable to allow the set
+  methods to be otherwise const. */
+  std::unique_ptr<MeshcatAnimation> animation_;
+
+  /* Recording status.  True means that each new Publish event will record a
+  frame in the animation. */
+  bool recording_{false};
+  bool set_visualizations_while_recording_{true};
 };
 
 }  // namespace geometry

@@ -39,19 +39,19 @@ purpose of the front page (HTML for layout, Markdown for content).
       <div class="core-el">
         <h4>Modeling Dynamical<br> Systems</h4>
         <div class="core-el-buttons">
-          <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__systems.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fdynamical_systems.ipynb" target="_blank">TUTORIAL</a>
+          <a class="button--text" href="/doxygen_cxx/group__systems.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fdynamical_systems.ipynb" target="_blank">TUTORIAL</a>
         </div>
       </div>
       <div class="core-el">
         <h4>Solving Mathematical<br> Programs</h4>
         <div class="core-el-buttons">
-          <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__solvers.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fmathematical_program.ipynb" target="_blank">TUTORIAL</a>
+          <a class="button--text" href="/doxygen_cxx/group__solvers.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fmathematical_program.ipynb" target="_blank">TUTORIAL</a>
         </div>
       </div>
       <div class="core-el">
         <h4>Multibody Kinematics<br> and Dynamics</h4>
         <div class="core-el-buttons">
-          <a class="button--text" href="https://drake.mit.edu/doxygen_cxx/group__multibody.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fauthoring_multibody_simulation.ipynb" target="_blank">TUTORIAL</a>
+          <a class="button--text" href="/doxygen_cxx/group__multibody.html" target="_blank">API</a><a class="button--text" href="https://deepnote.com/workspace/Drake-0b3b2c53-a7ad-441b-80f8-bf8350752305/project/Tutorials-2b4fc509-aef2-417d-a40d-6071dfed9199/%2Fauthoring_multibody_simulation.ipynb" target="_blank">TUTORIAL</a>
         </div>
       </div>
     </div>
@@ -168,7 +168,7 @@ The Drake developers would like to acknowledge significant support from the
 [Toyota Research Institute](http://tri.global/),
 [DARPA](http://www.darpa.mil/), the
 [National Science Foundation](https://nsf.gov/), the
-[Office of Naval Research](https://www.onr.navy.mil/),
+[Office of Naval Research](https://www.nre.navy.mil/),
 [Amazon.com](https://www.amazon.com/), and
 [The MathWorks](http://www.mathworks.com/).
 </article>

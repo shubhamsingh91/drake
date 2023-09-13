@@ -1,15 +1,11 @@
 #include <map>
 #include <string>
 
-#include "fmt/format.h"
-#include "fmt/ostream.h"
-#include "pybind11/eigen.h"
-#include "pybind11/operators.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
+#include <fmt/format.h>
 
 #include "drake/bindings/pydrake/common/eigen_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
+#include "drake/bindings/pydrake/math_operators_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/bindings/pydrake/symbolic_py_unapply.h"
 #include "drake/bindings/pydrake/symbolic_types_pybind.h"
@@ -74,7 +70,7 @@ PYBIND11_MODULE(symbolic, m) {
       .def("__repr__",
           [](const Variable& self) {
             return fmt::format(
-                "Variable('{}', {})", self.to_string(), self.get_type());
+                "Variable('{}', {})", self.get_name(), self.get_type());
           })
       .def("__hash__",
           [](const Variable& self) { return std::hash<Variable>{}(self); })
@@ -145,7 +141,7 @@ PYBIND11_MODULE(symbolic, m) {
       .def(py::self != Expression())
       .def(py::self != py::self)
       .def(py::self != double());
-  internal::BindSymbolicMathOverloads<Variable>(&var_cls);
+  internal::BindMathOperators<Variable>(&var_cls);
   DefCopyAndDeepCopy(&var_cls);
 
   // Bind the free function TaylorExpand.
@@ -460,8 +456,8 @@ PYBIND11_MODULE(symbolic, m) {
       .def("Jacobian", &Expression::Jacobian, py::arg("vars"),
           doc.Expression.Jacobian.doc);
   // TODO(eric.cousineau): Clean this overload stuff up (#15041).
-  pydrake::internal::BindSymbolicMathOverloads<Expression>(&expr_cls);
-  pydrake::internal::BindSymbolicMathOverloads<Expression>(&m);
+  pydrake::internal::BindMathOperators<Expression>(&expr_cls);
+  pydrake::internal::BindMathOperators<Expression>(&m);
   DefCopyAndDeepCopy(&expr_cls);
 
   m.def("if_then_else", &symbolic::if_then_else, py::arg("f_cond"),
@@ -556,22 +552,14 @@ PYBIND11_MODULE(symbolic, m) {
         return symbolic::SubstituteStereographicProjection(e, sin_cos, t);
       },
       py::arg("e"), py::arg("sin_cos"), py::arg("t"),
-      doc.SubstituteStereographicProjection.doc_3args);
-
-  m.def(
-      "SubstituteStereographicProjection",
-      [](const Expression& e, const std::unordered_map<symbolic::Variable,
-                                  symbolic::Variable>& subs) {
-        return symbolic::SubstituteStereographicProjection(e, subs);
-      },
-      py::arg("e"), py::arg("subs"),
-      doc.SubstituteStereographicProjection.doc_2args);
+      doc.SubstituteStereographicProjection.doc);
 
   {
     constexpr auto& cls_doc = doc.FormulaKind;
     py::enum_<FormulaKind>(m, "FormulaKind", doc.FormulaKind.doc)
-        .value("False", FormulaKind::False, cls_doc.False.doc)
-        .value("True", FormulaKind::True, cls_doc.True.doc)
+        // `True` and `False` are reserved keywords as of Python3.
+        .value("False_", FormulaKind::False, cls_doc.False.doc)
+        .value("True_", FormulaKind::True, cls_doc.True.doc)
         .value("Var", FormulaKind::Var, cls_doc.Var.doc)
         .value("Eq", FormulaKind::Eq, cls_doc.Eq.doc)
         .value("Neq", FormulaKind::Neq, cls_doc.Neq.doc)
@@ -589,9 +577,11 @@ PYBIND11_MODULE(symbolic, m) {
   }
 
   py::class_<Formula> formula_cls(m, "Formula", doc.Formula.doc);
-  formula_cls.def(py::init<>(), doc.Expression.ctor.doc_0args)
+  formula_cls.def(py::init<>(), doc.Formula.ctor.doc_0args)
+      .def(py::init<bool>(), py::arg("value").noconvert(),
+          doc.Formula.ctor.doc_1args_value)
       .def(py::init<const Variable&>(), py::arg("var"),
-          doc.Expression.ctor.doc_1args_var)
+          doc.Formula.ctor.doc_1args_var)
       .def(
           "Unapply",
           [m](const symbolic::Formula& f) { return internal::Unapply(m, f); },
@@ -642,9 +632,7 @@ PYBIND11_MODULE(symbolic, m) {
                          const Formula& other) { return !self.EqualTo(other); })
       .def("__hash__",
           [](const Formula& self) { return std::hash<Formula>{}(self); })
-      .def_static("True", &Formula::True, doc.FormulaTrue.doc)
-      .def_static("False", &Formula::False, doc.FormulaFalse.doc)
-      // `True` and `False` are reserved as of Python3
+      // `True` and `False` are reserved keywords as of Python3.
       .def_static("True_", &Formula::True, doc.FormulaTrue.doc)
       .def_static("False_", &Formula::False, doc.FormulaFalse.doc)
       .def("__nonzero__", [](const Formula&) {
@@ -655,6 +643,8 @@ PYBIND11_MODULE(symbolic, m) {
             "please use pydrake.common.containers.EqualToDict`.");
       });
   formula_cls.attr("__bool__") = formula_cls.attr("__nonzero__");
+  py::implicitly_convertible<bool, Formula>();
+  py::implicitly_convertible<Variable, Formula>();
 
   // Cannot overload logical operators: http://stackoverflow.com/a/471561
   // Defining custom function for clarity.
@@ -700,6 +690,14 @@ PYBIND11_MODULE(symbolic, m) {
       .def(py::self *= py::self)
       .def(py::self * double{})
       .def(double{} * py::self)
+      .def(py::self * Expression())
+      .def(Expression() * py::self)
+      .def(py::self + Expression())
+      .def(Expression() + py::self)
+      .def(py::self - Expression())
+      .def(Expression() - py::self)
+      .def(py::self / Expression())
+      .def(Expression() / py::self)
       .def(py::self == py::self)
       .def(py::self != py::self)
       .def("__hash__",
@@ -763,7 +761,11 @@ PYBIND11_MODULE(symbolic, m) {
       .def("EvenDegreeMonomialBasis", &symbolic::EvenDegreeMonomialBasis,
           py::arg("vars"), py::arg("degree"), doc.EvenDegreeMonomialBasis.doc)
       .def("OddDegreeMonomialBasis", &symbolic::OddDegreeMonomialBasis,
-          py::arg("vars"), py::arg("degree"), doc.OddDegreeMonomialBasis.doc);
+          py::arg("vars"), py::arg("degree"), doc.OddDegreeMonomialBasis.doc)
+      .def("CalcMonomialBasisOrderUpToOne",
+          &symbolic::CalcMonomialBasisOrderUpToOne, py::arg("x"),
+          py::arg("sort_monomial") = false,
+          doc.CalcMonomialBasisOrderUpToOne.doc);
 
   using symbolic::Polynomial;
 
@@ -818,12 +820,17 @@ PYBIND11_MODULE(symbolic, m) {
       .def("AddProduct", &Polynomial::AddProduct, py::arg("coeff"),
           py::arg("m"), doc.Polynomial.AddProduct.doc)
       .def("Expand", &Polynomial::Expand, doc.Polynomial.Expand.doc)
+      .def("SubstituteAndExpand", &Polynomial::SubstituteAndExpand,
+          py::arg("indeterminate_substitution"),
+          py::arg("substitutions_cached_data") = std::nullopt,
+          doc.Polynomial.SubstituteAndExpand.doc)
       .def("RemoveTermsWithSmallCoefficients",
           &Polynomial::RemoveTermsWithSmallCoefficients,
           py::arg("coefficient_tol"),
           doc.Polynomial.RemoveTermsWithSmallCoefficients.doc)
       .def("IsEven", &Polynomial::IsEven, doc.Polynomial.IsEven.doc)
       .def("IsOdd", &Polynomial::IsOdd, doc.Polynomial.IsOdd.doc)
+      .def("Roots", &Polynomial::Roots, doc.Polynomial.Roots.doc)
       .def("CoefficientsAlmostEqual", &Polynomial::CoefficientsAlmostEqual,
           py::arg("p"), py::arg("tolerance"),
           doc.Polynomial.CoefficientsAlmostEqual.doc)
@@ -834,6 +841,8 @@ PYBIND11_MODULE(symbolic, m) {
       .def(double() + py::self)
       .def(py::self + Variable())
       .def(Variable() + py::self)
+      .def(py::self + Expression())
+      .def(Expression() + py::self)
       .def(py::self - py::self)
       .def(py::self - Monomial())
       .def(Monomial() - py::self)
@@ -841,6 +850,8 @@ PYBIND11_MODULE(symbolic, m) {
       .def(double() - py::self)
       .def(py::self - Variable())
       .def(Variable() - py::self)
+      .def(py::self - Expression())
+      .def(Expression() - py::self)
       .def(py::self * py::self)
       .def(py::self * Monomial())
       .def(Monomial() * py::self)
@@ -848,8 +859,13 @@ PYBIND11_MODULE(symbolic, m) {
       .def(double() * py::self)
       .def(py::self * Variable())
       .def(Variable() * py::self)
+      .def(py::self * Expression())
+      .def(Expression() * py::self)
       .def(-py::self)
       .def(py::self / double())
+      .def(double() / py::self)
+      .def(py::self / Expression())
+      .def(Expression() / py::self)
       .def("EqualTo", &Polynomial::EqualTo, doc.Polynomial.EqualTo.doc)
       .def(py::self == py::self)
       .def(py::self != py::self)
@@ -916,6 +932,44 @@ PYBIND11_MODULE(symbolic, m) {
             return p.Jacobian(vars);
           },
           py::arg("vars"), doc.Polynomial.Jacobian.doc);
+
+  py::class_<Polynomial::SubstituteAndExpandCacheData>(m,
+      "SubstituteAndExpandCacheData",
+      doc.Polynomial.SubstituteAndExpandCacheData.doc)
+      .def(py::init<>())
+      .def("get_data", &Polynomial::SubstituteAndExpandCacheData::get_data,
+          py_rvp::reference);
+
+  // Bind CalcPolynomialWLowerTriangularPart
+  m.def(
+       "CalcPolynomialWLowerTriangularPart",
+       [](const Eigen::Ref<const VectorX<symbolic::Monomial>>& monomial_basis,
+           const Eigen::Ref<const Eigen::VectorXd>& gram_lower) {
+         return CalcPolynomialWLowerTriangularPart(monomial_basis, gram_lower);
+       },
+       py::arg("monomial_basis"), py::arg("gram_lower"),
+       doc.CalcPolynomialWLowerTriangularPart.doc)
+      .def(
+          "CalcPolynomialWLowerTriangularPart",
+          [](const Eigen::Ref<const VectorX<symbolic::Monomial>>&
+                  monomial_basis,
+              const Eigen::Ref<const VectorX<symbolic::Variable>>& gram_lower) {
+            return CalcPolynomialWLowerTriangularPart(
+                monomial_basis, gram_lower);
+          },
+          py::arg("monomial_basis"), py::arg("gram_lower"),
+          doc.CalcPolynomialWLowerTriangularPart.doc)
+      .def(
+          "CalcPolynomialWLowerTriangularPart",
+          [](const Eigen::Ref<const VectorX<symbolic::Monomial>>&
+                  monomial_basis,
+              const Eigen::Ref<const VectorX<symbolic::Expression>>&
+                  gram_lower) {
+            return CalcPolynomialWLowerTriangularPart(
+                monomial_basis, gram_lower);
+          },
+          py::arg("monomial_basis"), py::arg("gram_lower"),
+          doc.CalcPolynomialWLowerTriangularPart.doc);
 
   py::class_<RationalFunction> rat_fun_cls(
       m, "RationalFunction", doc.RationalFunction.doc);

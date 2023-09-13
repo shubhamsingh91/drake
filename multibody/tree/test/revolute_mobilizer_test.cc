@@ -7,6 +7,7 @@
 #include "drake/math/rigid_transform.h"
 #include "drake/multibody/tree/multibody_tree-inl.h"
 #include "drake/multibody/tree/multibody_tree_system.h"
+#include "drake/multibody/tree/revolute_joint.h"
 #include "drake/multibody/tree/test/mobilizer_tester.h"
 #include "drake/systems/framework/context.h"
 
@@ -29,9 +30,10 @@ constexpr double kTolerance = 10 * std::numeric_limits<double>::epsilon();
 class RevoluteMobilizerTest : public MobilizerTester {
  public:
   void SetUp() override {
-    mobilizer_ = &AddMobilizerAndFinalize(
-        std::make_unique<RevoluteMobilizer<double>>(
-            tree().world_body().body_frame(), body_->body_frame(), axis_F_));
+    mobilizer_ = &AddJointAndFinalize<RevoluteJoint, RevoluteMobilizer>(
+        std::make_unique<RevoluteJoint<double>>(
+            "joint0", tree().world_body().body_frame(), body_->body_frame(),
+            axis_F_));
   }
 
  protected:
@@ -195,6 +197,8 @@ TEST_F(RevoluteMobilizerTest, ProjectSpatialForce) {
 }
 
 TEST_F(RevoluteMobilizerTest, MapVelocityToQDotAndBack) {
+  EXPECT_TRUE(mobilizer_->is_velocity_equal_to_qdot());
+
   Vector1d v(1.5);
   Vector1d qdot;
   mobilizer_->MapVelocityToQDot(*context_, v, &qdot);
@@ -222,6 +226,39 @@ TEST_F(RevoluteMobilizerTest, KinematicMapping) {
   EXPECT_EQ(Nplus(0, 0), 1.0);
 }
 
+TEST_F(RevoluteMobilizerTest, MapUsesN) {
+  // Set an arbitrary "non-zero" state.
+  mobilizer_->set_angle(context_.get(), 1.5);
+
+  // Set arbitrary v and MapVelocityToQDot
+  Vector1d v(2.5);
+  Vector1d qdot;
+  mobilizer_->MapVelocityToQDot(*context_, v, &qdot);
+
+  // Compute N.
+  MatrixX<double> N(1, 1);
+  mobilizer_->CalcNMatrix(*context_, &N);
+
+  // Ensure N(q) is used in `q̇ = N(q)⋅v`
+  EXPECT_EQ(qdot, N * v);
+}
+
+TEST_F(RevoluteMobilizerTest, MapUsesNplus) {
+  // Set an arbitrary "non-zero" state.
+  mobilizer_->set_angle(context_.get(), 1.5);
+
+  // Set arbitrary qdot and MapQDotToVelocity
+  Vector1d qdot(2.5);
+  Vector1d v;
+  mobilizer_->MapQDotToVelocity(*context_, qdot, &v);
+
+  // Compute Nplus.
+  MatrixX<double> Nplus(1, 1);
+  mobilizer_->CalcNplusMatrix(*context_, &Nplus);
+
+  // Ensure N⁺(q) is used in `v = N⁺(q)⋅q̇`
+  EXPECT_EQ(v, Nplus * qdot);
+}
 }  // namespace
 }  // namespace internal
 }  // namespace multibody

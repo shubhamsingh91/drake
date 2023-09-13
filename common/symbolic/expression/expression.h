@@ -29,6 +29,7 @@
 #include "drake/common/dummy_value.h"
 #include "drake/common/eigen_types.h"
 #include "drake/common/extract_double.h"
+#include "drake/common/fmt.h"
 #include "drake/common/hash.h"
 #include "drake/common/random.h"
 
@@ -69,6 +70,11 @@ class Expression;
 // Substitution is a map from a Variable to a symbolic expression. It is used in
 // Expression::Substitute and Formula::Substitute methods as an argument.
 using Substitution = std::unordered_map<Variable, Expression>;
+
+namespace internal {
+template <bool>
+struct Gemm;  // Defined later in this file.
+}  // namespace internal
 
 /** Represents a symbolic form of an expression.
 
@@ -167,8 +173,7 @@ class Expression {
 
   /** Constructs a constant. */
   // NOLINTNEXTLINE(runtime/explicit): This conversion is desirable.
-  Expression(double constant)
-      : boxed_(std::isnan(constant) ? 0.0 : constant) {
+  Expression(double constant) : boxed_(std::isnan(constant) ? 0.0 : constant) {
     if (std::isnan(constant)) {
       ConstructExpressionCellNaN();
     }
@@ -181,9 +186,7 @@ class Expression {
   Expression(const Variable& var);
 
   /** Returns expression kind. */
-  [[nodiscard]] ExpressionKind get_kind() const {
-    return boxed_.get_kind();
-  }
+  [[nodiscard]] ExpressionKind get_kind() const { return boxed_.get_kind(); }
 
   /** Collects variables in expression. */
   [[nodiscard]] Variables GetVariables() const;
@@ -425,8 +428,7 @@ class Expression {
     // in that case. TODO(jwnimmer-tri) I don't understand why we need to throw
     // during division by zero. The result is typically well-defined (infinity).
     const double rhs_or_nan = rhs.boxed_.constant_or_nan();
-    const double speculative_value =
-        lhs.boxed_.constant_or_nan() / rhs_or_nan;
+    const double speculative_value = lhs.boxed_.constant_or_nan() / rhs_or_nan;
     if ((rhs_or_nan != 0.0) && !std::isnan(speculative_value)) {
       lhs.boxed_.update_constant(speculative_value);
     } else {
@@ -564,8 +566,8 @@ class Expression {
   friend const ExpressionCeiling& to_ceil(const Expression& e);
   friend const ExpressionFloor& to_floor(const Expression& e);
   friend const ExpressionIfThenElse& to_if_then_else(const Expression& e);
-  friend const ExpressionUninterpretedFunction&
-  to_uninterpreted_function(const Expression& e);
+  friend const ExpressionUninterpretedFunction& to_uninterpreted_function(
+      const Expression& e);
 
   // Cast functions which takes a pointer to a non-const Expression.
   friend ExpressionVar& to_variable(Expression* e);
@@ -594,11 +596,13 @@ class Expression {
   friend ExpressionCeiling& to_ceil(Expression* e);
   friend ExpressionFloor& to_floor(Expression* e);
   friend ExpressionIfThenElse& to_if_then_else(Expression* e);
-  friend ExpressionUninterpretedFunction&
-  to_uninterpreted_function(Expression* e);
+  friend ExpressionUninterpretedFunction& to_uninterpreted_function(
+      Expression* e);
 
   friend class ExpressionAddFactory;
   friend class ExpressionMulFactory;
+  template <bool>
+  friend struct internal::Gemm;
 
  private:
   explicit Expression(std::unique_ptr<ExpressionCell> cell);
@@ -613,9 +617,7 @@ class Expression {
 
   // Returns a const reference to the owned cell.
   // @pre This expression is not a Constant.
-  const ExpressionCell& cell() const {
-    return boxed_.cell();
-  }
+  const ExpressionCell& cell() const { return boxed_.cell(); }
 
   // Returns a mutable reference to the owned cell. This function may only be
   // called when this object is the sole owner of the cell (use_count == 1).
@@ -1028,6 +1030,7 @@ inline bool operator!=(
   return !(lhs == rhs);
 }
 
+// TODO(jwnimmer-tri) Rewrite this as a fmt::formatter specialization.
 inline std::ostream& operator<<(
     std::ostream& os,
     const uniform_real_distribution<drake::symbolic::Expression>& d) {
@@ -1169,6 +1172,7 @@ inline bool operator!=(
   return !(lhs == rhs);
 }
 
+// TODO(jwnimmer-tri) Rewrite this as a fmt::formatter specialization.
 inline std::ostream& operator<<(
     std::ostream& os,
     const normal_distribution<drake::symbolic::Expression>& d) {
@@ -1267,6 +1271,7 @@ inline bool operator!=(
   return !(lhs == rhs);
 }
 
+// TODO(jwnimmer-tri) Rewrite this as a fmt::formatter specialization.
 inline std::ostream& operator<<(
     std::ostream& os,
     const exponential_distribution<drake::symbolic::Expression>& d) {
@@ -1342,6 +1347,73 @@ struct ScalarBinaryOpTraits<double, drake::symbolic::Expression, BinaryOp> {
 
 namespace drake {
 namespace symbolic {
+namespace internal {
+
+/* Optimized implementations of BLAS GEMM for symbolic types to take advantage
+of scalar type specializations. With our current mechanism for hooking this into
+Eigen, we only need to support the simplified form C ⇐ A@B rather than the more
+general C ⇐ αA@B+βC of typical GEMM; if we figure out how to hook into Eigen's
+expression templates, we could expand to the more general form. We group these
+functions using a struct so that the friendship declaration with Expression can
+be straightforward.
+@tparam reverse When true, calculates B@A instead of A@B. */
+template <bool reverse>
+struct Gemm {
+  Gemm() = delete;
+  // Allow for passing numpy.ndarray without copies.
+  template <typename T>
+  using MatrixRef = Eigen::Ref<const MatrixX<T>, 0, StrideX>;
+  // Matrix product for double, Variable.
+  // When reverse == false, sets result to D * V.
+  // When reverse == true, sets result to V * D.
+  static void CalcDV(const MatrixRef<double>& D, const MatrixRef<Variable>& V,
+                     EigenPtr<MatrixX<Expression>> result);
+  // Matrix product for Variable, Variable.
+  // When reverse == false, sets result to A * B.
+  // When reverse == true, sets result to B * A.
+  static void CalcVV(const MatrixRef<Variable>& A, const MatrixRef<Variable>& B,
+                     EigenPtr<MatrixX<Expression>> result);
+  // Matrix product for double, Expression.
+  // When reverse == false, sets result to D * E.
+  // When reverse == true, sets result to E * D.
+  static void CalcDE(const MatrixRef<double>& D, const MatrixRef<Expression>& E,
+                     EigenPtr<MatrixX<Expression>> result);
+  // Matrix product for Variable, Expression.
+  // When reverse == false, sets result to V * E.
+  // When reverse == true, sets result to E * V.
+  static void CalcVE(const MatrixRef<Variable>& V,
+                     const MatrixRef<Expression>& E,
+                     EigenPtr<MatrixX<Expression>> result);
+  // Matrix product for Expression, Expression.
+  // When reverse == false, sets result to A * B.
+  // When reverse == true, sets result to B * A.
+  static void CalcEE(const MatrixRef<Expression>& A,
+                     const MatrixRef<Expression>& B,
+                     EigenPtr<MatrixX<Expression>> result);
+};
+
+/* Eigen promises "automatic conversion of the inner product to a scalar", so
+when we calculate an inner product we need to return this magic type that acts
+like both a Matrix1<Expression> and an Expression. There does not appear to be
+any practical way to mimic what Eigen does, other than multiple inheritance. */
+class ExpressionInnerProduct
+    : public Expression,
+      public Eigen::Map<Eigen::Matrix<Expression, 1, 1>> {
+ public:
+  ExpressionInnerProduct() : Map(this) {}
+  void resize(int rows, int cols) { DRAKE_ASSERT(rows == 1 && cols == 1); }
+};
+
+/* Helper to look up the return type we'll use for an Expression matmul. */
+template <typename MatrixL, typename MatrixR>
+using ExpressionMatMulResult =
+    std::conditional_t<MatrixL::RowsAtCompileTime == 1 &&
+                           MatrixR::ColsAtCompileTime == 1,
+                       ExpressionInnerProduct,
+                       Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
+                                     MatrixR::ColsAtCompileTime>>;
+
+}  // namespace internal
 
 // Matrix<Expression> * Matrix<double> => Matrix<Expression>
 template <typename MatrixL, typename MatrixR>
@@ -1350,10 +1422,14 @@ typename std::enable_if_t<
         std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
         std::is_same_v<typename MatrixL::Scalar, Expression> &&
         std::is_same_v<typename MatrixR::Scalar, double>,
-    Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  return lhs.template cast<Expression>() * rhs.template cast<Expression>();
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = true;
+  internal::Gemm<reverse>::CalcDE(rhs, lhs, &result);
+  return result;
 }
 
 // Matrix<double> * Matrix<Expression> => Matrix<Expression>
@@ -1363,10 +1439,14 @@ typename std::enable_if_t<
         std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
         std::is_same_v<typename MatrixL::Scalar, double> &&
         std::is_same_v<typename MatrixR::Scalar, Expression>,
-    Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  return lhs.template cast<Expression>() * rhs.template cast<Expression>();
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = false;
+  internal::Gemm<reverse>::CalcDE(lhs, rhs, &result);
+  return result;
 }
 
 // Matrix<Expression> * Matrix<Variable> => Matrix<Expression>
@@ -1376,10 +1456,14 @@ typename std::enable_if_t<
         std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
         std::is_same_v<typename MatrixL::Scalar, Expression> &&
         std::is_same_v<typename MatrixR::Scalar, Variable>,
-    Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  return lhs * rhs.template cast<Expression>();
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = true;
+  internal::Gemm<reverse>::CalcVE(rhs, lhs, &result);
+  return result;
 }
 
 // Matrix<Variable> * Matrix<Expression> => Matrix<Expression>
@@ -1389,10 +1473,14 @@ typename std::enable_if_t<
         std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
         std::is_same_v<typename MatrixL::Scalar, Variable> &&
         std::is_same_v<typename MatrixR::Scalar, Expression>,
-    Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  return lhs.template cast<Expression>() * rhs;
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = false;
+  internal::Gemm<reverse>::CalcVE(lhs, rhs, &result);
+  return result;
 }
 
 // Matrix<Variable> * Matrix<double> => Matrix<Expression>
@@ -1402,10 +1490,14 @@ typename std::enable_if_t<
         std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
         std::is_same_v<typename MatrixL::Scalar, Variable> &&
         std::is_same_v<typename MatrixR::Scalar, double>,
-    Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  return lhs.template cast<Expression>() * rhs.template cast<Expression>();
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = true;
+  internal::Gemm<reverse>::CalcDV(rhs, lhs, &result);
+  return result;
 }
 
 // Matrix<double> * Matrix<Variable> => Matrix<Expression>
@@ -1415,10 +1507,48 @@ typename std::enable_if_t<
         std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
         std::is_same_v<typename MatrixL::Scalar, double> &&
         std::is_same_v<typename MatrixR::Scalar, Variable>,
-    Eigen::Matrix<Expression, MatrixL::RowsAtCompileTime,
-                  MatrixR::ColsAtCompileTime>>
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
 operator*(const MatrixL& lhs, const MatrixR& rhs) {
-  return lhs.template cast<Expression>() * rhs.template cast<Expression>();
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = false;
+  internal::Gemm<reverse>::CalcDV(lhs, rhs, &result);
+  return result;
+}
+
+// Matrix<Variable> * Matrix<Variable> => Matrix<Expression>
+template <typename MatrixL, typename MatrixR>
+typename std::enable_if_t<
+    std::is_base_of_v<Eigen::MatrixBase<MatrixL>, MatrixL> &&
+        std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
+        std::is_same_v<typename MatrixL::Scalar, Variable> &&
+        std::is_same_v<typename MatrixR::Scalar, Variable>,
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
+operator*(const MatrixL& lhs, const MatrixR& rhs) {
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = false;
+  internal::Gemm<reverse>::CalcVV(lhs, rhs, &result);
+  return result;
+}
+
+// Matrix<Expression> * Matrix<Expression> => Matrix<Expression>
+template <typename MatrixL, typename MatrixR>
+typename std::enable_if_t<
+    std::is_base_of_v<Eigen::MatrixBase<MatrixL>, MatrixL> &&
+        std::is_base_of_v<Eigen::MatrixBase<MatrixR>, MatrixR> &&
+        std::is_same_v<typename MatrixL::Scalar, Expression> &&
+        std::is_same_v<typename MatrixR::Scalar, Expression>,
+    internal::ExpressionMatMulResult<MatrixL, MatrixR>>
+operator*(const MatrixL& lhs, const MatrixR& rhs) {
+  internal::ExpressionMatMulResult<MatrixL, MatrixR> result;
+  DRAKE_THROW_UNLESS(lhs.cols() == rhs.rows());
+  result.resize(lhs.rows(), rhs.cols());
+  constexpr bool reverse = false;
+  internal::Gemm<reverse>::CalcEE(lhs, rhs, &result);
+  return result;
 }
 
 /// Transform<double> * Transform<Expression> => Transform<Expression>
@@ -1448,9 +1578,8 @@ auto operator*(
 ///                           @p random_generator is `nullptr`.
 /// @pydrake_mkdoc_identifier{expression}
 template <typename Derived>
-std::enable_if_t<
-    std::is_same_v<typename Derived::Scalar, Expression>,
-    MatrixLikewise<double, Derived>>
+std::enable_if_t<std::is_same_v<typename Derived::Scalar, Expression>,
+                 MatrixLikewise<double, Derived>>
 Evaluate(const Eigen::MatrixBase<Derived>& m,
          const Environment& env = Environment{},
          RandomGenerator* random_generator = nullptr) {
@@ -1458,7 +1587,9 @@ Evaluate(const Eigen::MatrixBase<Derived>& m,
   // ubuntu).  Previously the implementation used `auto`, and placed  an `
   // .eval()` at the end to prevent lazy evaluation.
   if (random_generator == nullptr) {
-    return m.unaryExpr([&env](const Expression& e) { return e.Evaluate(env); });
+    return m.unaryExpr([&env](const Expression& e) {
+      return e.Evaluate(env);
+    });
   } else {
     // Construct an environment by extending `env` by sampling values for the
     // random variables in `m` which are unassigned in `env`.
@@ -1485,14 +1616,15 @@ Eigen::SparseMatrix<double> Evaluate(
 /// @returns a matrix of symbolic expressions whose size is the size of @p m.
 /// @throws std::exception if NaN is detected during substitution.
 template <typename Derived>
-MatrixLikewise<Expression, Derived>
-Substitute(const Eigen::MatrixBase<Derived>& m, const Substitution& subst) {
+MatrixLikewise<Expression, Derived> Substitute(
+    const Eigen::MatrixBase<Derived>& m, const Substitution& subst) {
   static_assert(std::is_same_v<typename Derived::Scalar, Expression>,
                 "Substitute only accepts a symbolic matrix.");
   // Note that the return type is written out explicitly to help gcc 5 (on
   // ubuntu).
-  return m.unaryExpr(
-      [&subst](const Expression& e) { return e.Substitute(subst); });
+  return m.unaryExpr([&subst](const Expression& e) {
+    return e.Substitute(subst);
+  });
 }
 
 /// Substitutes @p var with @p e in a symbolic matrix @p m.
@@ -1500,9 +1632,9 @@ Substitute(const Eigen::MatrixBase<Derived>& m, const Substitution& subst) {
 /// @returns a matrix of symbolic expressions whose size is the size of @p m.
 /// @throws std::exception if NaN is detected during substitution.
 template <typename Derived>
-MatrixLikewise<Expression, Derived>
-Substitute(const Eigen::MatrixBase<Derived>& m, const Variable& var,
-           const Expression& e) {
+MatrixLikewise<Expression, Derived> Substitute(
+    const Eigen::MatrixBase<Derived>& m, const Variable& var,
+    const Expression& e) {
   static_assert(std::is_same_v<typename Derived::Scalar, Expression>,
                 "Substitute only accepts a symbolic matrix.");
   // Note that the return type is written out explicitly to help gcc 5 (on
@@ -1608,7 +1740,7 @@ template <typename DerivedV, typename DerivedB>
 struct is_eigen_nonvector_expression_double_pair
     : std::bool_constant<
           is_eigen_nonvector_of<DerivedV, symbolic::Expression>::value &&
-              is_eigen_nonvector_of<DerivedB, double>::value> {};
+          is_eigen_nonvector_of<DerivedB, double>::value> {};
 
 /*
  * Determine if two EigenBase<> types are vectors of Expressions and doubles
@@ -1618,6 +1750,8 @@ template <typename DerivedV, typename DerivedB>
 struct is_eigen_vector_expression_double_pair
     : std::bool_constant<
           is_eigen_vector_of<DerivedV, symbolic::Expression>::value &&
-              is_eigen_vector_of<DerivedB, double>::value> {};
+          is_eigen_vector_of<DerivedB, double>::value> {};
 
 }  // namespace drake
+
+DRAKE_FORMATTER_AS(, drake::symbolic, Expression, e, e.to_string())

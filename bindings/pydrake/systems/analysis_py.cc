@@ -1,5 +1,3 @@
-#include "pybind11/pybind11.h"
-
 #include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/deprecation_pybind.h"
@@ -7,6 +5,7 @@
 #include "drake/bindings/pydrake/common/wrap_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
+#include "drake/common/scope_exit.h"
 #include "drake/systems/analysis/integrator_base.h"
 #include "drake/systems/analysis/monte_carlo.h"
 #include "drake/systems/analysis/region_of_attraction.h"
@@ -16,11 +15,24 @@
 #include "drake/systems/analysis/simulator_config.h"
 #include "drake/systems/analysis/simulator_config_functions.h"
 #include "drake/systems/analysis/simulator_print_stats.h"
+#include "drake/systems/analysis/simulator_python_internal.h"
 
 using std::unique_ptr;
 
 namespace drake {
 namespace pydrake {
+
+namespace {
+// Checks for Ctrl-C (and other signals) and invokes the Python handler,
+// but only when called on the main interpreter thread. For details, see:
+// https://docs.python.org/3/c-api/exceptions.html#c.PyErr_CheckSignals
+// https://pybind11.readthedocs.io/en/stable/faq.html#how-can-i-properly-handle-ctrl-c-in-long-running-functions
+void ThrowIfPythonHasPendingSignals() {
+  if (PyErr_CheckSignals() != 0) {
+    throw py::error_already_set();
+  }
+}
+}  // namespace
 
 PYBIND11_MODULE(analysis, m) {
   // NOLINTNEXTLINE(build/namespaces): Emulate placement in namespace.
@@ -85,38 +97,88 @@ PYBIND11_MODULE(analysis, m) {
   auto bind_scalar_types = [m](auto dummy) {
     constexpr auto& doc = pydrake_doc.drake.systems;
     using T = decltype(dummy);
-    DefineTemplateClassWithDefault<IntegratorBase<T>>(
-        m, "IntegratorBase", GetPyParam<T>(), doc.IntegratorBase.doc)
-        .def("set_fixed_step_mode", &IntegratorBase<T>::set_fixed_step_mode,
-            doc.IntegratorBase.set_fixed_step_mode.doc)
-        .def("get_fixed_step_mode", &IntegratorBase<T>::get_fixed_step_mode,
-            doc.IntegratorBase.get_fixed_step_mode.doc)
-        .def("set_target_accuracy", &IntegratorBase<T>::set_target_accuracy,
-            doc.IntegratorBase.set_target_accuracy.doc)
-        .def("get_target_accuracy", &IntegratorBase<T>::get_target_accuracy,
-            doc.IntegratorBase.get_target_accuracy.doc)
-        .def("set_maximum_step_size", &IntegratorBase<T>::set_maximum_step_size,
-            doc.IntegratorBase.set_maximum_step_size.doc)
-        .def("get_maximum_step_size", &IntegratorBase<T>::get_maximum_step_size,
-            doc.IntegratorBase.get_maximum_step_size.doc)
-        .def("set_requested_minimum_step_size",
-            &IntegratorBase<T>::set_requested_minimum_step_size,
-            doc.IntegratorBase.set_requested_minimum_step_size.doc)
-        .def("get_requested_minimum_step_size",
-            &IntegratorBase<T>::get_requested_minimum_step_size,
-            doc.IntegratorBase.get_requested_minimum_step_size.doc)
-        .def("set_throw_on_minimum_step_size_violation",
-            &IntegratorBase<T>::set_throw_on_minimum_step_size_violation,
-            doc.IntegratorBase.set_throw_on_minimum_step_size_violation.doc)
-        .def("get_throw_on_minimum_step_size_violation",
-            &IntegratorBase<T>::get_throw_on_minimum_step_size_violation,
-            doc.IntegratorBase.get_throw_on_minimum_step_size_violation.doc)
-        .def("StartDenseIntegration", &IntegratorBase<T>::StartDenseIntegration,
-            doc.IntegratorBase.StartDenseIntegration.doc)
-        .def("get_dense_output", &IntegratorBase<T>::get_dense_output,
-            py_rvp::reference_internal, doc.IntegratorBase.get_dense_output.doc)
-        .def("StopDenseIntegration", &IntegratorBase<T>::StopDenseIntegration,
-            doc.IntegratorBase.StopDenseIntegration.doc);
+    {
+      using Class = IntegratorBase<T>;
+      constexpr auto& cls_doc = doc.IntegratorBase;
+      DefineTemplateClassWithDefault<Class>(
+          m, "IntegratorBase", GetPyParam<T>(), cls_doc.doc)
+          .def("set_fixed_step_mode", &Class::set_fixed_step_mode,
+              py::arg("flag"), cls_doc.set_fixed_step_mode.doc)
+          .def("get_fixed_step_mode", &Class::get_fixed_step_mode,
+              cls_doc.get_fixed_step_mode.doc)
+          .def("set_target_accuracy", &Class::set_target_accuracy,
+              py::arg("accuracy"), cls_doc.set_target_accuracy.doc)
+          .def("get_target_accuracy", &Class::get_target_accuracy,
+              cls_doc.get_target_accuracy.doc)
+          .def("request_initial_step_size_target",
+              &Class::request_initial_step_size_target, py::arg("step_size"),
+              cls_doc.request_initial_step_size_target.doc)
+          .def("get_initial_step_size_target",
+              &Class::get_initial_step_size_target,
+              cls_doc.get_initial_step_size_target.doc)
+          .def("set_maximum_step_size", &Class::set_maximum_step_size,
+              py::arg("max_step_size"), cls_doc.set_maximum_step_size.doc)
+          .def("get_maximum_step_size", &Class::get_maximum_step_size,
+              cls_doc.get_maximum_step_size.doc)
+          .def("set_requested_minimum_step_size",
+              &Class::set_requested_minimum_step_size, py::arg("min_step_size"),
+              cls_doc.set_requested_minimum_step_size.doc)
+          .def("get_requested_minimum_step_size",
+              &Class::get_requested_minimum_step_size,
+              cls_doc.get_requested_minimum_step_size.doc)
+          .def("set_throw_on_minimum_step_size_violation",
+              &Class::set_throw_on_minimum_step_size_violation,
+              py::arg("throws"),
+              cls_doc.set_throw_on_minimum_step_size_violation.doc)
+          .def("get_throw_on_minimum_step_size_violation",
+              &Class::get_throw_on_minimum_step_size_violation,
+              cls_doc.get_throw_on_minimum_step_size_violation.doc)
+          .def("Reset", &Class::Reset, cls_doc.Reset.doc)
+          .def("Initialize", &Class::Initialize, cls_doc.Initialize.doc)
+          .def("StartDenseIntegration", &Class::StartDenseIntegration,
+              cls_doc.StartDenseIntegration.doc)
+          .def("get_dense_output", &Class::get_dense_output,
+              py_rvp::reference_internal, py_rvp::reference_internal,
+              cls_doc.get_dense_output.doc)
+          .def("StopDenseIntegration", &Class::StopDenseIntegration,
+              cls_doc.StopDenseIntegration.doc)
+          .def("ResetStatistics", &Class::ResetStatistics,
+              cls_doc.ResetStatistics.doc)
+          .def("get_num_substep_failures", &Class::get_num_substep_failures,
+              cls_doc.get_num_substep_failures.doc)
+          .def("get_num_step_shrinkages_from_substep_failures",
+              &Class::get_num_step_shrinkages_from_substep_failures,
+              cls_doc.get_num_step_shrinkages_from_substep_failures.doc)
+          .def("get_num_step_shrinkages_from_error_control",
+              &Class::get_num_step_shrinkages_from_error_control,
+              cls_doc.get_num_step_shrinkages_from_error_control.doc)
+          .def("get_num_derivative_evaluations",
+              &Class::get_num_derivative_evaluations,
+              cls_doc.get_num_derivative_evaluations.doc)
+          .def("get_actual_initial_step_size_taken",
+              &Class::get_actual_initial_step_size_taken,
+              cls_doc.get_actual_initial_step_size_taken.doc)
+          .def("get_smallest_adapted_step_size_taken",
+              &Class::get_smallest_adapted_step_size_taken,
+              cls_doc.get_smallest_adapted_step_size_taken.doc)
+          .def("get_largest_step_size_taken",
+              &Class::get_largest_step_size_taken,
+              cls_doc.get_largest_step_size_taken.doc)
+          .def("get_num_steps_taken", &Class::get_num_steps_taken,
+              cls_doc.get_num_steps_taken.doc)
+          // N.B. While `context` is not directly owned by this system, we
+          // would still like our accessors to keep it alive (e.g. a user calls
+          // `simulator.get_integrator().get_context()`.
+          .def("get_context", &Class::get_context,
+              // Keep alive, transitive: `return` keeps `self` alive.
+              py::keep_alive<0, 1>(), cls_doc.get_context.doc)
+          .def("get_mutable_context", &Class::get_mutable_context,
+              // Keep alive, transitive: `return` keeps `self` alive.
+              py::keep_alive<0, 1>(), cls_doc.get_mutable_context.doc)
+          .def("reset_context", &Class::reset_context, py::arg("context"),
+              // Keep alive, reference: `context` keeps `self` alive.
+              py::keep_alive<2, 1>(), cls_doc.reset_context.doc);
+    }
 
     DefineTemplateClassWithDefault<RungeKutta2Integrator<T>, IntegratorBase<T>>(
         m, "RungeKutta2Integrator", GetPyParam<T>(),
@@ -145,6 +207,10 @@ PYBIND11_MODULE(analysis, m) {
             // Keep alive, reference: `self` keeps `context` alive.
             py::keep_alive<1, 3>(), doc.RungeKutta3Integrator.ctor.doc);
 
+    // See equivalent note about EventCallback in `framework_py_systems.cc`.
+    using MonitorCallback =
+        std::function<std::optional<EventStatus>(const Context<T>&)>;
+
     auto cls = DefineTemplateClassWithDefault<Simulator<T>>(
         m, "Simulator", GetPyParam<T>(), doc.Simulator.doc);
     cls  // BR
@@ -157,11 +223,48 @@ PYBIND11_MODULE(analysis, m) {
         .def("Initialize", &Simulator<T>::Initialize,
             doc.Simulator.Initialize.doc,
             py::arg("params") = InitializeParams{})
-        .def("AdvanceTo", &Simulator<T>::AdvanceTo, py::arg("boundary_time"),
-            doc.Simulator.AdvanceTo.doc)
+        .def(
+            "AdvanceTo",
+            [](Simulator<T>* self, const T& boundary_time, bool interruptible) {
+              if (!interruptible) {
+                return self->AdvanceTo(boundary_time);
+              }
+              // Enable the interrupt monitor.
+              using systems::internal::SimulatorPythonInternal;
+              SimulatorPythonInternal<T>::set_python_monitor(
+                  self, &ThrowIfPythonHasPendingSignals);
+              ScopeExit guard([self]() {
+                SimulatorPythonInternal<T>::set_python_monitor(self, nullptr);
+              });
+              return self->AdvanceTo(boundary_time);
+            },
+            py::arg("boundary_time"), py::arg("interruptible") = true,
+            // Amend the docstring with the additional parameter.
+            []() {
+              std::string new_doc = doc.Simulator.AdvanceTo.doc;
+              auto found = new_doc.find("\nReturns");
+              DRAKE_DEMAND(found != std::string::npos);
+              new_doc.insert(found + 1, R"""(
+Parameter ``interruptible``:
+    When True, the simulator will check for ``KeyboardInterrupt``
+    signals (Ctrl-C) during the call to AdvanceTo(). When False,
+    the AdvanceTo() may or may not be interruptible, depending on
+    what systems and/or monitors have been added to the simulator.
+    The check has a very minor runtime performance cost, so can be
+    disabled by passing ``False``. This is a Python-only parameter
+    (not available in the C++ API).
+)""");
+              return new_doc;
+            }()
+                .c_str())
         .def("AdvancePendingEvents", &Simulator<T>::AdvancePendingEvents,
             doc.Simulator.AdvancePendingEvents.doc)
-        .def("set_monitor", WrapCallbacks(&Simulator<T>::set_monitor),
+        .def("set_monitor",
+            WrapCallbacks([](Simulator<T>* self, MonitorCallback monitor) {
+              self->set_monitor([monitor](const Context<T>& context) {
+                return monitor(context).value_or(EventStatus::DidNothing());
+              });
+            }),
             py::arg("monitor"), doc.Simulator.set_monitor.doc)
         .def("clear_monitor", &Simulator<T>::clear_monitor,
             doc.Simulator.clear_monitor.doc)
@@ -200,6 +303,16 @@ PYBIND11_MODULE(analysis, m) {
             doc.Simulator.get_actual_realtime_rate.doc)
         .def("ResetStatistics", &Simulator<T>::ResetStatistics,
             doc.Simulator.ResetStatistics.doc)
+        .def("get_num_publishes", &Simulator<T>::get_num_publishes,
+            doc.Simulator.get_num_publishes.doc)
+        .def("get_num_steps_taken", &Simulator<T>::get_num_steps_taken,
+            doc.Simulator.get_num_steps_taken.doc)
+        .def("get_num_discrete_updates",
+            &Simulator<T>::get_num_discrete_updates,
+            doc.Simulator.get_num_discrete_updates.doc)
+        .def("get_num_unrestricted_updates",
+            &Simulator<T>::get_num_unrestricted_updates,
+            doc.Simulator.get_num_unrestricted_updates.doc)
         .def("get_system", &Simulator<T>::get_system, py_rvp::reference,
             doc.Simulator.get_system.doc);
 
@@ -212,16 +325,6 @@ PYBIND11_MODULE(analysis, m) {
         .def("ExtractSimulatorConfig", &ExtractSimulatorConfig<T>,
             py::arg("simulator"),
             pydrake_doc.drake.systems.ExtractSimulatorConfig.doc);
-    m  // BR
-        .def("ApplySimulatorConfig",
-            WrapDeprecated(
-                pydrake_doc.drake.systems.ApplySimulatorConfig.doc_deprecated,
-                [](drake::systems::Simulator<T>* simulator,
-                    const SimulatorConfig& config) {
-                  ApplySimulatorConfig(config, simulator);
-                }),
-            py::arg("simulator"), py::arg("config"),
-            pydrake_doc.drake.systems.ApplySimulatorConfig.doc_deprecated);
   };
   type_visit(bind_nonsymbolic_scalar_types, NonSymbolicScalarPack{});
 

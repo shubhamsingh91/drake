@@ -2,9 +2,6 @@
 
 #include <sstream>
 
-#include "pybind11/eigen.h"
-#include "pybind11/pybind11.h"
-
 #include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/type_pack.h"
@@ -38,7 +35,7 @@ void DoScalarDependentDefinitions(py::module m) {
       .def("__repr__",
           [](const VectorBase<T>& self) {
             py::handle cls = py::cast(&self, py_rvp::reference).get_type();
-            return py::str("{}({})").format(cls.attr("__name__"),
+            return py::str("{}({})").format(internal::PrettyClassName(cls),
                 py::cast(self.CopyToVector()).attr("tolist")());
           })
       .def("__getitem__",

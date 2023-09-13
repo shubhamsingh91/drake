@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load(
     "@drake//tools/skylark:drake_cc.bzl",
     "drake_cc_binary",
@@ -26,14 +24,26 @@ drake_cc_package_library(
     testonly = 1,
     visibility = ["//visibility:public"],
     deps = [
+        ":diagnostic_policy_test_base",
         ":eigen_matrix_compare",
         ":expect_no_throw",
         ":expect_throws_message",
         ":is_dynamic_castable",
         ":is_memcpy_movable",
+        ":maybe_pause_for_user",
         ":measure_execution",
         ":random_polynomial_matrix",
         ":symbolic_test_util",
+    ],
+)
+
+drake_cc_library(
+    name = "diagnostic_policy_test_base",
+    testonly = 1,
+    hdrs = ["diagnostic_policy_test_base.h"],
+    deps = [
+        "//common:diagnostic_policy",
+        "@gtest//:without_main",
     ],
 )
 
@@ -61,6 +71,22 @@ drake_cc_library(
     testonly = 1,
     hdrs = ["expect_throws_message.h"],
     deps = ["//common:essential"],
+)
+
+drake_cc_library(
+    name = "gtest_printers",
+    testonly = 1,
+    hdrs = [
+        "eigen_printer.h",
+        "fmt_format_printer.h",
+    ],
+    tags = ["exclude_from_package"],
+    visibility = ["@gtest//:__pkg__"],
+    deps = [
+        "//common:fmt",
+        "@eigen",
+        "@fmt",
+    ],
 )
 
 drake_cc_library(
@@ -218,4 +244,27 @@ drake_cc_googletest(
     ],
 )
 
-add_lint_tests()
+drake_cc_library(
+    name = "maybe_pause_for_user",
+    testonly = 1,
+    srcs = ["maybe_pause_for_user.cc"],
+    hdrs = ["maybe_pause_for_user.h"],
+)
+
+drake_cc_googletest(
+    name = "maybe_pause_for_user_test",
+    deps = [
+        ":maybe_pause_for_user",
+    ],
+)
+
+drake_cc_binary(
+    name = "maybe_pause_for_user_manual_test",
+    testonly = 1,
+    srcs = ["test/maybe_pause_for_user_manual_test.cc"],
+    deps = [
+        ":maybe_pause_for_user",
+    ],
+)
+
+add_lint_tests(enable_clang_format_lint = False)

@@ -7,6 +7,7 @@
 #include "drake/math/rigid_transform.h"
 #include "drake/multibody/tree/multibody_tree-inl.h"
 #include "drake/multibody/tree/multibody_tree_system.h"
+#include "drake/multibody/tree/planar_joint.h"
 #include "drake/multibody/tree/test/mobilizer_tester.h"
 #include "drake/systems/framework/context.h"
 
@@ -30,9 +31,10 @@ class PlanarMobilizerTest : public MobilizerTester {
   // Creates a simple model consisting of a single body with a planar
   // mobilizer connecting it to the world.
   void SetUp() override {
-    mobilizer_ =
-        &AddMobilizerAndFinalize(std::make_unique<PlanarMobilizer<double>>(
-            tree().world_body().body_frame(), body_->body_frame()));
+    mobilizer_ = &AddJointAndFinalize<PlanarJoint, PlanarMobilizer>(
+        std::make_unique<PlanarJoint<double>>(
+            "joint0", tree().world_body().body_frame(), body_->body_frame(),
+            Vector3d::Zero()));
   }
 
  protected:
@@ -196,9 +198,9 @@ TEST_F(PlanarMobilizerTest, CalcAcrossMobilizerTransform) {
 }
 
 TEST_F(PlanarMobilizerTest, CalcAcrossMobilizerSpatialVeloctiy) {
-  const Vector2d translations(1, 0.5);
-  const double angle = 1.5;
-  const Vector3d velocity(2.5, 2, 3);
+  const Vector2d translations(1.1, 0.6);
+  const double angle = 1.6;
+  const Vector3d velocity(2.5, 2.1, 3.1);
   mobilizer_->set_translations(context_.get(), translations);
   mobilizer_->set_angle(context_.get(), angle);
   const SpatialVelocity<double> V_FM =
@@ -252,6 +254,8 @@ TEST_F(PlanarMobilizerTest, ProjectSpatialForce) {
 }
 
 TEST_F(PlanarMobilizerTest, MapVelocityToQDotAndBack) {
+  EXPECT_TRUE(mobilizer_->is_velocity_equal_to_qdot());
+
   Vector3d v(1.5, 2.5, 3.5);
   Vector3d qdot;
   mobilizer_->MapVelocityToQDot(*context_, v, &qdot);
@@ -280,6 +284,44 @@ TEST_F(PlanarMobilizerTest, KinematicMapping) {
   MatrixX<double> Nplus(3, 3);
   mobilizer_->CalcNplusMatrix(*context_, &Nplus);
   EXPECT_EQ(Nplus, Matrix3d::Identity());
+}
+
+TEST_F(PlanarMobilizerTest, MapUsesN) {
+  // Set an arbitrary "non-zero" state.
+  const Vector2d some_values(1.5, 2.5);
+  mobilizer_->set_angle(context_.get(), 3.5);
+  mobilizer_->set_translations(context_.get(), some_values);
+
+  // Set arbitrary v and MapVelocityToQDot.
+  Vector3d v(4.5, 5.5, 6.5);
+  Vector3d qdot;
+  mobilizer_->MapVelocityToQDot(*context_, v, &qdot);
+
+  // Compute N.
+  MatrixX<double> N(3, 3);
+  mobilizer_->CalcNMatrix(*context_, &N);
+
+  // Ensure N(q) is used in `q̇ = N(q)⋅v`
+  EXPECT_EQ(qdot, N * v);
+}
+
+TEST_F(PlanarMobilizerTest, MapUsesNplus) {
+  // Set an arbitrary "non-zero" state.
+  const Vector2d some_values(1.5, 2.5);
+  mobilizer_->set_angle(context_.get(), 3.5);
+  mobilizer_->set_translations(context_.get(), some_values);
+
+  // Set arbitrary qdot and MapQDotToVelocity.
+  Vector3d qdot(4.5, 5.5, 6.5);
+  Vector3d v;
+  mobilizer_->MapQDotToVelocity(*context_, qdot, &v);
+
+  // Compute Nplus.
+  MatrixX<double> Nplus(3, 3);
+  mobilizer_->CalcNplusMatrix(*context_, &Nplus);
+
+  // Ensure N⁺(q) is used in `v = N⁺(q)⋅q̇`
+  EXPECT_EQ(v, Nplus * qdot);
 }
 
 }  // namespace

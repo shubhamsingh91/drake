@@ -92,6 +92,13 @@ MultibodyTree<T>& MultibodyTreeSystem<T>::mutable_tree() const {
 
 template <typename T>
 void MultibodyTreeSystem<T>::DeclareMultibodyElementParameters() {
+  // Mobilizers.
+  for (MobilizerIndex mobilizer_index(0);
+       mobilizer_index < tree_->num_mobilizers(); ++mobilizer_index) {
+    mutable_tree()
+        .get_mutable_mobilizer(mobilizer_index)
+        .DeclareParameters(this);
+  }
   // Joints.
   for (JointIndex joint_index(0); joint_index < tree_->num_joints();
        ++joint_index) {
@@ -207,23 +214,29 @@ void MultibodyTreeSystem<T>::Finalize() {
       {position_kinematics_cache_entry().ticket()}).cache_index();
 
   // Allocate articulated body inertia cache.
-  cache_indexes_.abi_cache_index = this->DeclareCacheEntry(
-      std::string("Articulated Body Inertia"),
-      ArticulatedBodyInertiaCache<T>(internal_tree().get_topology()),
-      &MultibodyTreeSystem<T>::CalcArticulatedBodyInertiaCache,
-      {this->configuration_ticket()}).cache_index();
+  cache_indexes_.abi_cache_index =
+      this->DeclareCacheEntry(
+              std::string("Articulated Body Inertia"),
+              ArticulatedBodyInertiaCache<T>(internal_tree().get_topology()),
+              &MultibodyTreeSystem<T>::CalcArticulatedBodyInertiaCache,
+              {this->configuration_ticket(), this->all_parameters_ticket()})
+          .cache_index();
 
-  cache_indexes_.spatial_acceleration_bias = this->DeclareCacheEntry(
-      std::string("spatial acceleration bias (Ab_WB)"),
-      std::vector<SpatialAcceleration<T>>(internal_tree().num_bodies()),
-      &MultibodyTreeSystem<T>::CalcSpatialAccelerationBias,
-      {this->kinematics_ticket()}).cache_index();
+  cache_indexes_.spatial_acceleration_bias =
+      this->DeclareCacheEntry(
+              std::string("spatial acceleration bias (Ab_WB)"),
+              std::vector<SpatialAcceleration<T>>(internal_tree().num_bodies()),
+              &MultibodyTreeSystem<T>::CalcSpatialAccelerationBias,
+              {this->kinematics_ticket(), this->all_parameters_ticket()})
+          .cache_index();
 
-  cache_indexes_.articulated_body_force_bias = this->DeclareCacheEntry(
-      std::string("ABI force bias cache (Zb_Bo_W)"),
-      std::vector<SpatialForce<T>>(internal_tree().num_bodies()),
-      &MultibodyTreeSystem<T>::CalcArticulatedBodyForceBias,
-      {this->kinematics_ticket()}).cache_index();
+  cache_indexes_.articulated_body_force_bias =
+      this->DeclareCacheEntry(
+              std::string("ABI force bias cache (Zb_Bo_W)"),
+              std::vector<SpatialForce<T>>(internal_tree().num_bodies()),
+              &MultibodyTreeSystem<T>::CalcArticulatedBodyForceBias,
+              {this->kinematics_ticket(), this->all_parameters_ticket()})
+          .cache_index();
 
   // Articulated Body Algorithm (ABA) force cache.
   cache_indexes_.articulated_body_forces = this->DeclareCacheEntry(

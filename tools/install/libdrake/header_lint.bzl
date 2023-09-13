@@ -1,5 +1,3 @@
-# -*- python -*-
-
 # This file contains a linter rule that ensures that only our allowed set of
 # third-party dependencies are used as "interface deps". In almost all cases,
 # we should be using "implementation deps" when using third-party libraries.
@@ -12,18 +10,20 @@ _ALLOWED_EXTERNALS = [
     "eigen",
     "fmt",
     "lcm",
-    "optitrack",
     "spdlog",
 
     # The entries that follow are defects; we should work to remove them.
     "zlib",
+
+    # TODO(jwnimmer-tri) On 2023-11-01 upon completion of deprecation removal,
+    # also remove this item from this list.
+    "optitrack",
 ]
 
 # Drake's allowed list of public preprocessor definitions. The only things
 # permitted here are definitions required by the _ALLOWED_EXTERNALS, above.
 _ALLOWED_DEFINES = [
     "EIGEN_MPL2_ONLY",
-    "FMT_DEPRECATED_OSTREAM=1",
     "FMT_HEADER_ONLY=1",
     "FMT_NO_FMT_STRING_ALIAS=1",
     "HAVE_SPDLOG",

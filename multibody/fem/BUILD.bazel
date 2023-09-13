@@ -34,9 +34,10 @@ drake_cc_package_library(
         ":isoparametric_element",
         ":linear_constitutive_model",
         ":linear_constitutive_model_data",
+        ":linear_corotated_model",
+        ":linear_corotated_model_data",
         ":linear_simplex_element",
         ":matrix_utilities",
-        ":petsc_symmetric_block_sparse_matrix",
         ":quadrature",
         ":schur_complement",
         ":simplex_gaussian_quadrature",
@@ -166,8 +167,8 @@ drake_cc_library(
     ],
     deps = [
         ":fem_state",
-        ":petsc_symmetric_block_sparse_matrix",
         "//common:essential",
+        "//multibody/contact_solvers:block_sparse_lower_triangular_or_symmetric_matrix",  # noqa
     ],
 )
 
@@ -229,8 +230,8 @@ drake_cc_library(
         ":dirichlet_boundary_condition",
         ":fem_element",
         ":fem_state",
-        ":petsc_symmetric_block_sparse_matrix",
         "//common:essential",
+        "//multibody/contact_solvers:block_sparse_lower_triangular_or_symmetric_matrix",  # noqa
     ],
 )
 
@@ -246,6 +247,9 @@ drake_cc_library(
         ":discrete_time_integrator",
         ":fem_model",
         "//common:essential",
+        "//multibody/contact_solvers:block_sparse_cholesky_solver",
+        "//multibody/contact_solvers:block_sparse_lower_triangular_or_symmetric_matrix",  # noqa
+        "//multibody/contact_solvers:schur_complement",
     ],
 )
 
@@ -325,6 +329,40 @@ drake_cc_library(
 )
 
 drake_cc_library(
+    name = "linear_corotated_model",
+    srcs = [
+        "linear_corotated_model.cc",
+    ],
+    hdrs = [
+        "linear_corotated_model.h",
+    ],
+    deps = [
+        ":calc_lame_parameters",
+        ":constitutive_model",
+        ":linear_corotated_model_data",
+        ":matrix_utilities",
+        "//common:autodiff",
+        "//common:essential",
+    ],
+)
+
+drake_cc_library(
+    name = "linear_corotated_model_data",
+    srcs = [
+        "linear_corotated_model_data.cc",
+    ],
+    hdrs = [
+        "linear_corotated_model_data.h",
+    ],
+    deps = [
+        ":deformation_gradient_data",
+        ":matrix_utilities",
+        "//common:autodiff",
+        "//common:essential",
+    ],
+)
+
+drake_cc_library(
     name = "linear_simplex_element",
     srcs = [
         "linear_simplex_element.cc",
@@ -349,24 +387,6 @@ drake_cc_library(
     deps = [
         "//common:default_scalars",
         "//common:essential",
-    ],
-)
-
-drake_cc_library(
-    name = "petsc_symmetric_block_sparse_matrix",
-    srcs = [
-        "petsc_symmetric_block_sparse_matrix.cc",
-    ],
-    hdrs = [
-        "petsc_symmetric_block_sparse_matrix.h",
-    ],
-    interface_deps = [
-        ":schur_complement",
-        "//common:essential",
-    ],
-    deps = [
-        "//common:unused",
-        "@petsc",
     ],
 )
 
@@ -489,6 +509,7 @@ drake_cc_library(
         ":constitutive_model",
         ":corotated_model",
         ":linear_constitutive_model",
+        ":linear_corotated_model",
         ":matrix_utilities",
         "//common:autodiff",
         "//common/test_utilities:eigen_matrix_compare",
@@ -561,6 +582,7 @@ drake_cc_library(
     srcs = ["test/dummy_element.cc"],
     hdrs = ["test/dummy_element.h"],
     deps = [
+        ":corotated_model",
         ":damping_model",
         ":fem_element",
         ":fem_state",
@@ -590,6 +612,11 @@ drake_cc_googletest(
     name = "fem_model_test",
     deps = [
         ":dummy_model",
+        ":linear_corotated_model",
+        ":linear_simplex_element",
+        ":simplex_gaussian_quadrature",
+        ":volumetric_element",
+        ":volumetric_model",
         "//common/test_utilities:eigen_matrix_compare",
         "//common/test_utilities:expect_throws_message",
     ],
@@ -649,6 +676,23 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
+    name = "linear_corotated_model_test",
+    deps = [
+        ":constitutive_model_test_utilities",
+        ":linear_corotated_model",
+    ],
+)
+
+drake_cc_googletest(
+    name = "linear_corotated_model_data_test",
+    deps = [
+        ":linear_corotated_model",
+        "//common/test_utilities:eigen_matrix_compare",
+        "//math:geometric_transform",
+    ],
+)
+
+drake_cc_googletest(
     name = "linear_simplex_element_test",
     deps = [
         ":linear_simplex_element",
@@ -664,19 +708,6 @@ drake_cc_googletest(
         "//common/test_utilities:eigen_matrix_compare",
         "//math:geometric_transform",
         "//math:gradient",
-    ],
-)
-
-drake_cc_googletest(
-    name = "petsc_symmetric_block_sparse_matrix_test",
-    tags = [
-        # This tests uses multiple CPUs concurrently.
-        "cpu:100",
-    ],
-    deps = [
-        ":petsc_symmetric_block_sparse_matrix",
-        "//common/test_utilities:eigen_matrix_compare",
-        "//common/test_utilities:expect_throws_message",
     ],
 )
 

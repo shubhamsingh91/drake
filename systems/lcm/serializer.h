@@ -16,17 +16,14 @@ namespace lcm {
 /**
  * %SerializerInterface translates between LCM message bytes and
  * drake::AbstractValue objects that contain LCM messages, e.g., a
- * Value<lcmt_drake_signal>.  See Serializer for a message-specific concrete
- * subclass.
+ * Value<lcmt_drake_signal>.  All `const` methods are threadsafe.
+ * See Serializer for a message-specific concrete subclass.
  */
 class SerializerInterface {
  public:
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(SerializerInterface)
 
   virtual ~SerializerInterface();
-
-  /** Creates a deep copy of this. */
-  virtual std::unique_ptr<SerializerInterface> Clone() const = 0;
 
   /**
    * Creates a value-initialized (zeroed) instance of the message object.
@@ -64,10 +61,6 @@ class Serializer : public SerializerInterface {
 
   Serializer() = default;
   ~Serializer() override = default;
-
-  std::unique_ptr<SerializerInterface> Clone() const override {
-    return std::make_unique<Serializer>();
-  }
 
   std::unique_ptr<AbstractValue> CreateDefaultValue() const override {
     // NOTE: We create the message using value-initialization ("{}") to ensure

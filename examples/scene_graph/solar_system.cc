@@ -1,6 +1,7 @@
 #include "drake/examples/scene_graph/solar_system.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,12 +47,14 @@ using std::unique_ptr;
 template <typename Shape, typename... ShapeArgs>
 unique_ptr<GeometryInstance> MakeShape(const RigidTransformd& pose,
                                        const std::string& name,
-                                       const Vector4d& diffuse,
+                                       const std::optional<Vector4d>& diffuse,
                                        ShapeArgs&&... args) {
   auto instance = make_unique<GeometryInstance>(
       pose, make_unique<Shape>(std::forward<ShapeArgs>(args)...), name);
   IllustrationProperties properties;
-  properties.AddProperty("phong", "diffuse", diffuse);
+  if (diffuse.has_value()) {
+    properties.AddProperty("phong", "diffuse", *diffuse);
+  }
   instance->set_illustration_properties(properties);
   return instance;
 }
@@ -155,9 +158,12 @@ void SolarSystem<T>::AllocateGeometry(SceneGraph<T>* scene_graph) {
   // Allocate the sun.
   // NOTE: we don't store the id of the sun geometry because we have no need
   // for subsequent access (the same is also true for dynamic geometries).
+  std::string sun_path =
+      FindResourceOrThrow("drake/examples/scene_graph/sun.gltf");
   scene_graph->RegisterAnchoredGeometry(
-      source_id_, MakeShape<Sphere>(RigidTransformd::Identity(), "Sun",
-                                    Vector4d(1, 1, 0, 1), 1.0 /* radius */));
+      source_id_,
+      MakeShape<Mesh>(RigidTransformd::Identity(), "Sun",
+                      std::nullopt /* diffuse */, sun_path, 1.0 /* scale */));
 
   // The fixed post on which Sun sits and around which all planets rotate.
   const double post_height = 1;
@@ -273,7 +279,7 @@ void SolarSystem<T>::AllocateGeometry(SceneGraph<T>* scene_graph) {
   const double kMarsSize = 0.24;
   RigidTransformd X_OmM{
       Translation3d{kMarsOrbitRadius, 0, -orrery_bottom}};
-  GeometryId mars_geometry_id = scene_graph->RegisterGeometry(
+  scene_graph->RegisterGeometry(
       source_id_, planet_id,
       MakeShape<Sphere>(X_OmM, "Mars", Vector4d(0.9, 0.1, 0, 1), kMarsSize));
 
@@ -282,8 +288,8 @@ void SolarSystem<T>::AllocateGeometry(SceneGraph<T>* scene_graph) {
   Vector3d axis = Vector3d(1, 1, 1).normalized();
   RigidTransformd X_MR(AngleAxisd(M_PI / 3, axis), Vector3d{0, 0, 0});
   scene_graph->RegisterGeometry(
-      source_id_, mars_geometry_id,
-      MakeShape<Mesh>(X_MR, "MarsRings", Vector4d(0.45, 0.9, 0, 1),
+      source_id_, planet_id,
+      MakeShape<Mesh>(X_OmM * X_MR, "MarsRings", Vector4d(0.45, 0.9, 0, 1),
                       rings_absolute_path, kMarsSize));
 
   // Mars's orrery arm.

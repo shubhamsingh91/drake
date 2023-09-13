@@ -188,6 +188,12 @@ to obtain the stability guarantee:
 * In C++, do not depend on the exact signature of Drake functions, as we may
   add new, defaulted arguments without prior notice (i.e., do not take the
   address of any Drake function, or assign it to a `std::function`).
+* In C++, do not depend on the exact order of ``struct`` fields.
+  While the _relative_ order of struct fields is guaranteed, new member fields
+  might be inserted between existing fields. Consequently, when using
+  [aggregate initialization](https://en.cppreference.com/w/cpp/language/aggregate_initialization)
+  always use designated initializers (i.e., field names) when referring to
+  struct fields.
 
 ### Model files
 
@@ -213,6 +219,16 @@ details.
 Drake intends to support the two most recent versions of Ubuntu LTS and macOS
 on an ongoing basis. That generally means that your OS must be no more than
 ~2-4 years old for Ubuntu, or ~2 years old for macOS.
+
+On Ubuntu, Drake only intends to support Ubuntu's default version of Python (at
+``/usr/bin/python3``), except when installing from pip in which case any newer
+version is also intended to be supported. This is consistent with
+[NEP-29](https://numpy.org/neps/nep-0029-deprecation_policy.html).
+
+On macOS, Drake only intends to support the one newest version of Python
+available via Homebrew.
+See [#18791](https://github.com/RobotLocomotion/drake/issues/18791) for a
+discussion of possible improvements.
 
 Refer to [Installation and Quickstart](/installation.html) for the current
 details.

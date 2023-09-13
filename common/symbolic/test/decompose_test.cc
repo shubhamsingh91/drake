@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
+#include "drake/common/test_utilities/expect_throws_message.h"
 
 namespace drake {
 namespace symbolic {
@@ -91,9 +92,10 @@ TEST_F(SymbolicDecomposeTest, DecomposeLinearExpressionsExceptionNonLinear) {
                  x1_ * x1_,
                  x2_ * x2_;
   // clang-format on
-  EXPECT_THROW(DecomposeLinearExpressions(M_ * x_ + extra_terms_, x_,
-                                          &M_expected_static_),
-               runtime_error);
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      DecomposeLinearExpressions(M_ * x_ + extra_terms_, x_,
+                                 &M_expected_static_),
+      ".*we detected a non-linear expression.*");
 }
 
 // Adds nonlinear terms to check if we have an exception.
@@ -104,9 +106,10 @@ TEST_F(SymbolicDecomposeTest,
                  cos(x1_),
                  log(x2_);
   // clang-format on
-  EXPECT_THROW(DecomposeLinearExpressions(M_ * x_ + extra_terms_, x_,
-                                          &M_expected_static_),
-               runtime_error);
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      DecomposeLinearExpressions(M_ * x_ + extra_terms_, x_,
+                                 &M_expected_static_),
+      ".*we detected a non-polynomial expression.*");
 }
 
 // Adds terms with non-const coefficients to check if we have an exception.
@@ -117,9 +120,10 @@ TEST_F(SymbolicDecomposeTest,
                   b_ * x1_,
                   c_ * x2_;
   // clang-format on
-  EXPECT_THROW(DecomposeLinearExpressions(M_ * x_ + extra_terms_, x_,
-                                          &M_expected_static_),
-               runtime_error);
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      DecomposeLinearExpressions(M_ * x_ + extra_terms_, x_,
+                                 &M_expected_static_),
+      ".*we detected a non-constant expression.*");
 }
 
 // Adds constant terms to check if we have an exception.
@@ -348,18 +352,6 @@ GTEST_TEST(SymbolicExtraction, DecomposeAffineExpression) {
     DecomposeAffineExpression(e, map_var_to_index, &coeffs, &c);
     EXPECT_TRUE(CompareMatrices(coeffs_expected, coeffs, kEps));
     EXPECT_EQ(c_expected, c);
-
-    // TODO(hongkai.dai): 2022-11-01 remove the following test after deprecating
-    // DecomposeAffineExpression with coeffs as a const reference argument.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    Eigen::RowVectorXd coeffs_deprecated(num_variables);
-    double c_deprecated;
-    DecomposeAffineExpression(e, map_var_to_index, coeffs_deprecated,
-                              &c_deprecated);
-    EXPECT_TRUE(CompareMatrices(coeffs_expected, coeffs_deprecated, kEps));
-    EXPECT_EQ(c_expected, c_deprecated);
-#pragma GCC diagnostic pop
 
     // Now test a new expression with different coefficients and we pass in the
     // same variable `coeffs`. This tests whether DecomposeAffineExpression

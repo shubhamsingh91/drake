@@ -13,23 +13,25 @@
 #include <vector>
 
 #include <Eigen/Dense>
-#include <drake_vendor/tinyxml2.h>
 #include <fmt/format.h>
+#include <tinyxml2.h>
 
 #include "drake/common/sorted_pair.h"
 #include "drake/math/rotation_matrix.h"
+#include "drake/multibody/parsing/detail_make_model_name.h"
 #include "drake/multibody/parsing/detail_path_utils.h"
 #include "drake/multibody/parsing/detail_tinyxml.h"
 #include "drake/multibody/parsing/detail_tinyxml2_diagnostic.h"
 #include "drake/multibody/parsing/detail_urdf_geometry.h"
 #include "drake/multibody/parsing/package_map.h"
-#include "drake/multibody/parsing/scoped_names.h"
 #include "drake/multibody/plant/multibody_plant.h"
 #include "drake/multibody/tree/ball_rpy_joint.h"
 #include "drake/multibody/tree/fixed_offset_frame.h"
 #include "drake/multibody/tree/planar_joint.h"
 #include "drake/multibody/tree/prismatic_joint.h"
 #include "drake/multibody/tree/revolute_joint.h"
+#include "drake/multibody/tree/scoped_name.h"
+#include "drake/multibody/tree/screw_joint.h"
 #include "drake/multibody/tree/universal_joint.h"
 #include "drake/multibody/tree/weld_joint.h"
 
@@ -41,6 +43,7 @@ using Eigen::Matrix3d;
 using Eigen::Vector3d;
 using Eigen::Vector4d;
 using math::RigidTransformd;
+using math::RotationMatrixd;
 using tinyxml2::XMLNode;
 using tinyxml2::XMLDocument;
 using tinyxml2::XMLElement;
@@ -78,6 +81,7 @@ class UrdfParser {
   // reporting, and return values.
   std::optional<ModelInstanceIndex> Parse();
   void ParseBushing(XMLElement* node);
+  void ParseBallConstraint(XMLElement* node);
   void ParseFrame(XMLElement* node);
   void ParseTransmission(const JointEffortLimits& joint_effort_limits,
                          XMLElement* node);
@@ -92,6 +96,7 @@ class UrdfParser {
                            std::string* type,
                            std::string* parent_link_name,
                            std::string* child_link_name);
+  void ParseScrewJointThreadPitch(XMLElement* node, double* screw_thread_pitch);
   void ParseCollisionFilterGroup(XMLElement* node);
   void ParseBody(XMLElement* node, MaterialMap* materials);
   SpatialInertia<double> ExtractSpatialInertiaAboutBoExpressedInB(
@@ -156,42 +161,18 @@ SpatialInertia<double> UrdfParser::ExtractSpatialInertiaAboutBoExpressedInB(
     ParseScalarAttribute(mass, "value", &body_mass);
   }
 
-  double ixx = 0;
-  double ixy = 0;
-  double ixz = 0;
-  double iyy = 0;
-  double iyz = 0;
-  double izz = 0;
-
+  InertiaInputs inputs;
   XMLElement* inertia = node->FirstChildElement("inertia");
   if (inertia) {
-    ParseScalarAttribute(inertia, "ixx", &ixx);
-    ParseScalarAttribute(inertia, "ixy", &ixy);
-    ParseScalarAttribute(inertia, "ixz", &ixz);
-    ParseScalarAttribute(inertia, "iyy", &iyy);
-    ParseScalarAttribute(inertia, "iyz", &iyz);
-    ParseScalarAttribute(inertia, "izz", &izz);
+    ParseScalarAttribute(inertia, "ixx", &inputs.ixx);
+    ParseScalarAttribute(inertia, "ixy", &inputs.ixy);
+    ParseScalarAttribute(inertia, "ixz", &inputs.ixz);
+    ParseScalarAttribute(inertia, "iyy", &inputs.iyy);
+    ParseScalarAttribute(inertia, "iyz", &inputs.iyz);
+    ParseScalarAttribute(inertia, "izz", &inputs.izz);
   }
-
-  const RotationalInertia<double> I_BBcm_Bi(ixx, iyy, izz, ixy, ixz, iyz);
-
-  // If this is a massless body, return a zero SpatialInertia.
-  if (body_mass == 0. && I_BBcm_Bi.get_moments().isZero() &&
-      I_BBcm_Bi.get_products().isZero()) {
-    return SpatialInertia<double>(body_mass, {0., 0., 0.}, {0., 0., 0});
-  }
-  // B and Bi are not necessarily aligned.
-  const math::RotationMatrix<double> R_BBi(X_BBi.rotation());
-
-  // Re-express in frame B as needed.
-  const RotationalInertia<double> I_BBcm_B = I_BBcm_Bi.ReExpress(R_BBi);
-
-  // Bi's origin is at the COM as documented in
-  // http://wiki.ros.org/urdf/XML/link#Elements
-  const Vector3d p_BoBcm_B = X_BBi.translation();
-
-  return SpatialInertia<double>::MakeFromCentralInertia(
-      body_mass, p_BoBcm_B, I_BBcm_B);
+  return ParseSpatialInertia(diagnostic_.MakePolicyForNode(node),
+                             X_BBi, body_mass, inputs);
 }
 
 void UrdfParser::ParseBody(XMLElement* node, MaterialMap* materials) {
@@ -241,8 +222,8 @@ void UrdfParser::ParseBody(XMLElement* node, MaterialMap* materials) {
 
   if (w_.plant->geometry_source_is_registered()) {
     const RigidBody<double>& body = *body_pointer;
-    std::unordered_set<std::string> geometry_names;
 
+    std::unordered_set<std::string> geometry_names;
     for (XMLElement* visual_node = node->FirstChildElement("visual");
          visual_node;
          visual_node = visual_node->NextSiblingElement("visual")) {
@@ -259,6 +240,7 @@ void UrdfParser::ParseBody(XMLElement* node, MaterialMap* materials) {
           *geometry_instance->illustration_properties());
     }
 
+    geometry_names.clear();  // See ParseCollision API; the names are per-role.
     for (XMLElement* collision_node = node->FirstChildElement("collision");
          collision_node;
          collision_node = collision_node->NextSiblingElement("collision")) {
@@ -413,6 +395,27 @@ void UrdfParser::ParseJointDynamics(XMLElement* node, double* damping) {
   }
 }
 
+void UrdfParser::ParseScrewJointThreadPitch(XMLElement* node,
+                                            double* screw_thread_pitch) {
+  // Always set a value for the output-only argument, even if parsing fails.
+  *screw_thread_pitch = 0.0;
+  XMLElement* screw_thread_pitch_node =
+      node->FirstChildElement("drake:screw_thread_pitch");
+  if (screw_thread_pitch_node) {
+    if (!ParseScalarAttribute(screw_thread_pitch_node, "value",
+                              screw_thread_pitch)) {
+      Error(*screw_thread_pitch_node, "A screw joint has a"
+            " <drake:screw_thread_pitch> tag that is missing the 'value'"
+            " attribute.");
+      return;
+    }
+  } else {
+      Error(*node, "A screw joint is missing the <drake:screw_thread_pitch>"
+            " tag.");
+      return;
+  }
+}
+
 const Body<double>* UrdfParser::GetBodyForElement(
     const std::string& element_name,
     const std::string& link_name) {
@@ -440,7 +443,6 @@ void UrdfParser::ParseJoint(
     return;
   }
   WarnUnsupportedElement(*node, "calibration");
-  WarnUnsupportedElement(*node, "mimic");
   WarnUnsupportedElement(*node, "safety_controller");
 
   // Parses the parent and child link names.
@@ -458,10 +460,12 @@ void UrdfParser::ParseJoint(
       name, child_name);
   if (child_body == nullptr) { return; }
 
-  RigidTransformd X_PJ;
+  // The transform from parent to child when the joint is in its zero state.
+  // See the Joint class documentation.
+  RigidTransformd X_PB;
   XMLElement* origin = node->FirstChildElement("origin");
   if (origin) {
-    X_PJ = OriginAttributesToTransform(origin);
+    X_PB = OriginAttributesToTransform(origin);
   }
 
   Vector3d axis(1, 0, 0);
@@ -510,30 +514,40 @@ void UrdfParser::ParseJoint(
   };
 
   auto plant = w_.plant;
+  std::optional<JointIndex> index{};
   if (type.compare("revolute") == 0 || type.compare("continuous") == 0) {
     throw_on_custom_joint(false);
     ParseJointLimits(node, &lower, &upper, &velocity, &acceleration, &effort);
     ParseJointDynamics(node, &damping);
-    const JointIndex index = plant->AddJoint<RevoluteJoint>(
-        name, *parent_body, X_PJ,
+    // Frame M is Frame B. Frame F and Frame M are coincident at the zero state
+    // of the joint. See Joint class documentation.
+    const RigidTransformd& X_PF = X_PB;
+    index = plant->AddJoint<RevoluteJoint>(
+        name, *parent_body, X_PF,
         *child_body, std::nullopt, axis, lower, upper, damping).index();
-    Joint<double>& joint = plant->get_mutable_joint(index);
+    Joint<double>& joint = plant->get_mutable_joint(*index);
     joint.set_velocity_limits(Vector1d(-velocity), Vector1d(velocity));
     joint.set_acceleration_limits(
         Vector1d(-acceleration), Vector1d(acceleration));
   } else if (type.compare("fixed") == 0) {
     throw_on_custom_joint(false);
-    plant->AddJoint<WeldJoint>(name, *parent_body, X_PJ,
-                               *child_body, std::nullopt,
-                               RigidTransformd::Identity());
+    // Frame M is Frame B. Frame F and Frame M are coincident at the zero state
+    // of the joint. See Joint class documentation.
+    const RigidTransformd& X_PF = X_PB;
+    index = plant->AddJoint<WeldJoint>(
+        name, *parent_body, X_PF, *child_body, std::nullopt,
+        RigidTransformd::Identity()).index();
   } else if (type.compare("prismatic") == 0) {
     throw_on_custom_joint(false);
     ParseJointLimits(node, &lower, &upper, &velocity, &acceleration, &effort);
     ParseJointDynamics(node, &damping);
-    const JointIndex index = plant->AddJoint<PrismaticJoint>(
-        name, *parent_body, X_PJ,
-        *child_body, std::nullopt, axis, lower, upper, damping).index();
-    Joint<double>& joint = plant->get_mutable_joint(index);
+    // Frame M is Frame B. Frame F and Frame M are coincident at the zero state
+    // of the joint. See Joint class documentation.
+    const RigidTransformd& X_PF = X_PB;
+    index = plant->AddJoint<PrismaticJoint>(
+        name, *parent_body, X_PF, *child_body, std::nullopt, axis, lower,
+        upper, damping).index();
+    Joint<double>& joint = plant->get_mutable_joint(*index);
     joint.set_velocity_limits(Vector1d(-velocity), Vector1d(velocity));
     joint.set_acceleration_limits(
         Vector1d(-acceleration), Vector1d(acceleration));
@@ -545,22 +559,60 @@ void UrdfParser::ParseJoint(
   } else if (type.compare("ball") == 0) {
     throw_on_custom_joint(true);
     ParseJointDynamics(node, &damping);
-    plant->AddJoint<BallRpyJoint>(name, *parent_body, X_PJ,
-                                  *child_body, std::nullopt, damping);
+    // Frame M is Frame B. Frame F and Frame M are coincident at the zero state
+    // of the joint. See Joint class documentation.
+    const RigidTransformd& X_PF = X_PB;
+    index = plant->AddJoint<BallRpyJoint>(
+      name, *parent_body, X_PF, *child_body, std::nullopt, damping).index();
   } else if (type.compare("planar") == 0) {
-    throw_on_custom_joint(true);
+    // Permit both the standard 'joint' and custom 'drake:joint' spellings
+    // here. The standard spelling was actually always correct, but Drake only
+    // supported the custom spelling for quite some time, and some model files
+    // are likely spelled that way. See #18730.
     Vector3d damping_vec(0, 0, 0);
     XMLElement* dynamics_node = node->FirstChildElement("dynamics");
     if (dynamics_node) {
       ParseVectorAttribute(dynamics_node, "damping", &damping_vec);
     }
-    plant->AddJoint<PlanarJoint>(name, *parent_body, X_PJ,
-                                 *child_body, std::nullopt, damping_vec);
+    // URDF convention dictates that the joint frame J is the same as the child
+    // frame B, and the joint axis is specified in the joint frame J.
+    // The convention for planar joint in Drake is that Mz and Fz are aligned
+    // with the joint axis. So in general, we don't have M = B as we do in
+    // e.g., revolute joint.  Here, we still set F to be coincident with M at
+    // the zero state of the joint, but they are not necessarily coincident with
+    // B. Instead, we let Mz_B to be specified by the parsed axis, and we let M
+    // and B have the same origin. Note that, in addition, this does not
+    // uniquely determine M or F, we still have the freedom to choose the x (or
+    // the y) axis to uniquely characterize M and F. Here we choose the M so
+    // that it's as close to B as possible.
+    const RotationMatrixd R_BM =
+        RotationMatrixd::MakeClosestRotationToIdentityFromUnitZ(
+            axis);  // axis is normalized above.
+    const RigidTransformd X_BM = RigidTransformd(R_BM, Vector3d::Zero());
+    const RigidTransformd X_PM = X_PB * X_BM;
+    const RigidTransformd& X_PF = X_PM;
+    index = plant->AddJoint<PlanarJoint>(
+      name, *parent_body, X_PF, *child_body, X_BM, damping_vec).index();
+  } else if (type.compare("screw") == 0) {
+    throw_on_custom_joint(true);
+    ParseJointDynamics(node, &damping);
+    double screw_thread_pitch;
+    ParseScrewJointThreadPitch(node, &screw_thread_pitch);
+    // Frame M is Frame B. Frame F and Frame M are coincident at the zero state
+    // of the joint. See Joint class documentation.
+    const RigidTransformd& X_PF = X_PB;
+    index = plant->AddJoint<ScrewJoint>(
+      name, *parent_body, X_PF, *child_body, std::nullopt, axis,
+      screw_thread_pitch, damping).index();
   } else if (type.compare("universal") == 0) {
     throw_on_custom_joint(true);
     ParseJointDynamics(node, &damping);
-    plant->AddJoint<UniversalJoint>(name, *parent_body, X_PJ,
-                                    *child_body, std::nullopt, damping);
+    // TODO(xuchenhan-tri): Should use axis information.
+    // Frame M is Frame B. Frame F and Frame M are coincident at the zero state
+    // of the joint. See Joint class documentation.
+    const RigidTransformd& X_PF = X_PB;
+    index = plant->AddJoint<UniversalJoint>(
+      name, *parent_body, X_PF, *child_body, std::nullopt, damping).index();
   } else {
     Error(*node, fmt::format("Joint '{}' has unrecognized type: '{}'",
                              name, type));
@@ -568,6 +620,76 @@ void UrdfParser::ParseJoint(
   }
 
   joint_effort_limits->emplace(name, effort);
+
+  XMLElement* mimic_node = node->FirstChildElement("mimic");
+  if (mimic_node) {
+    if (!plant->is_discrete() ||
+        plant->get_discrete_contact_solver() != DiscreteContactSolver::kSap) {
+      Warning(
+          *mimic_node,
+          fmt::format("Joint '{}' specifies a mimic element that will be "
+                      "ignored. Mimic elements are currently only supported by "
+                      "MultibodyPlant with a discrete time step and using "
+                      "DiscreteContactSolver::kSap.",
+                      name));
+    } else {
+      std::string joint_to_mimic;
+      double gear_ratio{1.0};
+      double offset{0.0};
+      if (!ParseStringAttribute(mimic_node, "joint", &joint_to_mimic)) {
+        Error(*mimic_node,
+              fmt::format("Joint '{}' mimic element is missing the "
+                          "required 'joint' attribute.",
+                          name));
+        return;
+      }
+      if (!plant->HasJointNamed(joint_to_mimic, model_instance_)) {
+        Error(*mimic_node,
+              fmt::format("Joint '{}' mimic element specifies joint '{}' which"
+                          " does not exist.",
+                          name, joint_to_mimic));
+        return;
+      }
+      ParseScalarAttribute(mimic_node, "multiplier", &gear_ratio);
+      ParseScalarAttribute(mimic_node, "offset", &offset);
+
+      if (!index) {
+        // This can currently happen if we have a "floating" joint, which does
+        // not produce the actual QuaternionFloatingJoint above.
+        Warning(*mimic_node,
+                fmt::format("Drake only supports the mimic element for "
+                            "single-dof joints. The mimic element in joint "
+                            "'{}' will be ignored.",
+                            name));
+      } else {
+        const Joint<double>& joint0 = plant->get_joint(*index);
+        const Joint<double>& joint1 =
+            plant->GetJointByName(joint_to_mimic, model_instance_);
+        if (joint1.num_velocities() != joint0.num_velocities()) {
+          Error(*mimic_node,
+                fmt::format("Joint '{}' which has {} DOF cannot mimic "
+                            "joint '{}' which has {} DOF.",
+                            name, joint0.num_velocities(), joint_to_mimic,
+                            joint1.num_velocities()));
+          return;
+        }
+        if (joint0.num_velocities() != 1) {
+          // The URDF documentation is ambiguous as to whether multi-dof joints
+          // are supported by the mimic tag. So we only raise a warning, not an
+          // error.
+          Warning(*mimic_node,
+                  fmt::format("Drake only supports the mimic element for "
+                              "single-dof joints. The joint '{}' (with {} "
+                              "dofs) is attempting to mimic joint '{}' (with "
+                              "{} dofs). The mimic element will be ignored.",
+                              name, joint0.num_velocities(), joint_to_mimic,
+                              joint1.num_velocities()));
+        } else {
+          plant->AddCouplerConstraint(joint0, joint1, gear_ratio, offset);
+        }
+      }
+    }
+  }
 }
 
 void UrdfParser::ParseMechanicalReduction(const XMLElement& node) {
@@ -575,7 +697,7 @@ void UrdfParser::ParseMechanicalReduction(const XMLElement& node) {
   if (!child) { return; }
   const char* text = child->GetText();
   if (!text) { return; }
-  std::vector<double> values = ConvertToDoubles(text);
+  std::vector<double> values = ConvertToVector<double>(text);
   if (values.size() == 1 && values[0] == 1) { return; }
   Warning(*child, fmt::format(
               "A '{}' element contains a mechanicalReduction element with a"
@@ -793,6 +915,63 @@ void UrdfParser::ParseBushing(XMLElement* node) {
   ParseLinearBushingRollPitchYaw(read_vector, read_frame, w_.plant);
 }
 
+void UrdfParser::ParseBallConstraint(XMLElement* node) {
+  // Functor to read a child element with a vector valued `value` attribute.
+  // Returns a zero vector if unable to find the tag or if the value attribute
+  // is improperly formed.
+  auto read_vector = [node, this](const char* element_name) -> Eigen::Vector3d {
+    const XMLElement* value_node = node->FirstChildElement(element_name);
+    if (value_node != nullptr) {
+      Eigen::Vector3d value;
+      if (ParseVectorAttribute(value_node, "value", &value)) {
+        return value;
+      } else {
+        Error(*node, fmt::format("Unable to read the 'value' attribute for the"
+                                 " <{}> tag",
+                                 element_name));
+        return Eigen::Vector3d::Zero();
+      }
+    } else {
+      Error(*node, fmt::format("Unable to find the <{}> tag", element_name));
+      return Eigen::Vector3d::Zero();
+    }
+  };
+
+  // Functor to read a child element with a string-valued `name` attribute.
+  // Returns nullptr if unable to find the tag, if the name attribute is
+  // improperly formed, or if it does not refer to a frame already in the
+  // model.
+  auto read_body =
+      [node, this](const char* element_name) -> const Body<double>* {
+    XMLElement* value_node = node->FirstChildElement(element_name);
+
+    if (value_node != nullptr) {
+      std::string body_name;
+      auto plant = w_.plant;
+      if (ParseStringAttribute(value_node, "name", &body_name)) {
+        if (!plant->HasBodyNamed(body_name, model_instance_)) {
+          Error(*value_node, fmt::format("Body: {} specified for <{}> does not"
+                                         " exist in the model.",
+                                         body_name, element_name));
+          return {};
+        }
+        return &plant->GetBodyByName(body_name, model_instance_);
+      } else {
+        Error(*value_node, fmt::format("Unable to read the 'name' attribute for"
+                                       " the <{}> tag",
+                                       element_name));
+        return {};
+      }
+
+    } else {
+      Error(*node, fmt::format("Unable to find the <{}> tag", element_name));
+      return {};
+    }
+  };
+
+  internal::ParseBallConstraint(read_vector, read_body, w_.plant);
+}
+
 std::optional<ModelInstanceIndex> UrdfParser::Parse() {
   XMLElement* node = xml_doc_->FirstChildElement("robot");
   if (!node) {
@@ -810,9 +989,7 @@ std::optional<ModelInstanceIndex> UrdfParser::Parse() {
     return {};
   }
 
-  model_name = parsing::PrefixName(
-      parent_model_name_.value_or(""), model_name);
-
+  model_name = MakeModelName(model_name, parent_model_name_, w_);
   model_instance_ = w_.plant->AddModelInstance(model_name);
 
   // Parses the model's material elements. Throws an exception if there's a
@@ -881,6 +1058,15 @@ std::optional<ModelInstanceIndex> UrdfParser::Parse() {
        bushing_node; bushing_node = bushing_node->NextSiblingElement(
                          "drake:linear_bushing_rpy")) {
     ParseBushing(bushing_node);
+  }
+
+  // Parses the model's custom Drake ball constraint tags.
+  for (XMLElement* ball_constraint_node =
+           node->FirstChildElement("drake:ball_constraint");
+       ball_constraint_node;
+       ball_constraint_node =
+           ball_constraint_node->NextSiblingElement("drake:ball_constraint")) {
+    ParseBallConstraint(ball_constraint_node);
   }
 
   return model_instance_;

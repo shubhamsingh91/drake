@@ -1,3 +1,6 @@
+// This file is licensed under the MIT-0 License.
+// See LICENSE-MIT-0.txt in the current directory.
+
 #pragma once
 
 #include <cstdint>
@@ -55,7 +58,7 @@ struct Scenario {
     .target_realtime_rate = 1.0,
   };
 
-  /* Plant configuration (timestep and contact parameters). */
+  /* Plant configuration (time step and contact parameters). */
   multibody::MultibodyPlantConfig plant_config;
 
   /* All of the fully deterministic elements of the simulation. */

@@ -1,4 +1,4 @@
-# -*- python -*-
+# -*- bazel -*-
 
 load(
     "@drake//tools/workspace:cmake_configure_file.bzl",
@@ -29,6 +29,7 @@ _HDRS = glob([
     "include/curl/*.h",
     "lib/*.h",
     "lib/vauth/*.h",
+    "lib/vquic/*.h",
     "lib/vssh/*.h",
     "lib/vtls/*.h",
 ])
@@ -44,17 +45,24 @@ _INCLUDES = [
 _SRCS = [
     "lib/altsvc.c",
     "lib/base64.c",
+    "lib/bufq.c",
+    "lib/cf-h1-proxy.c",
+    "lib/cf-h2-proxy.c",
+    "lib/cf-haproxy.c",
+    "lib/cf-https-connect.c",
+    "lib/cf-socket.c",
+    "lib/cfilters.c",
     "lib/conncache.c",
     "lib/connect.c",
     "lib/content_encoding.c",
     "lib/cookie.c",
     "lib/curl_addrinfo.c",
-    "lib/curl_ctype.c",
     "lib/curl_get_line.c",
+    "lib/curl_log.c",
     "lib/curl_memrchr.c",
     "lib/doh.c",
-    "lib/dotdot.c",
     "lib/dynbuf.c",
+    "lib/dynhds.c",
     "lib/easy.c",
     "lib/easygetopt.c",
     "lib/easyoptions.c",
@@ -70,15 +78,18 @@ _SRCS = [
     "lib/hostip6.c",
     "lib/hsts.c",
     "lib/http.c",
+    "lib/http1.c",
     "lib/http_aws_sigv4.c",
     "lib/http_chunks.c",
     "lib/http_digest.c",
     "lib/http_negotiate.c",
     "lib/http_proxy.c",
+    "lib/idn.c",
     "lib/if2ip.c",
     "lib/inet_ntop.c",
     "lib/inet_pton.c",
     "lib/llist.c",
+    "lib/macos.c",
     "lib/md4.c",
     "lib/md5.c",
     "lib/memdebug.c",
@@ -112,6 +123,8 @@ _SRCS = [
     "lib/url.c",
     "lib/urlapi.c",
     "lib/vauth/digest.c",
+    "lib/vauth/vauth.c",
+    "lib/vquic/vquic.c",
     "lib/vtls/vtls.c",
     "lib/warnless.c",
 ]
@@ -120,6 +133,8 @@ _SRCS = [
 _COPTS = [
     # Our build of curl should be private.
     "-fvisibility=hidden",
+    # To match CMakeLists.txt.
+    "-DBUILDING_LIBCURL",
     # Tell curl that we've generated the curl_config.h.
     "-DHAVE_CONFIG_H",
     # Send larger chunks of data, for improved performance.
@@ -132,10 +147,8 @@ _COPTS = [
 # The link flags for the library.
 _LINKOPTS = select({
     "@drake//tools/cc_toolchain:apple": [
-        "-Wl,-framework",
-        "-Wl,CoreFoundation",
-        "-Wl,-framework",
-        "-Wl,SystemConfiguration",
+        "-Wl,-framework,CoreFoundation",
+        "-Wl,-framework,SystemConfiguration",
     ],
     "//conditions:default": [],
 })
@@ -183,6 +196,7 @@ check_lists_consistency(
         "lib/imap.c",
         "lib/krb5.c",
         "lib/ldap.c",
+        "lib/noproxy.c",
         "lib/openldap.c",
         "lib/pingpong.c",
         "lib/pop3.c",
@@ -199,6 +213,7 @@ check_lists_consistency(
         "lib/version.c",
         "lib/version_win32.c",
         "lib/wildcard.c",
+        "lib/ws.c",
     ],
 )
 

@@ -1,4 +1,4 @@
-# -*- python -*-
+# -*- bazel -*-
 
 load("@drake//tools/install:install.bzl", "install")
 load("@drake//:cmake/external/workspace/conversion.bzl", "split_cmake_list")
@@ -10,7 +10,10 @@ EIGEN_DEFINES = split_cmake_list(
 cc_library(
     name = "eigen",
     hdrs = glob(
-        ["include/**"],
+        [
+            "include/Eigen/**",
+            "include/unsupported/Eigen/**",
+        ],
         allow_empty = False,
     ),
     defines = EIGEN_DEFINES,

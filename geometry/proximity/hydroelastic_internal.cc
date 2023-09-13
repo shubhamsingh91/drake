@@ -30,7 +30,6 @@ namespace internal {
 namespace hydroelastic {
 
 using std::make_unique;
-using std::move;
 
 SoftMesh& SoftMesh::operator=(const SoftMesh& s) {
   if (this == &s) return *this;
@@ -66,19 +65,6 @@ void Geometries::MaybeAddGeometry(const Shape& shape, GeometryId id,
   }
 }
 
-void Geometries::ImplementGeometry(const Sphere& sphere, void* user_data) {
-  MakeShape(sphere, *static_cast<ReifyData*>(user_data));
-}
-
-void Geometries::ImplementGeometry(const Cylinder& cylinder, void* user_data) {
-  MakeShape(cylinder, *static_cast<ReifyData*>(user_data));
-}
-
-void Geometries::ImplementGeometry(const HalfSpace& half_space,
-                                   void* user_data) {
-  MakeShape(half_space, *static_cast<ReifyData*>(user_data));
-}
-
 void Geometries::ImplementGeometry(const Box& box, void* user_data) {
   MakeShape(box, *static_cast<ReifyData*>(user_data));
 }
@@ -87,17 +73,30 @@ void Geometries::ImplementGeometry(const Capsule& capsule, void* user_data) {
   MakeShape(capsule, *static_cast<ReifyData*>(user_data));
 }
 
+void Geometries::ImplementGeometry(const Convex& convex, void* user_data) {
+  MakeShape(convex, *static_cast<ReifyData*>(user_data));
+}
+
+void Geometries::ImplementGeometry(const Cylinder& cylinder, void* user_data) {
+  MakeShape(cylinder, *static_cast<ReifyData*>(user_data));
+}
+
 void Geometries::ImplementGeometry(const Ellipsoid& ellipsoid,
                                    void* user_data) {
   MakeShape(ellipsoid, *static_cast<ReifyData*>(user_data));
+}
+
+void Geometries::ImplementGeometry(const HalfSpace& half_space,
+                                   void* user_data) {
+  MakeShape(half_space, *static_cast<ReifyData*>(user_data));
 }
 
 void Geometries::ImplementGeometry(const Mesh& mesh, void* user_data) {
   MakeShape(mesh, *static_cast<ReifyData*>(user_data));
 }
 
-void Geometries::ImplementGeometry(const Convex& convex, void* user_data) {
-  MakeShape(convex, *static_cast<ReifyData*>(user_data));
+void Geometries::ImplementGeometry(const Sphere& sphere, void* user_data) {
+  MakeShape(sphere, *static_cast<ReifyData*>(user_data));
 }
 
 template <typename ShapeType>
@@ -105,11 +104,11 @@ void Geometries::MakeShape(const ShapeType& shape, const ReifyData& data) {
   switch (data.type) {
     case HydroelasticType::kRigid: {
       auto hydro_geometry = MakeRigidRepresentation(shape, data.properties);
-      if (hydro_geometry) AddGeometry(data.id, move(*hydro_geometry));
+      if (hydro_geometry) AddGeometry(data.id, std::move(*hydro_geometry));
     } break;
     case HydroelasticType::kSoft: {
       auto hydro_geometry = MakeSoftRepresentation(shape, data.properties);
-      if (hydro_geometry) AddGeometry(data.id, move(*hydro_geometry));
+      if (hydro_geometry) AddGeometry(data.id, std::move(*hydro_geometry));
     } break;
     case HydroelasticType::kUndefined:
       // No action required.
@@ -120,13 +119,13 @@ void Geometries::MakeShape(const ShapeType& shape, const ReifyData& data) {
 void Geometries::AddGeometry(GeometryId id, SoftGeometry geometry) {
   DRAKE_DEMAND(hydroelastic_type(id) == HydroelasticType::kUndefined);
   supported_geometries_[id] = HydroelasticType::kSoft;
-  soft_geometries_.insert({id, move(geometry)});
+  soft_geometries_.insert({id, std::move(geometry)});
 }
 
 void Geometries::AddGeometry(GeometryId id, RigidGeometry geometry) {
   DRAKE_DEMAND(hydroelastic_type(id) == HydroelasticType::kUndefined);
   supported_geometries_[id] = HydroelasticType::kRigid;
-  rigid_geometries_.insert({id, move(geometry)});
+  rigid_geometries_.insert({id, std::move(geometry)});
 }
 
 // Validator interface for use with extracting valid properties. It is
@@ -204,7 +203,7 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
   auto mesh = make_unique<TriangleSurfaceMesh<double>>(
       MakeSphereSurfaceMesh<double>(sphere, edge_length));
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<RigidGeometry> MakeRigidRepresentation(
@@ -216,7 +215,7 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
   auto mesh = make_unique<TriangleSurfaceMesh<double>>(
       MakeBoxSurfaceMesh<double>(box, 1.1 * box.size().maxCoeff()));
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<RigidGeometry> MakeRigidRepresentation(
@@ -226,7 +225,7 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
   auto mesh = make_unique<TriangleSurfaceMesh<double>>(
       MakeCylinderSurfaceMesh<double>(cylinder, edge_length));
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<RigidGeometry> MakeRigidRepresentation(
@@ -236,7 +235,7 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
   auto mesh = make_unique<TriangleSurfaceMesh<double>>(
       MakeCapsuleSurfaceMesh<double>(capsule, edge_length));
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<RigidGeometry> MakeRigidRepresentation(
@@ -246,7 +245,7 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
   auto mesh = make_unique<TriangleSurfaceMesh<double>>(
       MakeEllipsoidSurfaceMesh<double>(ellipsoid, edge_length));
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<RigidGeometry> MakeRigidRepresentation(
@@ -254,11 +253,7 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
   // Mesh does not use any properties.
   std::unique_ptr<TriangleSurfaceMesh<double>> mesh;
 
-  std::string extension =
-      std::filesystem::path(mesh_spec.filename()).extension();
-  std::transform(extension.begin(), extension.end(), extension.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-
+  const std::string extension = mesh_spec.extension();
   if (extension == ".obj") {
     mesh = make_unique<TriangleSurfaceMesh<double>>(
         ReadObjToTriangleSurfaceMesh(mesh_spec.filename(), mesh_spec.scale()));
@@ -267,21 +262,28 @@ std::optional<RigidGeometry> MakeRigidRepresentation(
         ConvertVolumeToSurfaceMesh(MakeVolumeMeshFromVtk<double>(mesh_spec)));
   } else {
     throw(std::runtime_error(fmt::format(
-        "hydroelastic::MakeRigidRepresentation(): unsupported mesh file: {}",
+        "hydroelastic::MakeRigidRepresentation(): for rigid hydroelastic Mesh "
+        "shapes can only use .obj or .vtk files; given: {}",
         mesh_spec.filename())));
   }
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<RigidGeometry> MakeRigidRepresentation(
     const Convex& convex_spec, const ProximityProperties&) {
+  if (convex_spec.extension() != ".obj") {
+    throw std::runtime_error(fmt::format(
+        "hydroelastic::MakeRigidRepresentation(): for rigid hydroelastic "
+        "Convex shapes can only use .obj files; given: {}",
+        convex_spec.filename()));
+  }
   // Convex does not use any properties.
   auto mesh =
       make_unique<TriangleSurfaceMesh<double>>(ReadObjToTriangleSurfaceMesh(
           convex_spec.filename(), convex_spec.scale()));
 
-  return RigidGeometry(RigidMesh(move(mesh)));
+  return RigidGeometry(RigidMesh(std::move(mesh)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -302,7 +304,7 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeSpherePressureField(sphere, mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -318,7 +320,7 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeBoxPressureField(box, mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -335,7 +337,7 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeCylinderPressureField(cylinder, mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -352,7 +354,7 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeCapsulePressureField(capsule, mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -373,7 +375,7 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeEllipsoidPressureField(ellipsoid, mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -402,7 +404,7 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeConvexPressureField(mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
 
 std::optional<SoftGeometry> MakeSoftRepresentation(
@@ -418,9 +420,8 @@ std::optional<SoftGeometry> MakeSoftRepresentation(
   auto pressure = make_unique<VolumeMeshFieldLinear<double, double>>(
       MakeVolumeMeshPressureField(mesh.get(), hydroelastic_modulus));
 
-  return SoftGeometry(SoftMesh(move(mesh), move(pressure)));
+  return SoftGeometry(SoftMesh(std::move(mesh), std::move(pressure)));
 }
-
 
 }  // namespace hydroelastic
 }  // namespace internal

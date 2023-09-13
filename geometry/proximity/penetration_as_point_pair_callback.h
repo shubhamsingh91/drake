@@ -5,6 +5,7 @@
 
 #include <fcl/fcl.h>
 
+#include "drake/common/drake_export.h"
 #include "drake/geometry/proximity/collision_filter.h"
 #include "drake/geometry/query_results/penetration_as_point_pair.h"
 #include "drake/math/rigid_transform.h"
@@ -12,7 +13,7 @@
 namespace drake {
 namespace geometry {
 namespace internal {
-namespace penetration_as_point_pair {
+namespace penetration_as_point_pair DRAKE_NO_EXPORT {
 
 /* Supporting data for the detecting collision between geometries and reporting
  them as a pair of points (see PenetrationAsPointPair). It includes:
@@ -66,7 +67,9 @@ template <typename T>
 bool Callback(fcl::CollisionObjectd* fcl_object_A_ptr,
               fcl::CollisionObjectd* fcl_object_B_ptr, void* callback_data);
 
+// clang-format off
 }  // namespace penetration_as_point_pair
+// clang-format on
 }  // namespace internal
 }  // namespace geometry
 }  // namespace drake

@@ -4,9 +4,15 @@
 #include <vector>
 
 #include "drake/common/find_resource.h"
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
+#include "drake/math/roll_pitch_yaw.h"
 #include "drake/multibody/inverse_kinematics/inverse_kinematics.h"
 #include "drake/multibody/parsing/parser.h"
+#include "drake/multibody/tree/revolute_joint.h"
+#include "drake/multibody/tree/weld_joint.h"
+#include "drake/solvers/ipopt_solver.h"
+#include "drake/solvers/snopt_solver.h"
 #include "drake/solvers/solve.h"
 #include "drake/systems/framework/diagram_builder.h"
 
@@ -23,7 +29,7 @@ std::unique_ptr<multibody::MultibodyPlant<double>> ConstructKuka() {
       "iiwa14_no_collision.sdf");
   auto plant = std::make_unique<MultibodyPlant<double>>(0.1);
   multibody::Parser parser{plant.get()};
-  parser.AddModelFromFile(iiwa_path, "iiwa");
+  parser.AddModels(iiwa_path);
   plant->WeldFrames(plant->world_frame(), plant->GetFrameByName("iiwa_link_0"));
   plant->Finalize();
 
@@ -71,8 +77,8 @@ void KukaTest::CheckGlobalIKSolution(
     // Tolerance from Gurobi is about 1E-6. I increase it to 3e-6 to pass on Mac
     // CI.
     const double tol = 3e-6;
-    EXPECT_TRUE((body_Ri.array().abs() <= 1 + tol).all()) << "body_Ri:\n"
-                                                          << body_Ri << "\n";
+    EXPECT_TRUE((body_Ri.array().abs() <= 1 + tol).all())
+        << fmt::format("body_Ri:\n{}\n", fmt_eigen(body_Ri));
     EXPECT_LE(body_Ri.trace(), 3 + tol);
     EXPECT_GE(body_Ri.trace(), -1 - tol);
     Vector3d body_pos_global_ik =
@@ -87,7 +93,7 @@ void KukaTest::CheckGlobalIKSolution(
 Eigen::VectorXd KukaTest::CheckNonlinearIK(
     const Eigen::Vector3d& ee_pos_lb_W, const Eigen::Vector3d& ee_pos_ub_W,
     const Eigen::Quaterniond& ee_orient, double angle_tol,
-    const Eigen::Matrix<double, 7, 1>& q_guess,
+    const std::vector<Eigen::Matrix<double, 7, 1>>& q_guesses,
     const Eigen::Matrix<double, 7, 1>& q_nom, bool ik_success_expected) const {
   InverseKinematics ik(*plant_);
   ik.AddPositionConstraint(plant_->get_body(BodyIndex{ee_idx_}).body_frame(),
@@ -98,15 +104,70 @@ Eigen::VectorXd KukaTest::CheckNonlinearIK(
       math::RotationMatrix<double>::Identity(), plant_->world_frame(),
       math::RotationMatrix<double>(ee_orient), angle_tol);
   Eigen::VectorXd q_sol(7);
-  Eigen::VectorXd q_guess_ik = q_guess;
   Eigen::VectorXd q_nom_ik = q_nom;
   ik.get_mutable_prog()->AddQuadraticErrorCost(
       Eigen::MatrixXd::Identity(plant_->num_positions(),
                                 plant_->num_positions()),
       q_nom_ik, ik.q());
-  const auto result = solvers::Solve(ik.prog(), q_guess_ik);
-  EXPECT_EQ(result.is_success(), ik_success_expected);
+
+  bool found_solution = false;
+  for (const auto& q_guess : q_guesses) {
+    const auto result = solvers::Solve(ik.prog(), q_guess);
+    if (!result.is_success()) {
+      drake::log()->info("q_guess: {}\n", fmt_eigen(q_guess.transpose()));
+      drake::log()->info("Nonlinear IK use solver {}",
+                         result.get_solver_id().name());
+      drake::log()->info("Solution result is {}", result.get_solution_result());
+      if (result.get_solver_id() == solvers::SnoptSolver::id()) {
+        drake::log()->info(
+            "SNOPT info {}",
+            result.get_solver_details<solvers::SnoptSolver>().info);
+      }
+    } else {
+      found_solution = true;
+      break;
+    }
+  }
+  EXPECT_EQ(found_solution, ik_success_expected);
   return q_sol;
+}
+
+ToyTest::ToyTest() : plant_{std::make_unique<MultibodyPlant<double>>(0.0)} {
+  const SpatialInertia<double> spatial_inertia(
+      1, Eigen::Vector3d::Zero(), UnitInertia<double>(0.01, 0.01, 0.01));
+  body_indices_.push_back(
+      plant_->AddRigidBody("body0", spatial_inertia).index());
+  // weld body0.
+  plant_->AddJoint<WeldJoint>(
+      "joint0", plant_->get_body(world_index()),
+      math::RigidTransform<double>(math::RollPitchYaw<double>(0.2, 0.1, 0.3),
+                                   Eigen::Vector3d(0.2, -0.1, 0.1)),
+      plant_->get_body(body_indices_[0]),
+      math::RigidTransform<double>(math::RollPitchYaw<double>(0.3, 0.1, -0.5),
+                                   Eigen::Vector3d(0.3, 0.2, 0.5)),
+      math::RigidTransform<double>(math::RollPitchYaw(0.4, -0.3, 0.2),
+                                   Eigen::Vector3d(0.5, 0.3, -0.2)));
+  const auto& body2 = plant_->AddRigidBody("body2", spatial_inertia);
+  const auto& body1 = plant_->AddRigidBody("body1", spatial_inertia);
+  body_indices_.push_back(body1.index());
+  body_indices_.push_back(body2.index());
+  plant_->AddJoint<RevoluteJoint>(
+      "joint1", plant_->get_body(body_indices_[0]),
+      math::RigidTransform<double>(math::RollPitchYawd(0.1, 0.5, 0.3),
+                                   Eigen::Vector3d(0.2, 0.1, 0.4)),
+      body1,
+      math::RigidTransformd(math::RollPitchYawd(0.5, -0.2, 0.1),
+                            Eigen::Vector3d(0.1, 0.2, 0.3)),
+      Eigen::Vector3d::UnitX());
+  plant_->AddJoint<RevoluteJoint>(
+      "joint2", body1,
+      math::RigidTransform<double>(math::RollPitchYawd(0.3, -0.5, 0.3),
+                                   Eigen::Vector3d(-0.2, 0.2, 0.4)),
+      body2,
+      math::RigidTransformd(math::RollPitchYawd(0.2, -0.5, 0.1),
+                            Eigen::Vector3d(0.1, 0.2, 0.1)),
+      Eigen::Vector3d::UnitY());
+  plant_->Finalize();
 }
 }  // namespace multibody
 }  // namespace drake

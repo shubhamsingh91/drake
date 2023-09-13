@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -16,20 +17,15 @@
 #include "drake/common/default_scalars.h"
 #include "drake/common/nice_type_name.h"
 #include "drake/common/random.h"
-#include "drake/common/scope_exit.h"
 #include "drake/geometry/scene_graph.h"
 #include "drake/math/rigid_transform.h"
-#include "drake/multibody/contact_solvers/contact_solver.h"
 #include "drake/multibody/contact_solvers/contact_solver_results.h"
 #include "drake/multibody/plant/constraint_specs.h"
-#include "drake/multibody/plant/contact_jacobians.h"
 #include "drake/multibody/plant/contact_results.h"
 #include "drake/multibody/plant/coulomb_friction.h"
-#include "drake/multibody/plant/discrete_contact_pair.h"
 #include "drake/multibody/plant/discrete_update_manager.h"
 #include "drake/multibody/plant/multibody_plant_config.h"
 #include "drake/multibody/plant/physical_model.h"
-#include "drake/multibody/plant/tamsi_solver.h"
 #include "drake/multibody/topology/multibody_graph.h"
 #include "drake/multibody/tree/force_element.h"
 #include "drake/multibody/tree/multibody_tree-inl.h"
@@ -66,6 +62,40 @@ struct HydroelasticContactInfoAndBodySpatialForces {
   // Information used for contact reporting collected through the evaluation
   // of the hydroelastic model.
   std::vector<HydroelasticContactInfo<T>> contact_info;
+};
+
+// Data stored in the cache entry for joint locking.
+template <typename T>
+struct JointLockingCacheData {
+  // @name Dense joint locking indices.
+  // Values of each will be a sorted subset of [0, num_velocities()].
+  // `unlocked_velocity_indices` and `locked_velocity_indices` are disjoint and
+  // their union is [0, num_velocities()].
+  // @{
+  // Stores indices of unlocked DoFs in the context.
+  std::vector<int> unlocked_velocity_indices;
+  // Stores indices of locked DoFs in the context.
+  std::vector<int> locked_velocity_indices;
+  // @}
+
+  // @name Per-tree joint locking indices.
+  // Each has the same size as the number of trees in the plant's topology and
+  // is resized accordingly on output. For both unlocked and locked, element i
+  // is a sorted subset of [0, tree_i.num_velocities()] where tree_i is the i-th
+  // tree in this plant's topology. They are likewise disjoint and their union
+  // is [0, tree_i.num_velocities()].
+  // @{
+  // Stores indices of unlocked DoFs per tree in the plant's topology.
+  std::vector<std::vector<int>> unlocked_velocity_indices_per_tree;
+  // Stores indices of locked DoFs per tree in the plant's topology.
+  std::vector<std::vector<int>> locked_velocity_indices_per_tree;
+  // @}
+};
+
+// Wrapper struct for using std::map<MultibodyConstraintId, bool> as a Value
+// type for an abstract parameter.
+struct ConstraintActiveStatusMap {
+  std::map<MultibodyConstraintId, bool> map;
 };
 
 // This struct contains the parameters to compute forces to enforce
@@ -155,8 +185,6 @@ enum class DiscreteContactSolver {
 #define DRAKE_MBP_THROW_IF_NOT_FINALIZED() ThrowIfNotFinalized(__func__)
 /// @endcond
 
-// TODO(sherm1) Rename "continuous_state" output ports to just "state" since
-//              they can be discrete. However see issue #12214.
 /**
 %MultibodyPlant is a Drake system framework representation (see
 systems::System) for the model of a physical system consisting of a
@@ -170,16 +198,17 @@ input_ports:
 - applied_generalized_force
 - applied_spatial_force
 - <em style="color:gray">model_instance_name[i]</em>_actuation
+- <em style="color:gray">model_instance_name[i]</em>_desired_state
 - <span style="color:green">geometry_query</span>
 output_ports:
-- continuous_state
+- state
 - body_poses
 - body_spatial_velocities
 - body_spatial_accelerations
 - generalized_acceleration
 - reaction_forces
 - contact_results
-- <em style="color:gray">model_instance_name[i]</em>_continuous_state
+- <em style="color:gray">model_instance_name[i]</em>_state
 - '<em style="color:gray">
   model_instance_name[i]</em>_generalized_acceleration'
 - '<em style="color:gray">
@@ -282,7 +311,8 @@ the dynamics of a multibody system modeled with %MultibodyPlant are
          q̇ = N(q)v
   (1)    M(q)v̇ + C(q, v)v = τ
 </pre>
-where `M(q)` is the mass matrix of the multibody system, `C(q, v)v`
+where `M(q)` is the mass matrix of the multibody system (including rigid body
+mass properties and @ref reflected_inertia "reflected inertias"), `C(q, v)v`
 contains Coriolis, centripetal, and gyroscopic terms and
 `N(q)` is the kinematic coupling matrix describing the relationship between
 q̇ (the time derivatives of the generalized positions) and the generalized
@@ -290,6 +320,91 @@ velocities v, [Seth 2010]. `N(q)` is an `nq x nv` matrix.
 The vector `τ ∈ ℝⁿᵛ` on the right hand side of Eq. (1) is
 the system's generalized forces. These incorporate gravity, springs,
 externally applied body forces, constraint forces, and contact forces.
+
+@anchor mbp_actuation
+                ### Actuation
+
+In a %MultibodyPlant model an actuator can be added as a JointActuator, see
+AddJointActuator(). For models with actuators, the plant will declare an
+actuation input port to provide feedforward actuation, see
+get_actuation_input_port(). Actuation ports can be requested for each individual
+@ref model_instances "model instance" in the %MultibodyPlant.
+
+Unless PD controllers are defined
+(see @ref pd_controllers "PD controlled actuators" next), actuation input ports
+are required to be connected.
+
+@warning Effort limits (JointActuator::effort_limit()) are not enforced, unless
+PD controllers are defined. See @ref pd_controllers "PD controlled actuators".
+
+<!-- TODO(amcastro-tri): Consider enforcing effort limits whether PD controllers
+     are defined or not. -->
+
+@anchor pd_controllers
+  #### Using PD controlled actuators
+
+While PD controllers can be modeled externally and be connected to the
+%MultibodyPlant model via the get_actuation_input_port(), simulation stability
+at discrete time steps can be compromised for high controller gains. For such
+cases, simulation stability and robustness can be improved significantly by
+moving your PD controller into the plant where the discrete solver can strongly
+couple controller and model dynamics.
+
+@warning Currently, this feature is only supported for discrete models
+(is_discrete() is true) using the SAP solver (get_discrete_contact_solver()
+returns DiscreteContactSolver::kSap.)
+
+PD controlled joint actuators can be defined by setting PD gains for each joint
+actuator, see JointActuator::set_controller_gains(). Unless these gains are
+specified, joint actuators will not be PD controlled and
+JointActuator::has_controller() will return `false`.
+
+@warning For PD controlled models, all joint actuators in a model instance are
+required to have PD controllers defined. That is, partially PD controlled model
+instances are not supported. An exception will be thrown when evaluating the
+actuation input ports if only a subset of the actuators in a model instance is
+PD controlled.
+
+For models with PD controllers, the actuation torque per actuator is computed
+according to: <pre>
+  ũ = -Kp⋅(q − qd) - Kd⋅(v − vd) + u_ff
+  u = max(−e, min(e, ũ))
+</pre>
+where qd and vd are desired configuration and velocity (see
+get_desired_state_input_port()) for the actuated joint (see
+JointActuator::joint()), Kp and Kd are the proportional and derivative gains of
+the actuator (see JointActuator::get_controller_gains()), `u_ff` is the
+feed-forward actuation specified with get_actuation_input_port(), and `e`
+corresponds to effort limit (see JointActuator::effort_limit()).
+
+Notice that actuation through get_actuation_input_port() and PD control are not
+mutually exclusive, and they can be used together. This is better explained
+through examples:
+  1. **PD controlled gripper**. In this case, only PD control is used to drive
+     the opening and closing of the fingers. The feed-forward term is assumed to
+     be zero and the actuation input port is not required to be connected.
+  2. **Robot arm**. A typical configuration consists on applying gravity
+     compensation in the feed-forward term plus PD control to drive the robot to
+     a given desired state.
+
+@anchor pd_controllers_and_ports
+  #### Actuation input ports requirements
+
+The following table specifies whether actuation ports are required to be
+connected or not:
+
+|               Port               |   without PD control  | with PD control |
+| :------------------------------: | :-------------------: | :-------------: |
+|  get_actuation_input_port()      |          yes          |       no¹       |
+|  get_desired_state_input_port()  |          no²          |       yes       |
+
+¹ Feed-forward actuation is not required for models with PD controlled
+  actuators. This simplifies the diagram wiring for models that only rely on PD
+  controllers.
+
+² This port is always declared, though it will be zero sized for model instances
+  with no PD controllers.
+
 
 @anchor sdf_loading
                  ### Loading models from SDFormat files
@@ -303,7 +418,7 @@ files.  Consider the example below which loads an acrobot model:
   const std::string relative_name =
     "drake/multibody/benchmarks/acrobot/acrobot.sdf";
   const std::string full_name = FindResourceOrThrow(relative_name);
-  parser.AddModelFromFile(full_name);
+  parser.AddModels(full_name);
 @endcode
 As in the example above, for models including visual geometry, collision
 geometry or both, the user must specify a SceneGraph for geometry handling.
@@ -312,7 +427,7 @@ examples/multibody/acrobot/run_lqr.cc.
 
 AddModelFromFile() can be invoked multiple times on the same plant in order
 to load multiple model instances.  Other methods are available on Parser
-such as AddAllModelsFromFile() which allows creating model instances per
+such as AddModels() which allows creating model instances per
 each `<model>` tag found in the file. Please refer to each of these
 methods' documentation for further details.
 
@@ -578,12 +693,11 @@ call to Finalize() must be performed. This call will:
 - Build the underlying tree structure of the multibody model,
 - declare the plant's state,
 - declare the plant's input and output ports,
-- declare collision filters to ignore collisions:
-  - between bodies connected by a joint,
-  - within subgraphs of welded bodies.
-
-<!-- TODO(#16422): ignore collisions within all groups of welded-together
-     bodies -->
+- declare collision filters to ignore collisions among rigid bodies:
+  - between rigid bodies connected by a joint,
+  - within subgraphs of welded rigid bodies.
+Note that MultibodyPlant will *not* introduce *any* collision filters
+on deformable bodies.
 
 <!-- TODO(amcastro-tri): Consider making the actual geometry registration
      with GS AFTER Finalize() so that we can tell if there are any bodies
@@ -676,24 +790,72 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   const systems::OutputPort<T>& get_body_spatial_accelerations_output_port()
       const;
 
+  /// Returns a constant reference to the input port for external actuations for
+  /// all actuated dofs regardless the number of model instances that have
+  /// actuated dofs. The input actuation is assumed to be ordered according to
+  /// model instances. This input port is a vector valued port, which can be set
+  /// with JointActuator::set_actuation_vector().
+  /// Refer to @ref mbp_actuation "Actuation" for further details.
+  /// @pre Finalize() was already called on `this` plant.
+  /// @throws std::exception if called before Finalize().
+  /// @throws std::exception if individual actuation ports are connected.
+  const systems::InputPort<T>& get_actuation_input_port() const;
+
   /// Returns a constant reference to the input port for external actuation for
   /// a specific model instance.  This input port is a vector valued port, which
   /// can be set with JointActuator::set_actuation_vector().
+  /// Refer to @ref mbp_actuation "Actuation" for further details.
+  ///
+  /// Each model instance in `this` plant model has an actuation input port,
+  /// even if zero sized (for model instance with no actuators.)
+  ///
+  /// @see GetJointActuatorIndices(), GetActuatedJointIndices().
+  ///
+  /// @note This is a vector valued port of size num_actuators(model_instance)
+  /// (where we assume only 1-DOF joints are actuated.)
+  ///
+  /// @warning It is required to connect this input port unless the model
+  /// instance has PD controllers defined, see get_desired_state_input_port(),
+  /// or if the full multibody version of this port is connected. For models
+  /// with PD controllers, actuation defaults to zero. This allows the modeler
+  /// to use PD controllers only, without the need to provide feed-forward
+  /// torques.
+  ///
+  /// @warning This port cannot be used together with get_actuation_input_port()
+  /// for the full multibody system. Either use the port for the full multibody
+  /// system or the port per model instance, never both.
+  ///
   /// @pre Finalize() was already called on `this` plant.
   /// @throws std::exception if called before Finalize().
   /// @throws std::exception if the model instance does not exist.
   const systems::InputPort<T>& get_actuation_input_port(
       ModelInstanceIndex model_instance) const;
 
-  /// Returns a constant reference to the input port for external actuations for
-  /// all actuated dofs regardless the number of model instances that have
-  /// actuated dofs. The input actuation is assumed to be ordered according to
-  /// model instances. This input port is a vector valued port, which can be set
-  /// with JointActuator::set_actuation_vector().
-  /// @pre Finalize() was already called on `this` plant.
-  /// @throws std::exception if called before Finalize().
-  /// @throws std::exception if individual actuation ports are connected.
-  const systems::InputPort<T>& get_actuation_input_port() const;
+  /// For models with PD controlled joint actuators, returns the port to provide
+  /// the desired state for the full `model_instance`.
+  /// Refer to @ref mbp_actuation "Actuation" for further details.
+  ///
+  /// For consistency with get_actuation_input_port(), each model instance in
+  /// `this` plant model has a desired states input port, even if zero sized
+  /// (for model instance with no actuators.)
+  ///
+  /// @note This is a vector valued port of size
+  /// 2*num_actuators(model_instance), where we assumed 1-DOF actuated joints.
+  /// This is true even for unactuated models, for which this port is zero
+  /// sized. This port must provide one desired position and one desired
+  /// velocity per joint actuator. Desired state is assumed to be packed as xd =
+  /// [qd, vd] that is, configurations first followed by velocities.
+  /// Configurations in qd are ordered by JointActuatorIndex, see
+  /// JointActuator::set_actuation_vector(). Similarly for velocities in vd.
+  ///
+  /// @warning If a user specifies a PD controller for an actuator from a given
+  /// model instance, then all actuators of that model instance are required to
+  /// be PD controlled.
+  ///
+  /// @warning It is required to connect this port for PD controlled model
+  /// instances.
+  const systems::InputPort<T>& get_desired_state_input_port(
+      ModelInstanceIndex model_instance) const;
 
   /// Returns a constant reference to the vector-valued input port for applied
   /// generalized forces, and the vector will be added directly into `tau` (see
@@ -876,8 +1038,6 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       const std::string& name, ModelInstanceIndex model_instance,
       const SpatialInertia<double>& M_BBo_B) {
     DRAKE_MBP_THROW_IF_FINALIZED();
-    // Make note in the graph.
-    multibody_graph_.AddBody(name, model_instance);
     // Add the actual rigid body to the model.
     const RigidBody<T>& body = this->mutable_tree().AddRigidBody(
         name, model_instance, M_BBo_B);
@@ -890,8 +1050,6 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     visual_geometries_.emplace_back();
     DRAKE_DEMAND(collision_geometries_.size() == body.index());
     collision_geometries_.emplace_back();
-    DRAKE_DEMAND(X_WB_default_list_.size() == body.index());
-    X_WB_default_list_.emplace_back();
     RegisterRigidBodyWithSceneGraph(body);
     return body;
   }
@@ -947,13 +1105,14 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
 
   /// This method adds a Joint of type `JointType` between two bodies.
   /// For more information, see the below overload of `AddJoint<>`.
-  template <template<typename Scalar> class JointType>
+  template <template <typename Scalar> class JointType>
   const JointType<T>& AddJoint(std::unique_ptr<JointType<T>> joint) {
-    DRAKE_MBP_THROW_IF_FINALIZED();
     static_assert(std::is_convertible_v<JointType<T>*, Joint<T>*>,
                   "JointType must be a sub-class of Joint<T>.");
-    RegisterJointInGraph(*joint);
-    return this->mutable_tree().AddJoint(std::move(joint));
+    DRAKE_MBP_THROW_IF_FINALIZED();
+    const JointType<T>& result =
+        this->mutable_tree().AddJoint(std::move(joint));
+    return result;
   }
 
   /// This method adds a Joint of type `JointType` between two bodies.
@@ -1027,7 +1186,9 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// @endcode
   ///
   /// @throws std::exception if `this` %MultibodyPlant already contains a joint
-  /// with the given `name`.  See HasJointNamed(), Joint::name().
+  ///     with the given `name`.  See HasJointNamed(), Joint::name().
+  /// @throws std::exception if parent and child are the same body or if
+  ///     they are not both from `this` %MultibodyPlant.
   ///
   /// @see The Joint class's documentation for further details on how a Joint
   /// is defined.
@@ -1041,31 +1202,11 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     //  consider changing frame F to frame Jp and changing frame M to frame Jc.
     static_assert(std::is_base_of_v<Joint<T>, JointType<T>>,
                   "JointType<T> must be a sub-class of Joint<T>.");
-
-    const Frame<T>* frame_on_parent{nullptr};
-    if (X_PF) {
-      frame_on_parent = &this->AddFrame(
-          std::make_unique<FixedOffsetFrame<T>>(
-              name + "_parent", parent, *X_PF));
-    } else {
-      frame_on_parent = &parent.body_frame();
-    }
-
-    const Frame<T>* frame_on_child{nullptr};
-    if (X_BM) {
-      frame_on_child = &this->AddFrame(
-          std::make_unique<FixedOffsetFrame<T>>(
-              name + "_child", child, *X_BM));
-    } else {
-      frame_on_child = &child.body_frame();
-    }
-
-    const JointType<T>& joint = AddJoint(
-        std::make_unique<JointType<T>>(
-            name,
-            *frame_on_parent, *frame_on_child,
-            std::forward<Args>(args)...));
-    return joint;
+    DRAKE_MBP_THROW_IF_FINALIZED();
+    const JointType<T>& result =
+        this->mutable_tree().template AddJoint<JointType>(
+            name, parent, X_PF, child, X_BM, std::forward<Args>(args)...);
+    return result;
   }
 
   /// Welds `frame_on_parent_F` and `frame_on_child_M` with relative pose
@@ -1137,10 +1278,7 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// only support actuators for single dof joints.
   const JointActuator<T>& AddJointActuator(
       const std::string& name, const Joint<T>& joint,
-      double effort_limit = std::numeric_limits<double>::infinity()) {
-    DRAKE_THROW_UNLESS(joint.num_velocities() == 1);
-    return this->mutable_tree().AddJointActuator(name, joint, effort_limit);
-  }
+      double effort_limit = std::numeric_limits<double>::infinity());
 
   /// Creates a new model instance.  Returns the index for the model
   /// instance.
@@ -1152,6 +1290,18 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   ModelInstanceIndex AddModelInstance(const std::string& name) {
     return this->mutable_tree().AddModelInstance(name);
   }
+
+  /// Renames an existing model instance.
+  ///
+  /// @param[in] model_instance
+  ///   The instance to rename.
+  /// @param[in] name
+  ///   A string that uniquely identifies the instance within `this` model.
+  /// @throws std::exception if called after Finalize().
+  /// @throws std::exception if `model_instance` is not a valid index.
+  /// @throws std::exception if HasModelInstanceNamed(`name`) is true.
+  void RenameModelInstance(ModelInstanceIndex model_instance,
+                           const std::string& name);
 
   /// This method must be called after all elements in the model (joints,
   /// bodies, force elements, constraints, etc.) are added and before any
@@ -1192,10 +1342,107 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// the contact solver with set_discrete_contact_solver() or in the
   /// MultibodyPlantConfig, or to re-define the model so that such a constraint
   /// is not needed.
+  ///
+  /// Each constraint is identified with a MultibodyConstraintId returned
+  /// by the function used to add it (e.g. AddCouplerConstraint()). It is
+  /// possible to recover constraint specification parameters for each
+  /// constraint with various introspection functions (e.g.
+  /// get_coupler_constraint_specs()). Each constraint has an "active" status
+  /// that is set to true by default. Query a constraint's active status with
+  /// GetConstraintActiveStatus() and set its active status with
+  /// SetConstraintActiveStatus().
+  ///
+  /// <!-- TODO(joemasterjohn): As different constraint types are added in a
+  /// piecemeal fashion, the burden of managing and maintaining these different
+  /// constraints becomes cumbersome for the plant. Consider a new
+  /// MultibodyConstraintManager class to consolidate constraint management. -->
   /// @{
 
   /// Returns the total number of constraints specified by the user.
-  int num_constraints() const { return coupler_constraints_specs_.size(); }
+  int num_constraints() const {
+    return num_coupler_constraints() + num_distance_constraints() +
+           num_ball_constraints();
+  }
+
+  /// Returns the total number of coupler constraints specified by the user.
+  int num_coupler_constraints() const {
+    return ssize(coupler_constraints_specs_);
+  }
+
+  /// Returns the total number of distance constraints specified by the user.
+  int num_distance_constraints() const {
+    return ssize(distance_constraints_specs_);
+  }
+
+  /// Returns the total number of ball constraints specified by the user.
+  int num_ball_constraints() const {
+    return ssize(ball_constraints_specs_);
+  }
+
+  /// (Internal use only) Returns the coupler constraint specification
+  /// corresponding to `id`
+  /// @throws if `id` is not a valid identifier for a coupler constraint.
+  const internal::CouplerConstraintSpec& get_coupler_constraint_specs(
+      MultibodyConstraintId id) const {
+    DRAKE_THROW_UNLESS(coupler_constraints_specs_.count(id) > 0);
+    return coupler_constraints_specs_.at(id);
+  }
+
+  /// (Internal use only) Returns the distance constraint specification
+  /// corresponding to `id`
+  /// @throws if `id` is not a valid identifier for a distance constraint.
+  const internal::DistanceConstraintSpec& get_distance_constraint_specs(
+      MultibodyConstraintId id) const {
+    DRAKE_THROW_UNLESS(distance_constraints_specs_.count(id) > 0);
+    return distance_constraints_specs_.at(id);
+  }
+
+  /// (Internal use only)  Returns the ball constraint specification
+  /// corresponding to `id`
+  /// @throws if `id` is not a valid identifier for a ball constraint.
+  const internal::BallConstraintSpec& get_ball_constraint_specs(
+      MultibodyConstraintId id) const {
+    DRAKE_THROW_UNLESS(ball_constraints_specs_.count(id) > 0);
+    return ball_constraints_specs_.at(id);
+  }
+
+  /// (Internal use only)  Returns a reference to the all of the coupler
+  /// constraints in this plant as a map from MultibodyConstraintId to
+  /// CouplerConstraintSpec.
+  const std::map<MultibodyConstraintId, internal::CouplerConstraintSpec>&
+  get_coupler_constraint_specs() const {
+    return coupler_constraints_specs_;
+  }
+
+  /// (Internal use only) Returns a reference to the all of the distance
+  /// constraints in this plant as a map from MultibodyConstraintId to
+  /// DistanceConstraintSpec.
+  const std::map<MultibodyConstraintId, internal::DistanceConstraintSpec>&
+  get_distance_constraint_specs() const {
+    return distance_constraints_specs_;
+  }
+
+  /// (Internal use only) Returns a reference to the all of the ball constraints
+  /// in this plant as a map from MultibodyConstraintId to BallConstraintSpec.
+  const std::map<MultibodyConstraintId, internal::BallConstraintSpec>&
+  get_ball_constraint_specs() const {
+    return ball_constraints_specs_;
+  }
+
+  /// Returns the active status of the constraint given by `id` in `context`.
+  /// @throws std::exception if the %MultibodyPlant has not been finalized.
+  /// @throws std::exception if `id` does not belong to any multibody constraint
+  /// in `context`.
+  bool GetConstraintActiveStatus(const systems::Context<T>& context,
+                                 MultibodyConstraintId id) const;
+
+  /// Sets the active status of the constraint given by `id` in `context`.
+  /// @throws std::exception if the %MultibodyPlant has not been finalized.
+  /// @throws std::exception if `context` == nullptr
+  /// @throws std::exception if `id` does not belong to any multibody constraint
+  /// in `context`.
+  void SetConstraintActiveStatus(systems::Context<T>* context,
+                                 MultibodyConstraintId id, bool status) const;
 
   /// Defines a holonomic constraint between two single-dof joints `joint0`
   /// and `joint1` with positions q₀ and q₁, respectively, such that q₀ = ρ⋅q₁ +
@@ -1215,12 +1462,74 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   ///
   /// @throws if joint0 and joint1 are not both single-dof joints.
   /// @throws std::exception if the %MultibodyPlant has already been finalized.
-  ConstraintIndex AddCouplerConstraint(const Joint<T>& joint0,
+  MultibodyConstraintId AddCouplerConstraint(const Joint<T>& joint0,
                                        const Joint<T>& joint1,
-                                       const T& gear_ratio,
-                                       const T& offset = 0.0);
+                                       double gear_ratio, double offset = 0.0);
 
-  /// <!-- TODO(xuchenhan-tri): Add getters to interrogate existing constraints.
+  /// Defines a distance constraint between a point P on a body A and a point Q
+  /// on a body B.
+  ///
+  /// This constraint can be compliant, modeling a spring with free length
+  /// `distance` and given `stiffness` and `damping` parameters between points P
+  /// and Q. For d = ‖p_PQ‖, then a compliant distance constraint models a
+  /// spring with force along p_PQ given by:
+  ///
+  ///    f = −stiffness ⋅ d − damping ⋅ ḋ
+  ///
+  /// @param[in] body_A Body to which point P is rigidly attached.
+  /// @param[in] p_AP Position of point P in body A's frame.
+  /// @param[in] body_B Body to which point Q is rigidly attached.
+  /// @param[in] p_BQ Position of point Q in body B's frame.
+  /// @param[in] distance Fixed length of the distance constraint, in meters. It
+  /// must be strictly positive.
+  /// @param[in] stiffness For modeling a spring with free length equal to
+  /// `distance`, the stiffness parameter in N/m. Optional, with its default
+  /// value being infinite to model a rigid massless rod of length `distance`
+  /// connecting points A and B.
+  /// @param[in] damping For modeling a spring with free length equal to
+  /// `distance`, damping parameter in N⋅s/m. Optional, with its default value
+  /// being zero for a non-dissipative constraint.
+  /// @returns the id of the newly added constraint.
+  ///
+  /// @warning Currently, it is the user's responsibility to initialize the
+  /// model's context in a configuration compatible with the newly added
+  /// constraint.
+  ///
+  /// @warning A distance constraint is the wrong modeling choice if the
+  /// distance needs to go through zero. To constrain two points to be
+  /// coincident we need a 3-dof ball constraint, the 1-dof distance constraint
+  /// is singular in this case. Therefore we require the distance parameter to
+  /// be strictly positive.
+  ///
+  /// @throws std::exception if bodies A and B are the same body.
+  /// @throws std::exception if `distance` is not strictly positive.
+  /// @throws std::exception if `stiffness` is not positive or zero.
+  /// @throws std::exception if `damping` is not positive or zero.
+  /// @throws std::exception if the %MultibodyPlant has already been finalized.
+  MultibodyConstraintId AddDistanceConstraint(
+      const Body<T>& body_A, const Vector3<double>& p_AP, const Body<T>& body_B,
+      const Vector3<double>& p_BQ, double distance,
+      double stiffness = std::numeric_limits<double>::infinity(),
+      double damping = 0.0);
+
+  /// Defines a constraint such that point P affixed to body A is coincident at
+  /// all times with point Q affixed to body B, effectively modeling a
+  /// ball-and-socket joint.
+  ///
+  /// @param[in] body_A Body to which point P is rigidly attached.
+  /// @param[in] p_AP Position of point P in body A's frame.
+  /// @param[in] body_B Body to which point Q is rigidly attached.
+  /// @param[in] p_BQ Position of point Q in body B's frame.
+  /// @returns the id of the newly added constraint.
+  ///
+  /// @throws std::exception if bodies A and B are the same body.
+  /// @throws std::exception if the %MultibodyPlant has already been finalized.
+  MultibodyConstraintId AddBallConstraint(const Body<T>& body_A,
+                                    const Vector3<double>& p_AP,
+                                    const Body<T>& body_B,
+                                    const Vector3<double>& p_BQ);
+
+  /// <!-- TODO(#18732): Add getters to interrogate existing constraints.
   /// -->
 
   /// @}
@@ -1404,8 +1713,9 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   const std::vector<geometry::GeometryId>& GetCollisionGeometriesForBody(
       const Body<T>& body) const;
 
-  /// Excludes the collision geometries between two given collision filter
-  /// groups.
+  /// Excludes the rigid collision geometries between two given collision filter
+  /// groups. Note that collisions involving deformable geometries are not
+  /// filtered by this function.
   /// @pre RegisterAsSourceForSceneGraph() has been called.
   /// @pre Finalize() has *not* been called.
   void ExcludeCollisionGeometriesWithCollisionFilterGroupPair(
@@ -1704,11 +2014,34 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   void set_contact_model(ContactModel model);
 
   /// Sets the contact solver type used for discrete %MultibodyPlant models.
+  /// @warning This function is a no-op for continuous models (when
+  /// is_discrete() is false.)
   /// @throws std::exception iff called post-finalize.
   void set_discrete_contact_solver(DiscreteContactSolver contact_solver);
 
   /// Returns the contact solver type used for discrete %MultibodyPlant models.
   DiscreteContactSolver get_discrete_contact_solver() const;
+
+  /// Non-negative dimensionless number typically in the range [0.0, 1.0],
+  /// though larger values are allowed even if uncommon. This parameter controls
+  /// the "near rigid" regime of the SAP solver, β in section V.B of [Castro et
+  /// al., 2021]. It essentially controls a threshold value for the maximum
+  /// amount of stiffness SAP can handle robustly. Beyond this value, stiffness
+  /// saturates as explained in [Castro et al., 2021]. A value of 1.0 is a
+  /// conservative choice to avoid ill-conditioning that might lead to softer
+  /// than expected contact. If this is your case, consider turning off this
+  /// approximation by setting this parameter to zero. For difficult cases where
+  /// ill-conditioning is a problem, a small but non-zero number can be used,
+  /// e.g. 1.0e-3.
+  /// @throws std::exception if near_rigid_threshold is negative.
+  /// @throws std::exception if called post-finalize.
+  void set_sap_near_rigid_threshold(
+      double near_rigid_threshold =
+          MultibodyPlantConfig{}.sap_near_rigid_threshold);
+
+  /// @returns the SAP near rigid regime threshold.
+  /// @see See set_sap_near_rigid_threshold().
+  double get_sap_near_rigid_threshold() const;
 
   /// Return the default value for contact representation, given the desired
   /// time step. Discrete systems default to use polygons; continuous systems
@@ -1737,6 +2070,22 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   geometry::HydroelasticContactRepresentation
   get_contact_surface_representation() const {
     return contact_surface_representation_;
+  }
+
+  /// Sets whether to apply collision filters to topologically adjacent bodies
+  /// at Finalize() time.  Filters are applied when there exists a joint
+  /// between bodies, except in the case of 6-dof joints or joints in which the
+  /// parent body is `world`.
+  /// @throws std::exception iff called post-finalize.
+  void set_adjacent_bodies_collision_filters(bool value) {
+    DRAKE_MBP_THROW_IF_FINALIZED();
+    adjacent_bodies_collision_filters_ = value;
+  }
+
+  /// Returns whether to apply collision filters to topologically adjacent
+  /// bodies at Finalize() time.
+  bool get_adjacent_bodies_collision_filters() const {
+    return adjacent_bodies_collision_filters_;
   }
 
   /// For use only by advanced developers wanting to try out their custom time
@@ -1775,15 +2124,13 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// @throws std::exception if called post-finalize. See Finalize().
   /// @note `this` MultibodyPlant will no longer support scalar conversion to or
   /// from symbolic::Expression after a call to this method.
-  void AddPhysicalModel(std::unique_ptr<internal::PhysicalModel<T>> model);
+  void AddPhysicalModel(std::unique_ptr<PhysicalModel<T>> model);
 
-  /// For use only by advanced developers.
+  /// Returns a vector of pointers to all physical models registered with this
+  /// %MultibodyPlant. For use only by advanced developers.
   ///
   /// @experimental
-  const std::vector<std::unique_ptr<internal::PhysicalModel<T>>>&
-  physical_models() const {
-    return physical_models_;
-  }
+  std::vector<const PhysicalModel<T>*> physical_models() const;
 
   // TODO(amcastro-tri): per work in #13064, we should reconsider whether to
   // deprecate/remove this method altogether or at least promote to proper
@@ -1862,6 +2209,13 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       double v_stiction = MultibodyPlantConfig{}.stiction_tolerance) {
     friction_model_.set_stiction_tolerance(v_stiction);
   }
+
+  /// @returns the stiction tolerance parameter, in m/s.
+  /// @see set_stiction_tolerance.
+  double stiction_tolerance() const {
+    return friction_model_.stiction_tolerance();
+  }
+
   /// @} <!-- Contact modeling -->
 
   /// @anchor mbp_state_accessors_and_mutators
@@ -2091,6 +2445,17 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     internal_tree().SetPositionsInArray(model_instance, q_instance, &q);
   }
 
+  /// Gets the default positions for the plant, which can be changed via
+  /// SetDefaultPositions().
+  /// @throws std::exception if the plant is not finalized.
+  VectorX<T> GetDefaultPositions() const;
+
+  /// Gets the default positions for the plant for a given model instance,
+  /// which can be changed via SetDefaultPositions().
+  /// @throws std::exception if the plant is not finalized, or if the
+  /// model_instance is invalid,
+  VectorX<T> GetDefaultPositions(ModelInstanceIndex model_instance) const;
+
   /// Sets the default positions for the plant.  Calls to CreateDefaultContext
   /// or SetDefaultContext/SetDefaultState will return a Context populated with
   /// these position values. They have no other effects on the dynamics of the
@@ -2240,17 +2605,13 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     this->ValidateContext(context);
     this->ValidateCreatedForThisSystem(state);
     internal_tree().SetDefaultState(context, state);
-    for (const BodyIndex& index : GetFloatingBaseBodies()) {
-      SetFreeBodyPose(
-          context, state, internal_tree().get_body(index),
-          X_WB_default_list_[index].template cast<T>());
-    }
   }
 
   /// Assigns random values to all elements of the state, by drawing samples
   /// independently for each joint/free body (coming soon: and then
   /// solving a mathematical program to "project" these samples onto the
-  /// registered system constraints).
+  /// registered system constraints). If a random distribution is not specified
+  /// for a joint/free body, the default state is used.
   ///
   /// @see @ref stochastic_systems
   void SetRandomState(const systems::Context<T>& context,
@@ -2261,6 +2622,130 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     this->ValidateCreatedForThisSystem(state);
     internal_tree().SetRandomState(context, state, generator);
   }
+
+  /// Returns a list of string names corresponding to each element of the
+  /// position vector. These strings take the form
+  /// `{model_instance_name}_{joint_name}_{joint_position_suffix}`, but the
+  /// prefix and suffix may optionally be withheld using @p
+  /// add_model_instance_prefix and @p always_add_suffix.
+  ///
+  /// @param always_add_suffix (optional). If true, then the suffix is always
+  /// added. If false, then the suffix is only added for joints that have more
+  /// than one position (in this case, not adding would lead to ambiguity).
+  ///
+  /// The returned names are guaranteed to be unique if @p
+  /// add_model_instance_prefix is `true` (the default).
+  ///
+  /// @throws std::exception if the plant is not finalized.
+  std::vector<std::string> GetPositionNames(
+      bool add_model_instance_prefix = true,
+      bool always_add_suffix = true) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// position vector. These strings take the form
+  /// `{model_instance_name}_{joint_name}_{joint_position_suffix}`, but the
+  /// prefix and suffix may optionally be withheld using @p
+  /// add_model_instance_prefix and @p always_add_suffix.
+  ///
+  /// @param always_add_suffix (optional). If true, then the suffix is always
+  /// added. If false, then the suffix is only added for joints that have more
+  /// than one position (in this case, not adding would lead to ambiguity).
+  ///
+  /// The returned names are guaranteed to be unique.
+  ///
+  /// @throws std::exception if the plant is not finalized or if the @p
+  /// model_instance is invalid.
+  std::vector<std::string> GetPositionNames(
+      ModelInstanceIndex model_instance, bool add_model_instance_prefix = false,
+      bool always_add_suffix = true) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// velocity vector. These strings take the form
+  /// `{model_instance_name}_{joint_name}_{joint_velocity_suffix}`, but the
+  /// prefix and suffix may optionally be withheld using @p
+  /// add_model_instance_prefix and @p always_add_suffix.
+  ///
+  /// @param always_add_suffix (optional). If true, then the suffix is always
+  /// added. If false, then the suffix is only added for joints that have more
+  /// than one position (in this case, not adding would lead to ambiguity).
+  ///
+  /// The returned names are guaranteed to be unique if @p
+  /// add_model_instance_prefix is `true` (the default).
+  ///
+  /// @throws std::exception if the plant is not finalized.
+  std::vector<std::string> GetVelocityNames(
+      bool add_model_instance_prefix = true,
+      bool always_add_suffix = true) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// velocity vector. These strings take the form
+  /// `{model_instance_name}_{joint_name}_{joint_velocity_suffix}`, but the
+  /// prefix and suffix may optionally be withheld using @p
+  /// add_model_instance_prefix and @p always_add_suffix.
+  ///
+  /// @param always_add_suffix (optional). If true, then the suffix is always
+  /// added. If false, then the suffix is only added for joints that have more
+  /// than one position (in this case, not adding would lead to ambiguity).
+  ///
+  /// The returned names are guaranteed to be unique.
+  ///
+  /// @throws std::exception if the plant is not finalized or if the
+  /// @p model_instance is invalid.
+  std::vector<std::string> GetVelocityNames(
+      ModelInstanceIndex model_instance, bool add_model_instance_prefix = false,
+      bool always_add_suffix = true) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// multibody state vector. These strings take the form
+  /// `{model_instance_name}_{joint_name}_{joint_position_suffix |
+  /// joint_velocity_suffix}`, but the prefix may optionally be withheld using
+  /// @p add_model_instance_prefix.
+  ///
+  /// The returned names are guaranteed to be unique if @p
+  /// add_model_instance_prefix is `true` (the default).
+  ///
+  /// @throws std::exception if the plant is not finalized.
+  std::vector<std::string> GetStateNames(
+      bool add_model_instance_prefix = true) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// multibody state vector. These strings take the form
+  /// `{model_instance_name}_{joint_name}_{joint_position_suffix |
+  /// joint_velocity_suffix}`, but the prefix may optionally be withheld using
+  /// @p add_model_instance_prefix.
+  ///
+  /// The returned names are guaranteed to be unique.
+  ///
+  /// @throws std::exception if the plant is not finalized or if the @p
+  /// model_instance is invalid.
+  std::vector<std::string> GetStateNames(
+      ModelInstanceIndex model_instance,
+      bool add_model_instance_prefix = false) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// actuation vector. These strings take the form
+  /// `{model_instance_name}_{joint_actuator_name}`, but the prefix may
+  /// optionally be withheld using @p add_model_instance_prefix.
+  ///
+  /// The returned names are guaranteed to be unique if @p
+  /// add_model_instance_prefix is `true` (the default).
+  ///
+  /// @throws std::exception if the plant is not finalized.
+  std::vector<std::string> GetActuatorNames(
+      bool add_model_instance_prefix = true) const;
+
+  /// Returns a list of string names corresponding to each element of the
+  /// actuation vector. These strings take the form
+  /// `{model_instance_name}_{joint_actuator_name}`, but the prefix may
+  /// optionally be withheld using @p add_model_instance_prefix.
+  ///
+  /// The returned names are guaranteed to be unique.
+  ///
+  /// @throws std::exception if the plant is not finalized or if the
+  /// @p model_instance is invalid.
+  std::vector<std::string> GetActuatorNames(
+      ModelInstanceIndex model_instance,
+      bool add_model_instance_prefix = false) const;
 
   /// Returns a vector of actuation values for `model_instance` from a
   /// vector `u` of actuation values for the entire model. This method throws an
@@ -2378,6 +2863,15 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// multibody state vector. For such applications,
   /// Body::floating_positions_start() and Body::floating_velocities_start()
   /// offer the additional level of introspection needed.
+  ///
+  /// It is sometimes convenient for users to perform operations on Bodies
+  /// ubiquitously through the APIs of the Joint class. For that reason we
+  /// implicitly construct a 6-dof joint, QuaternionFloatingJoint, for all free
+  /// bodies at the time of Finalize(). Using Joint APIs to affect a free body
+  /// (setting  state, changing parameters, etc.) has the same effect as using
+  /// the free body APIs below. Each implicitly created joint is named
+  /// "$world_<bodyname>" where "<bodyname>" is the name of the free body, given
+  /// by `Body::name()`.
   /// @{
 
   /// Returns the set of body indexes corresponding to the free (floating)
@@ -2427,23 +2921,25 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   }
 
   /// Sets the default pose of `body`. If `body.is_floating()` is true, this
-  /// will affect subsequent calls to SetDefaultState(); otherwise, this value
-  /// is effectively ignored.
+  /// will affect subsequent calls to SetDefaultState(); otherwise, the only
+  /// effect of the call is that the value will be echoed back in
+  /// GetDefaultFreeBodyPose().
   /// @param[in] body
   ///   Body whose default pose will be set.
   /// @param[in] X_WB
   ///   Default pose of the body.
-  void SetDefaultFreeBodyPose(
-      const Body<T>& body, const math::RigidTransform<double>& X_WB) {
-    X_WB_default_list_[body.index()] = X_WB;
+  void SetDefaultFreeBodyPose(const Body<T>& body,
+                              const math::RigidTransform<double>& X_WB) {
+    this->mutable_tree().SetDefaultFreeBodyPose(body, X_WB);
   }
 
-  /// Gets the default pose of `body` as set by SetDefaultFreeBodyPose().
+  /// Gets the default pose of `body` as set by SetDefaultFreeBodyPose(). If no
+  /// pose is specified for the body, returns the identity pose.
   /// @param[in] body
   ///   Body whose default pose will be retrieved.
-  const math::RigidTransform<double>& GetDefaultFreeBodyPose(
+  math::RigidTransform<double> GetDefaultFreeBodyPose(
       const Body<T>& body) const {
-    return X_WB_default_list_.at(body.index());
+    return internal_tree().GetDefaultFreeBodyPose(body);
   }
 
   /// Sets `context` to store the spatial velocity `V_WB` of a given `body` B in
@@ -2929,14 +3425,16 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// Mathematically, this method computes: <pre>
   ///   tau = M(q)v̇ + C(q, v)v - tau_app - ∑ J_WBᵀ(q) Fapp_Bo_W
   /// </pre>
-  /// where `M(q)` is the model's mass matrix, `C(q, v)v` is the bias
-  /// term containing Coriolis and gyroscopic effects and `tau_app` consists
+  /// where `M(q)` is the model's mass matrix (including rigid body mass
+  /// properties and @ref reflected_inertia "reflected inertias"), `C(q, v)v` is
+  /// the bias term for Coriolis and gyroscopic effects and `tau_app` consists
   /// of a vector applied generalized forces. The last term is a summation over
   /// all bodies in the model where `Fapp_Bo_W` is an applied spatial force on
   /// body B at `Bo` which gets projected into the space of generalized forces
   /// with the transpose of `Jv_V_WB(q)` (where `Jv_V_WB` is B's spatial
   /// velocity Jacobian in W with respect to generalized velocities v).
   /// Note: B's spatial velocity in W can be written as `V_WB = Jv_V_WB * v`.
+  ///
   /// This method does not compute explicit expressions for the mass matrix nor
   /// for the bias term, which would be of at least `O(n²)` complexity, but it
   /// implements an `O(n)` Newton-Euler recursive algorithm, where n is the
@@ -3042,6 +3540,48 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     return internal_tree().CalcGravityGeneralizedForces(context);
   }
 
+  /// Computes the generalized forces result of a set of MultibodyForces applied
+  /// to this model.
+  ///
+  /// MultibodyForces stores applied forces as both generalized forces τₐₚₚ and
+  /// spatial forces F on each body, refer to documentation in MultibodyForces
+  /// for details. Users of MultibodyForces will use
+  /// MultibodyForces::mutable_generalized_forces() to mutate the stored
+  /// generalized forces directly and will use Body::AddInForceInWorld() to
+  /// append spatial forces.
+  ///
+  /// For a given set of forces stored as MultibodyForces, this method will
+  /// compute the total generalized forces on this model. More precisely, if
+  /// J_WBo is the Jacobian (with respect to velocities) for this model,
+  /// including all bodies, then this method computes: <pre>
+  ///   τ = τₐₚₚ + J_WBo⋅F
+  /// </pre>
+  ///
+  /// @param[in] context Context that stores the state of the model.
+  /// @param[in] forces Set of multibody forces, including both generalized
+  /// forces and per-body spatial forces.
+  /// @param[out] generalized_forces The total generalized forces on the model
+  /// that would result from applying `forces`. In other words, `forces` can be
+  /// replaced by the equivalent `generalized_forces`. On output,
+  /// `generalized_forces` is resized to num_velocities().
+  ///
+  /// @throws std::exception if `forces` is null or not compatible with this
+  /// model.
+  /// @throws std::exception if `generalized_forces` is not a valid non-null
+  /// pointer.
+  void CalcGeneralizedForces(const systems::Context<T>& context,
+                             const MultibodyForces<T>& forces,
+                             VectorX<T>* generalized_forces) const;
+
+  /// Returns true iff the generalized velocity v is exactly the time
+  /// derivative q̇ of the generalized coordinates q. In this case
+  /// MapQDotToVelocity() and MapVelocityToQDot() implement the identity map.
+  /// This method is, in the worst case, O(n), where n is the number of joints.
+  bool IsVelocityEqualToQDot() const {
+    // TODO(sherm1): Consider caching this value.
+    return internal_tree().IsVelocityEqualToQDot();
+  }
+
   // Preserve access to base overload from this class.
   using systems::System<T>::MapVelocityToQDot;
 
@@ -3106,6 +3646,39 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     DRAKE_DEMAND(v != nullptr);
     internal_tree().MapQDotToVelocity(context, qdot, v);
   }
+
+  /// Returns the matrix `N(q)`, which maps `q̇ = N(q)⋅v`, as described in
+  /// MapVelocityToQDot(). Prefer calling MapVelocityToQDot() directly; this
+  /// entry point is provided to support callers that require the explicit
+  /// linear form (once q is given) of the relationship. Do not take the
+  /// (pseudo-)inverse of `N(q)`; call MakeQDotToVelocityMap instead. This
+  /// method is, in the worst case, O(n), where n is the number of joints.
+  ///
+  /// @param[in] context
+  ///   The context containing the state of the model.
+  ///
+  /// @see MapVelocityToQDot()
+  Eigen::SparseMatrix<T> MakeVelocityToQDotMap(
+      const systems::Context<T>& context) const {
+    this->ValidateContext(context);
+    return internal_tree().MakeVelocityToQDotMap(context);
+  }
+
+  /// Returns the matrix `N⁺(q)`, which maps `v = N⁺(q)⋅q̇`, as described in
+  /// MapQDotToVelocity(). Prefer calling MapQDotToVelocity() directly; this
+  /// entry point is provided to support callers that require the explicit
+  /// linear form (once q is given) of the relationship. This method is, in the
+  /// worst case, O(n), where n is the number of joints.
+  ///
+  /// @param[in] context
+  ///   The context containing the state of the model.
+  ///
+  /// @see MapVelocityToQDot()
+  Eigen::SparseMatrix<T> MakeQDotToVelocityMap(
+      const systems::Context<T>& context) const {
+    this->ValidateContext(context);
+    return internal_tree().MakeQDotToVelocityMap(context);
+  }
   /// @} <!-- Kinematic and dynamic computations -->
 
   /// @anchor mbp_system_matrix_computations
@@ -3120,20 +3693,23 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// gyroscopic "bias" terms, and a variety of Jacobian and actuation matrices.
   /// @{
 
-  /// Performs the computation of the mass matrix `M(q)` of the model using
-  /// inverse dynamics, where the generalized positions q are stored in
-  /// `context`. See CalcInverseDynamics().
+  /// Computes the mass matrix `M(q)` of the model using a slow method (inverse
+  /// dynamics). The generalized positions q are taken from the given `context`.
+  /// M includes the mass properties of rigid bodies and @ref reflected_inertia
+  /// "reflected inertias" as provided with JointActuator specifications.
   ///
-  /// Use CalcMassMatrix() for a faster implementation using the Composite Body
+  /// Use CalcMassMatrix() for a faster implementation using the Composite %Body
   /// Algorithm.
   ///
   /// @param[in] context
-  ///   The context containing the state of the model.
+  ///   The Context containing the state of the model from which generalized
+  ///   coordinates q are extracted.
   /// @param[out] M
-  ///   A valid (non-null) pointer to a squared matrix in `ℛⁿˣⁿ` with n the
-  ///   number of generalized velocities (num_velocities()) of the model.
-  ///   This method aborts if H is nullptr or if it does not have the proper
-  ///   size.
+  ///   A pointer to a square matrix in `ℛⁿˣⁿ` with n the number of generalized
+  ///   velocities (num_velocities()) of the model. Although symmetric, the
+  ///   matrix is filled in completely on return.
+  ///
+  /// @pre M is non-null and has the right size.
   ///
   /// The algorithm used to build `M(q)` consists in computing one column of
   /// `M(q)` at a time using inverse dynamics. The result from inverse dynamics,
@@ -3153,6 +3729,7 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   ///
   /// @warning This is an O(n²) algorithm. Avoid the explicit computation of the
   /// mass matrix whenever possible.
+  /// @see CalcMassMatrix(), CalcInverseDynamics()
   void CalcMassMatrixViaInverseDynamics(
       const systems::Context<T>& context, EigenPtr<MatrixX<T>> M) const {
     this->ValidateContext(context);
@@ -3160,21 +3737,28 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     internal_tree().CalcMassMatrixViaInverseDynamics(context, M);
   }
 
-  /// Performs the computation of the mass matrix `M(q)` of the model, as a
-  /// function of the generalized positions q stored in `context`.
-  /// This method employs the Composite Body Algorithm, which is known to be the
-  /// fastest O(n²) algorithm to compute the mass matrix of a multibody system.
+  /// Efficiently computes the mass matrix `M(q)` of the model. The generalized
+  /// positions q are taken from the given `context`. M includes the mass
+  /// properties of rigid bodies and @ref reflected_inertia "reflected inertias"
+  /// as provided with JointActuator specifications.
+  ///
+  /// This method employs the Composite %Body Algorithm, which we believe to be
+  /// the fastest O(n²) algorithm to compute the mass matrix of a multibody
+  /// system.
   ///
   /// @param[in] context
-  ///   The context containing the state of the model.
+  ///   The Context containing the state of the model from which generalized
+  ///   coordinates q are extracted.
   /// @param[out] M
-  ///   A valid (non-null) pointer to a squared matrix in `ℛⁿˣⁿ` with n the
-  ///   number of generalized velocities (num_velocities()) of the model.
-  ///   This method aborts if M is nullptr or if it does not have the proper
-  ///   size.
+  ///   A pointer to a square matrix in `ℛⁿˣⁿ` with n the number of generalized
+  ///   velocities (num_velocities()) of the model. Although symmetric, the
+  ///   matrix is filled in completely on return.
+  ///
+  /// @pre M is non-null and has the right size.
   ///
   /// @warning This is an O(n²) algorithm. Avoid the explicit computation of the
   /// mass matrix whenever possible.
+  /// @see CalcMassMatrixViaInverseDynamics() (slower)
   void CalcMassMatrix(const systems::Context<T>& context,
                       EigenPtr<MatrixX<T>> M) const {
     this->ValidateContext(context);
@@ -3186,11 +3770,12 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// gyroscopic effects in the multibody equations of motion: <pre>
   ///   M(q) v̇ + C(q, v) v = tau_app + ∑ (Jv_V_WBᵀ(q) ⋅ Fapp_Bo_W)
   /// </pre>
-  /// where `M(q)` is the multibody model's mass matrix and `tau_app` is a
-  /// vector of generalized forces. The last term is a summation over all bodies
-  /// of the dot-product of `Fapp_Bo_W` (applied spatial force on body B at Bo)
-  /// with `Jv_V_WB(q)` (B's spatial Jacobian in world W with respect to
-  /// generalized velocities v).
+  /// where `M(q)` is the multibody model's mass matrix (including rigid body
+  /// mass properties and @ref reflected_inertia "reflected inertias") and
+  /// `tau_app` is a vector of applied generalized forces. The last term is a
+  /// summation over all bodies of the dot-product of `Fapp_Bo_W` (applied
+  /// spatial force on body B at Bo) with `Jv_V_WB(q)` (B's spatial Jacobian in
+  /// world W with respect to generalized velocities v).
   /// Note: B's spatial velocity in W can be written `V_WB = Jv_V_WB * v`.
   ///
   /// @param[in] context
@@ -3906,6 +4491,20 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     return internal_tree().GetJointIndices(model_instance);
   }
 
+  /// Returns a list of joint actuator indices associated with `model_instance`.
+  /// @throws std::exception if called pre-finalize.
+  std::vector<JointActuatorIndex> GetJointActuatorIndices(
+      ModelInstanceIndex model_instance) const {
+    return internal_tree().GetJointActuatorIndices(model_instance);
+  }
+
+  /// Returns a list of actuated joint indices associated with `model_instance`.
+  /// @throws std::exception if called pre-finalize.
+  std::vector<JointIndex> GetActuatedJointIndices(
+      ModelInstanceIndex model_instance) const {
+    return internal_tree().GetActuatedJointIndices(model_instance);
+  }
+
   /// Returns a constant reference to a joint that is identified
   /// by the string `name` in `this` %MultibodyPlant.  If the optional
   /// template argument is supplied, then the returned value is downcast to
@@ -3999,6 +4598,12 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   /// @see AddJointActuator().
   int num_actuators() const {
     return internal_tree().num_actuators();
+  }
+
+  /// Returns the number of actuators for a specific model instance.
+  /// @throws std::exception if called pre-finalize.
+  int num_actuators(ModelInstanceIndex model_instance) const {
+    return internal_tree().num_actuators(model_instance);
   }
 
   /// Returns the total number of actuated degrees of freedom.
@@ -4149,10 +4754,7 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   std::string GetTopologyGraphvizString() const;
 
   /// Returns the size of the generalized position vector q for this model.
-  /// @warning The intent of this function is only to be used after Finalize().
-  /// Calling it prior to Finalize() will return inaccurate results. On or after
-  /// 2023-01-01, calling this function before Finalize() will result in an
-  /// exception.
+  /// @throws std::exception if called pre-finalize.
   int num_positions() const { return internal_tree().num_positions(); }
 
   /// Returns the size of the generalized position vector qᵢ for model
@@ -4163,10 +4765,7 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   }
 
   /// Returns the size of the generalized velocity vector v for this model.
-  /// @warning The intent of this function is only to be used after Finalize().
-  /// Calling it prior to Finalize() will return inaccurate results. On or after
-  /// 2023-01-01, calling this function before Finalize() will result in an
-  /// exception.
+  /// @throws std::exception if called pre-finalize.
   int num_velocities() const { return internal_tree().num_velocities(); }
 
   /// Returns the size of the generalized velocity vector vᵢ for model
@@ -4180,10 +4779,7 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   // integrated power and other discrete states, hence the specific name.
   /// Returns the size of the multibody system state vector x = [q v]. This
   /// will be `num_positions()` plus `num_velocities()`.
-  /// @warning The intent of this function is only to be used after Finalize().
-  /// Calling it prior to Finalize() will return inaccurate results. On or after
-  /// 2023-01-01, calling this function before Finalize() will result in an
-  /// exception.
+  /// @throws std::exception if called pre-finalize.
   int num_multibody_states() const { return internal_tree().num_states(); }
 
   /// Returns the size of the multibody system state vector xᵢ = [qᵢ vᵢ] for
@@ -4204,7 +4800,7 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
     return internal_tree().GetPositionLowerLimits();
   }
 
-  /// Upper limit analog of GetPositionsLowerLimits(), where any unbounded or
+  /// Upper limit analog of GetPositionLowerLimits(), where any unbounded or
   /// unspecified limits will be +infinity.
   /// @see GetPositionLowerLimits() for more information.
   VectorX<double> GetPositionUpperLimits() const {
@@ -4307,7 +4903,28 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       return false;
     }
   }
+
+  // Note: As discussed in #18351, we've used CamelCase here in case we need to
+  // change its implementation down the road to a more expensive lookup.
+  /// (Internal use only) Returns a mutable pointer to the SceneGraph that this
+  /// plant is registered as a source for. This method can only be used
+  /// pre-Finalize.
+  ///
+  /// @throws std::exception if is_finalized() == true ||
+  ///           geometry_source_is_registered() == false
+  geometry::SceneGraph<T>* GetMutableSceneGraphPreFinalize() {
+    DRAKE_THROW_UNLESS(!is_finalized());
+    DRAKE_THROW_UNLESS(geometry_source_is_registered());
+    return scene_graph_;
+  }
+
   /// @} <!-- Introspection -->
+
+#ifndef DRAKE_DOXYGEN_CXX
+  // Internal-only access to MultibodyGraph::FindSubgraphsOfWeldedBodies();
+  // TODO(calderpg-tri) Properly expose this method (docs/tests/bindings).
+  std::vector<std::set<BodyIndex>> FindSubgraphsOfWeldedBodies() const;
+#endif
 
   using internal::MultibodyTreeSystem<T>::is_discrete;
   using internal::MultibodyTreeSystem<T>::EvalPositionKinematics;
@@ -4333,27 +4950,29 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   // when the plant declares its cache entries.
   struct CacheIndexes {
     systems::CacheIndex contact_info_and_body_spatial_forces;
-    systems::CacheIndex contact_jacobians;
     systems::CacheIndex contact_results;
     systems::CacheIndex contact_surfaces;
     systems::CacheIndex generalized_contact_forces_continuous;
     systems::CacheIndex hydro_fallback;
     systems::CacheIndex point_pairs;
     systems::CacheIndex spatial_contact_forces_continuous;
-    systems::CacheIndex contact_solver_results;
-    systems::CacheIndex contact_solver_scratch;
     systems::CacheIndex discrete_contact_pairs;
     systems::CacheIndex joint_locking_data;
-    systems::CacheIndex non_contact_forces_evaluation_in_progress;
+  };
+
+  // This struct stores in one single place all indices related to
+  // MultibodyPlant parameters. These are initialized at Finalize()
+  // when the plant declares parameters.
+  struct ParameterIndices {
+    systems::AbstractParameterIndex constraint_active_status;
   };
 
   // Constructor to bridge testing from MultibodyTree to MultibodyPlant.
   // WARNING: This may *not* result in a plant with a valid state. Use
   // sparingly to test forwarding methods when the overhead is high to
   // reproduce the testing (e.g. benchmarks).
-  explicit MultibodyPlant(
-      std::unique_ptr<internal::MultibodyTree<T>> tree_in,
-      double time_step = 0);
+  explicit MultibodyPlant(std::unique_ptr<internal::MultibodyTree<T>> tree_in,
+                          double time_step = 0);
 
   // Helper method for throwing an exception within public methods that should
   // not be called post-finalize. The invoking method should pass its name so
@@ -4420,8 +5039,10 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
 
   // Helper method to apply default collision filters. By default, we don't
   // consider collisions:
-  // * between geometries affixed to bodies connected by a joint
-  // * within subgraphs of welded-together bodies
+  // * between rigid geometries affixed to bodies connected by a joint
+  // * within subgraphs of welded-together rigid bodies
+  // Note that collisions involving deformable bodies are not filtered by
+  // default.
   void ApplyDefaultCollisionFilters();
 
   // For discrete models, MultibodyPlant uses a penalty method to impose joint
@@ -4447,16 +5068,14 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   // that still guarantees stability.
   void SetUpJointLimitsParameters();
 
-  // This is a *temporary* method to eliminate visual geometries from collision
-  // while we wait for geometry roles to be introduced.
-  // TODO(SeanCurtis-TRI): Remove this when geometry roles are introduced.
-  void ExcludeCollisionsWithVisualGeometry();
-
   // Helper method to declare state, cache entries, and ports after Finalize().
   void DeclareStateCacheAndPorts();
 
-  // Declare the system-level cache entries specific to MultibodyPlant.
+  // Declares the system-level cache entries specific to MultibodyPlant.
   void DeclareCacheEntries();
+
+  // Declares the system-level parameters specific to MultibodyPlant.
+  void DeclareParameters();
 
   // Estimates a global set of point contact parameters given a
   // `penetration_allowance`. See set_penetration_allowance()` for details.
@@ -4473,6 +5092,12 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   VectorX<T> AssembleActuationInput(
       const systems::Context<T>& context) const;
 
+  // For models with joint actuators with PD control, this method helps to
+  // assemble desired states for the full model from the input ports for
+  // individual model instances.
+  VectorX<T> AssembleDesiredStateInput(
+      const systems::Context<T>& context) const;
+
   // Computes all non-contact applied forces including:
   //  - Force elements.
   //  - Joint actuation.
@@ -4483,20 +5108,6 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
                             bool discrete,
                             MultibodyForces<T>* forces) const;
 
-  // Due to issue #12786, we cannot mark the calculation of non-contact forces
-  // (and the acceleration it induces) dependent on the MultibodyPlant's inputs,
-  // as it should. However, by removing this dependency, we run the risk of an
-  // undetected algebraic loop. We use this function to guard against such
-  // algebraic loop. In particular, calling this function immediately upon
-  // entering the calculation of non-contact forces sets a flag indicating the
-  // calculation of non-contact forces is in progress. Then, this function
-  // returns a ScopeExit which turns off the flag when going out of scope at the
-  // end of the non-contact forces calculation. If this function is called again
-  // while the flag is on, it means that an algebraic loop exists and an
-  // exception is thrown.
-  [[nodiscard]] ScopeExit ThrowIfNonContactForceInProgress(
-      const systems::Context<T>& context) const;
-
   // Collects up forces from input ports (actuator, generalized, and spatial
   // forces) and contact forces (from compliant contact models). Does not
   // include ForceElement forces which are accounted for elsewhere.
@@ -4504,8 +5115,9 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
                              MultibodyForces<T>* forces) const override;
 
   // Discrete system version of CalcForwardDynamics(). This method does not use
-  // O(n) forward dynamics but the discrete TAMSI solver, for further details
-  // please refer to @ref castro_etal_2019 "[Castro et al., 2019]"
+  // O(n) forward dynamics but a discrete solver according to the discrete
+  // contact solver specified.
+  // @see get_discrete_contact_solver().
   void DoCalcForwardDynamicsDiscrete(
       const drake::systems::Context<T>& context,
       internal::AccelerationKinematicsCache<T>* ac) const override;
@@ -4524,54 +5136,20 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   // shown to be exactly conserved and to be within O(dt) of the real energy of
   // the mechanical system.)
   // TODO(amcastro-tri): Update this docs when contact is added.
-  void DoCalcDiscreteVariableUpdates(
-      const drake::systems::Context<T>& context0,
-      const std::vector<const drake::systems::DiscreteUpdateEvent<T>*>& events,
-      drake::systems::DiscreteValues<T>* updates) const override;
+  systems::EventStatus CalcDiscreteStep(
+      const systems::Context<T>& context0,
+      systems::DiscreteValues<T>* updates) const;
 
-  // Helper method used within DoCalcDiscreteVariableUpdates() to update
-  // generalized velocities from previous step value v0 to next step value v.
-  // This helper uses num_substeps within a time interval of duration dt
-  // to perform the update using a step size dt_substep = dt/num_substeps.
-  // During the time span dt the problem data M, Jn, Jt and minus_tau, are
-  // approximated to be constant, a first order approximation.
-  TamsiSolverResult SolveUsingSubStepping(
-      TamsiSolver<T>* tamsi_solver,
-      int num_substeps, const MatrixX<T>& M0, const MatrixX<T>& Jn,
-      const MatrixX<T>& Jt, const VectorX<T>& minus_tau,
-      const VectorX<T>& stiffness, const VectorX<T>& damping,
-      const VectorX<T>& mu, const VectorX<T>& v0, const VectorX<T>& fn0) const;
+  // Data will be resized on output according to the documentation for
+  // JointLockingCacheData.
+  void CalcJointLockingCache(const systems::Context<T>& context,
+                             internal::JointLockingCacheData<T>* data) const;
 
-  // This method performs the computation of the impulses to advance the state
-  // stored in `context0` in time.
-  // Contact forces and velocities are computed and stored in `results`. See
-  // ContactSolverResults for further details on the returned data.
-  void CalcContactSolverResults(
-      const drake::systems::Context<T>& context0,
-      contact_solvers::internal::ContactSolverResults<T>* results) const;
-
-
-  // Eval version of the method CalcContactSolverResults().
-  const contact_solvers::internal::ContactSolverResults<T>&
-  EvalContactSolverResults(const systems::Context<T>& context) const {
-    return this->get_cache_entry(cache_indexes_.contact_solver_results)
-        .template Eval<contact_solvers::internal::ContactSolverResults<T>>(
-            context);
-  }
-
-  // Computes the array of indices of velocities that are not locked in the
-  // current configuration. The resulting index values in @p
-  // unlocked_velocity_indices will be in ascending order, in the range [0,
-  // num_velocities()), with the indices of the locked velocities removed.
-  void CalcJointLockingIndices(
-      const systems::Context<T>& context,
-      std::vector<int>* unlocked_velocity_indices) const;
-
-  // Eval version of the method CalcJointLockingIndices().
-  const std::vector<int>& EvalJointLockingIndices(
+  // Eval version of the method CalcJointLockingCache().
+  const internal::JointLockingCacheData<T>& EvalJointLockingCache(
       const systems::Context<T>& context) const {
     return this->get_cache_entry(cache_indexes_.joint_locking_data)
-        .template Eval<std::vector<int>>(context);
+        .template Eval<internal::JointLockingCacheData<T>>(context);
   }
 
   // Computes the vector of ContactSurfaces for hydroelastic contact.
@@ -4609,21 +5187,6 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       const drake::systems::Context<T>& context,
       internal::HydroelasticFallbackCacheData<T>* data) const;
 
-  // Depending on the ContactModel, this method performs point contact and
-  // hydroelastic queries and prepares the results in the form of a list of
-  // DiscreteContactPair to be consumed by our discrete solvers.
-  // TODO(amcastro-tri): consider adding a separate unit test for this method.
-  void CalcDiscreteContactPairs(
-      const systems::Context<T>&,
-      std::vector<internal::DiscreteContactPair<T>>*) const;
-
-  // Eval version of the method CalcDiscreteContactPairs().
-  const std::vector<internal::DiscreteContactPair<T>>& EvalDiscreteContactPairs(
-      const systems::Context<T>& context) const {
-    return this->get_cache_entry(cache_indexes_.discrete_contact_pairs)
-        .template Eval<std::vector<internal::DiscreteContactPair<T>>>(context);
-  }
-
   // Helper method to fill in the ContactResults given the current context when
   // the model is continuous.
   // @param[out] contact_results is fully overwritten
@@ -4645,24 +5208,15 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       const systems::Context<T>& context,
       ContactResults<T>* contact_results) const;
 
-  // This method accumulates both point and hydroelastic contact results into
-  // contact_results when the model is discrete.
-  // @param[out] contact_results is fully overwritten
-  void CalcContactResultsDiscrete(const systems::Context<T>& context,
-                                  ContactResults<T>* contact_results) const;
-
-  // Helper method to fill in contact_results with point contact information
-  // for the given state stored in context, when the model is discrete.
-  // @param[in,out] contact_results is appended to
-  void AppendContactResultsDiscretePointPair(
-      const systems::Context<T>& context,
-      ContactResults<T>* contact_results) const;
-
   // Evaluate contact results.
   const ContactResults<T>& EvalContactResults(
       const systems::Context<T>& context) const {
-    return this->get_cache_entry(cache_indexes_.contact_results)
-        .template Eval<ContactResults<T>>(context);
+    if (this->is_discrete()) {
+      return discrete_update_manager_->EvalContactResults(context);
+    } else {
+      return this->get_cache_entry(cache_indexes_.contact_results)
+          .template Eval<ContactResults<T>>(context);
+    }
   }
 
   // Calc method for the reaction forces output port.
@@ -4816,15 +5370,6 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       const systems::Context<T>& context,
       std::vector<geometry::PenetrationAsPointPair<T>>*) const;
 
-  // This helper method combines the friction properties for each pair of
-  // contact points in `point_pairs` according to
-  // CalcContactFrictionFromSurfaceProperties().
-  // The i-th entry in the returned std::vector corresponds to the combined
-  // friction properties for the i-th point pair in `point_pairs`.
-  std::vector<CoulombFriction<double>> CalcCombinedFrictionCoefficients(
-      const drake::systems::Context<T>& context,
-      const std::vector<internal::DiscreteContactPair<T>>& contact_pairs) const;
-
   // (Advanced) Helper method to compute contact forces in the normal direction
   // using a penalty method.
   void CalcAndAddContactForcesByPenaltyMethod(
@@ -4861,105 +5406,28 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   void AddJointLimitsPenaltyForces(
       const systems::Context<T>& context, MultibodyForces<T>* forces) const;
 
-  // Given a set of point pairs in `point_pairs_set`, this method computes the
-  // normal velocities Jacobian Jn(q) and the tangential velocities Jacobian
-  // Jt(q).
-  //
-  // The normal velocities Jacobian Jn(q) is defined such that:
-  //   vn = Jn(q) v
-  // where the i-th component of vn corresponds to the "separation velocity"
-  // for the i-th point pair in the set. The i-th separation velocity is defined
-  // positive for when the depth in the i-th point pair (
-  // PenetrationAsPointPair::depth) is decreasing. Since for contact problems
-  // the (positive) depth in PenetrationAsPointPair is defined so that it
-  // corresponds to interpenetrating body geometries, a positive separation
-  // velocity corresponds to bodies moving apart.
-  //
-  // The tangential velocities Jacobian Jt(q) is defined such that:
-  //   vt = Jt(q) v
-  // where v ∈ ℝⁿᵛ is the vector of generalized velocities, Jt(q) is a matrix
-  // of size 2⋅nc×nv and vt is a vector of size 2⋅nc. vt is defined such that
-  // its 2⋅i-th and (2⋅i+1)-th entries correspond to relative velocity of the
-  // i-th point pair in these two orthogonal directions. That is:
-  //   vt(2 * i)     = vx_AB_C = Cx ⋅ v_AB
-  //   vt(2 * i + 1) = vy_AB_C = Cy ⋅ v_AB
-  //
-  // If the optional argument R_WC_set is non-null, on output the i-th entry of
-  // R_WC_set will contain the orientation R_WC (with columns Cx, Cy, Cz) in the
-  // world using the mean of the pair of witnesses for point_pairs_set[i] as the
-  // contact point.
-  void CalcNormalAndTangentContactJacobians(
-      const systems::Context<T>& context,
-      const std::vector<internal::DiscreteContactPair<T>>& contact_pairs,
-      MatrixX<T>* Jn, MatrixX<T>* Jt,
-      std::vector<math::RotationMatrix<T>>* R_WC_set = nullptr) const;
-
-  // Populates the ContactJacobians cache struct via EvalDiscreteContactPairs
-  // and CalcNormalAndTangentContactJacobians.
-  void CalcContactJacobiansCache(
-      const systems::Context<T>& context,
-      internal::ContactJacobians<T>* contact_jacobians) const;
-
-  // Evaluates the contact Jacobians for the given state of the plant stored in
-  // `context`.
-  // This method first evaluates the point pair penetrations in the system for
-  // the given `context`, see EvalPointPairPenetrations(). For each penetration
-  // pair involving bodies A and B, a contact frame C is defined by the
-  // rotation matrix `R_WC = [Cx_W, Cy_W, Cz_W]` where `Cz_W = nhat_BA_W`
-  // equals the normal vector pointing from body B into body A, expressed in
-  // the world frame W. See PenetrationAsPointPair for further details on the
-  // definition of each contact pair. Versors `Cx_W` and `Cy_W` constitute a
-  // basis of the plane normal to `Cz_W` and are arbitrarily chosen. The
-  // contact frame basis can be accessed in the results, see
-  // ContactJacobians::R_WC_list. Further, for each contact pair evaluated,
-  // this method computes the Jacobians `Jn` and `Jt`. With the vector of
-  // generalized velocities v of size `nv` and `nc` the number of contact
-  // pairs;
-  //   - `Jn` is a matrix of size `nc x nv` such that `vn = Jn⋅v` is the
-  //     separation speed for each contact point, defined to be positive when
-  //     bodies are moving away at the contact.
-  //   - `Jt` is a matrix of size `2⋅nc x nv` such that `vt = Jt⋅v`
-  //     concatenates the tangential components of the relative velocity vector
-  //     `v_AcBc` in the frame C of contact. That is, for the k-th contact
-  //     pair, `vt.segment<2>(2 * ik)` stores the components of `v_AcBc` in the
-  //     `Cx` and `Cy` directions.
-  //
-  // If no geometry was registered or if `nc = 0`, ContactJacobians holds empty
-  // results.
-  //
-  // See ContactJacobians for specifics on the returned data storage.
-  // This method throws std::exception if called pre-finalize. See Finalize().
-  const internal::ContactJacobians<T>& EvalContactJacobians(
-      const systems::Context<T>& context) const {
-    DRAKE_MBP_THROW_IF_NOT_FINALIZED();
-    this->ValidateContext(context);
-    return this->get_cache_entry(cache_indexes_.contact_jacobians)
-        .template Eval<internal::ContactJacobians<T>>(context);
-  }
-
   // Given a GeometryId, return the corresponding BodyIndex or throw if the
   // GeometryId is invalid or unknown to this plant.
   BodyIndex FindBodyByGeometryId(geometry::GeometryId) const;
 
-  // Registers a joint in the graph.
-  void RegisterJointInGraph(const Joint<T>& joint) {
-    const std::string type_name = joint.type_name();
-    if (!multibody_graph_.IsJointTypeRegistered(type_name)) {
-      multibody_graph_.RegisterJointType(type_name);
-    }
-    // Note changes in the graph.
-    multibody_graph_.AddJoint(joint.name(), joint.model_instance(), type_name,
-                              joint.parent_body().index(),
-                              joint.child_body().index());
+  // Gets the parameter corresponding to constraint active status.
+  const std::map<MultibodyConstraintId, bool>& GetConstraintActiveStatus(
+      const systems::Context<T>& context) const {
+    return context.get_parameters()
+        .template get_abstract_parameter<internal::ConstraintActiveStatusMap>(
+            parameter_indices_.constraint_active_status)
+        .map;
   }
 
-  // Helper to invoke our TamsiSolver.
-  void CallTamsiSolver(
-      TamsiSolver<T>* tamsi_solver, const T& time0, const VectorX<T>& v0,
-      const MatrixX<T>& M0, const VectorX<T>& minus_tau, const VectorX<T>& fn0,
-      const MatrixX<T>& Jn, const MatrixX<T>& Jt, const VectorX<T>& stiffness,
-      const VectorX<T>& damping, const VectorX<T>& mu,
-      contact_solvers::internal::ContactSolverResults<T>* results) const;
+  // Gets the mutable parameter corresponding to constraint active status.
+  std::map<MultibodyConstraintId, bool>& GetMutableConstraintActiveStatus(
+      systems::Context<T>* context) const {
+    return context->get_mutable_parameters()
+        .template get_mutable_abstract_parameter<
+            internal::ConstraintActiveStatusMap>(
+            parameter_indices_.constraint_active_status)
+        .map;
+  }
 
   // Removes `this` MultibodyPlant's ability to convert to the scalar types
   // unsupported by the given `component`.
@@ -5018,12 +5486,10 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
 
    private:
     // Stiction velocity tolerance for the Stribeck model.
-    // A negative value indicates it was not properly initialized.
-    double v_stiction_tolerance_{-1};
+    double v_stiction_tolerance_{MultibodyPlantConfig{}.stiction_tolerance};
     // Note: this is the *inverse* of the v_stiction_tolerance_ parameter to
     // optimize for the division.
-    // A negative value indicates it was not properly initialized.
-    double inv_v_stiction_tolerance_{-1};
+    double inv_v_stiction_tolerance_{1.0 / v_stiction_tolerance_};
   };
   StribeckModel friction_model_;
 
@@ -5087,6 +5553,11 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   // assertions in the cc file that enforce this.
   DiscreteContactSolver contact_solver_enum_{DiscreteContactSolver::kTamsi};
 
+  // Near rigid regime parameter from [Castro et al., 2021]. Refer to
+  // set_near_rigid_threshold() for details.
+  double sap_near_rigid_threshold_{
+      MultibodyPlantConfig{}.sap_near_rigid_threshold};
+
   // User's choice of the representation of contact surfaces in discrete
   // systems. The default value is dependent on whether the system is
   // continuous or discrete, so the constructor will set it. See
@@ -5113,6 +5584,8 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
 
   // The actuation port for all actuated dofs.
   systems::InputPortIndex actuation_port_;
+
+  std::vector<systems::InputPortIndex> instance_desired_state_ports_;
 
   // A port for externally applied generalized forces u.
   systems::InputPortIndex applied_generalized_force_input_port_;
@@ -5153,10 +5626,6 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
   std::vector<systems::OutputPortIndex>
       instance_generalized_contact_forces_output_ports_;
 
-  // A graph representing the body/joint topology of the multibody plant (Not
-  // to be confused with the spanning-tree model we will build for analysis.)
-  internal::MultibodyGraph multibody_graph_;
-
   // If the plant is modeled as a discrete system with periodic updates,
   // time_step_ corresponds to the period of those updates. Otherwise, if the
   // plant is modeled as a continuous system, it is exactly zero.
@@ -5170,17 +5639,29 @@ class MultibodyPlant : public internal::MultibodyTreeSystem<T> {
       discrete_update_manager_;
 
   // (Experimental) The vector of physical models owned by MultibodyPlant.
-  std::vector<std::unique_ptr<internal::PhysicalModel<T>>> physical_models_;
+  std::vector<std::unique_ptr<PhysicalModel<T>>> physical_models_;
 
-  // Vector of coupler constraints specifications.
-  std::vector<internal::CouplerConstraintSpecs<T>> coupler_constraints_specs_;
+  // Map of coupler constraints specifications.
+  std::map<MultibodyConstraintId, internal::CouplerConstraintSpec>
+      coupler_constraints_specs_;
+
+  // Map of distance constraints specifications.
+  std::map<MultibodyConstraintId, internal::DistanceConstraintSpec>
+      distance_constraints_specs_;
+
+  // Map of ball constraint specifications.
+  std::map<MultibodyConstraintId, internal::BallConstraintSpec>
+      ball_constraints_specs_;
 
   // All MultibodyPlant cache indexes are stored in cache_indexes_.
   CacheIndexes cache_indexes_;
 
-  // Vector (with size num_bodies()) of default poses for each body. This is
-  // only used if Body::is_floating() is true.
-  std::vector<math::RigidTransform<double>> X_WB_default_list_;
+  // All MultibodyPlant parameter indices are stored in parameter_indices_.
+  ParameterIndices parameter_indices_;
+
+  // Whether to apply collsion filters to adjacent bodies at Finalize().
+  bool adjacent_bodies_collision_filters_{
+      MultibodyPlantConfig{}.adjacent_bodies_collision_filters};
 };
 
 /// @cond

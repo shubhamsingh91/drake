@@ -22,6 +22,15 @@ TODO(russt): Add videos of a few relevant examples.
 
 # Manipulation
 
+The robotics team at TRI is exploring learning and by combining Drake with
+external high-fidelity rendering, we can generate highly realistic, both
+physically and visually, machine-learning training data to further our research.
+
+{% include video.html
+  url = "https://www.youtube.com/embed/5aVDWjWd0EU"
+  full_width = true
+%}
+
 The Robotics team at TRI is working hard to close the gap between simulation and
 reality.  For manipulation, one important piece is accurate simulation of
 rigid-body contact.
@@ -69,7 +78,7 @@ as described in
   Michael Posa, Scott Kuindersma, Russ Tedrake. "Optimization and
   Stabilization of Trajectories for Constrained Dynamical Systems." ICRA, 2016.
 
-*Source Code:* [https://github.com/DAIRLab/dairlib-public/tree/master/systems/trajectory_optimization](https://github.com/DAIRLab/dairlib-public/tree/master/systems/trajectory_optimization)
+*Source Code:* [https://github.com/DAIRLab/dairlib/tree/master/systems/trajectory_optimization/dircon](https://github.com/DAIRLab/dairlib/tree/master/systems/trajectory_optimization/dircon)
 
 # Task and Motion Planning
 
@@ -99,6 +108,18 @@ penalty forces to model a closed loop topology, such as a four bar linkage.
 *Four Bar Source Code:* [https://github.com/RobotLocomotion/drake/tree/master/examples/multibody/four_bar](https://github.com/RobotLocomotion/drake/tree/master/examples/multibody/four_bar)
 
 *Strandbeest Source Code:* [https://github.com/RobotLocomotion/drake/tree/master/examples/multibody/strandbeest](https://github.com/RobotLocomotion/drake/tree/master/examples/multibody/strandbeest)
+
+# Hydroelastic contact between non-convex meshes
+
+Drake has an example of modeling hydroelastic contact between non-convex 
+meshes.
+
+{% include video.html
+  url = "https://www.youtube.com/embed/ItE5FNoNsTg"
+  full_width = true
+%}
+
+*Source Code:* [drake/examples/hydroelastic/python_nonconvex_mesh](https://github.com/RobotLocomotion/drake/tree/master/examples/hydroelastic/python_nonconvex_mesh)
 
 # Third Party Documentation / Tutorials
 
@@ -141,3 +162,19 @@ and the team at TRI
 *Interactive visualization:* [https://mntan3.github.io/](https://mntan3.github.io/)
 
 *Source Code:* [https://github.com/RobotLocomotion/gym/tree/master/gym/envs/robot_locomotion_group/drake/shoe](https://github.com/RobotLocomotion/gym/tree/master/gym/envs/robot_locomotion_group/drake/shoe)
+
+## AcroMonk: An underactuated brachiation robot that uses Pydrake for trajectory optimization and stabilization
+AcroMonk is an underactuated brachiation robot that is able to brachiate over a horizontally laid ladder with a passive gripper on the real system. 
+Taking advantage of Pydrake, we have generated optimal trajectories and further stabilized them using Time-Varying Linear Quadratic Regulator (TVLQR). 
+The project is open-sourced to support education and research of brachiation with easy to implement hardware and the work is published in the journal of IEEE Robotics and Automation Letters 2023 ([IEEE](https://ieeexplore.ieee.org/document/10106397), [arXiv](https://arxiv.org/abs/2305.08373)). 
+
+
+<img width="400" src="https://github.com/dfki-ric-underactuated-lab/acromonk/blob/main/hardware/images/bf.gif?raw=true">
+
+
+![tvlqr](https://github.com/dfki-ric-underactuated-lab/acromonk/blob/main/hardware/images/5x-tvlqr.gif?raw=true)
+
+
+
+*Source Code:* [AcroMonk](https://github.com/dfki-ric-underactuated-lab/acromonk)
+

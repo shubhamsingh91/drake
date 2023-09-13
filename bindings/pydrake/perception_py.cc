@@ -1,7 +1,3 @@
-#include "pybind11/eigen.h"
-#include "pybind11/operators.h"
-#include "pybind11/pybind11.h"
-
 #include "drake/bindings/pydrake/common/cpp_param_pybind.h"
 #include "drake/bindings/pydrake/common/value_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
@@ -119,14 +115,18 @@ void init_perception(py::module m) {
               self->SetFrom(other);
             },
             py::arg("other"), cls_doc.SetFrom.doc)
+        .def("SetFields", &Class::SetFields, py::arg("new_fields"),
+            py::arg("skip_initialize") = false, cls_doc.SetFields.doc)
         .def("Crop", &Class::Crop, py::arg("lower_xyz"), py::arg("upper_xyz"),
             cls_doc.Crop.doc)
         .def("FlipNormalsTowardPoint", &Class::FlipNormalsTowardPoint,
             py::arg("p_CP"), cls_doc.FlipNormalsTowardPoint.doc)
         .def("VoxelizedDownSample", &Class::VoxelizedDownSample,
-            py::arg("voxel_size"), cls_doc.VoxelizedDownSample.doc)
+            py::arg("voxel_size"), py::arg("parallelize") = false,
+            cls_doc.VoxelizedDownSample.doc)
         .def("EstimateNormals", &Class::EstimateNormals, py::arg("radius"),
-            py::arg("num_closest"), cls_doc.EstimateNormals.doc);
+            py::arg("num_closest"), py::arg("parallelize") = false,
+            cls_doc.EstimateNormals.doc);
   }
 
   AddValueInstantiation<PointCloud>(m);

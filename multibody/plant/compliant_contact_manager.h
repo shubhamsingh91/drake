@@ -9,6 +9,7 @@
 #include "drake/common/eigen_types.h"
 #include "drake/geometry/scene_graph_inspector.h"
 #include "drake/multibody/plant/contact_pair_kinematics.h"
+#include "drake/multibody/plant/contact_results.h"
 #include "drake/multibody/plant/deformable_driver.h"
 #include "drake/multibody/plant/discrete_update_manager.h"
 #include "drake/systems/framework/context.h"
@@ -26,14 +27,17 @@ namespace internal {
 // Forward declaration.
 template <typename>
 class SapDriver;
+template <typename>
+class TamsiDriver;
 
-// To compute accelerations due to external forces (in particular non-contact
-// forces), we pack forces, ABA cache and accelerations into a single struct
-// to confine memory allocations into a single cache entry.
+// To compute accelerations due to non-constraint forces (i.e. forces excluding
+// contact and joint limit forces), we pack forces, ABA cache and accelerations
+// into a single struct to confine memory allocations into a single cache entry.
 template <typename T>
-struct AccelerationsDueToExternalForcesCache {
-  DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(AccelerationsDueToExternalForcesCache)
-  explicit AccelerationsDueToExternalForcesCache(
+struct AccelerationsDueNonConstraintForcesCache {
+  DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(
+      AccelerationsDueNonConstraintForcesCache)
+  explicit AccelerationsDueNonConstraintForcesCache(
       const MultibodyTreeTopology& topology);
   MultibodyForces<T> forces;  // The external forces causing accelerations.
   ArticulatedBodyInertiaCache<T> abic;   // Articulated body inertia cache.
@@ -68,7 +72,18 @@ struct AccelerationsDueToExternalForcesCache {
 // TODO(amcastro-tri): Retire code from MultibodyPlant as this contact manager
 // replaces all the contact related capabilities, per #16106.
 //
-// @tparam_nonsymbolic_scalar
+// @warning Scalar support on T = symbolic::Expression is only limited,
+// conditional to the solver in use:
+//   - For TAMSI. Discrete updates are only supported when there is no contact
+//     geometry. Otherwise an exception is thrown.
+//   - For SAP. Discrete updates are not supported.
+//
+// Even when limited support for discrete updates is provided for T =
+// symbolic::Expression, a MultibodyPlant can be scalar converted to symbolic in
+// order to perform other supported queries, such as kinematics, or
+// introspection.
+//
+// @tparam_default_scalar
 template <typename T>
 class CompliantContactManager final
     : public internal::DiscreteUpdateManager<T> {
@@ -83,23 +98,33 @@ class CompliantContactManager final
 
   // Sets the parameters to be used by the SAP solver.
   // @pre plant().get_discrete_contact_solver() == DiscreteContactSolver::kSap.
+  // @throws if called when instantiated on T = symbolic::Expression.
   void set_sap_solver_parameters(
       const contact_solvers::internal::SapSolverParameters& parameters);
 
-  bool is_cloneable_to_double() const final { return true; }
-  bool is_cloneable_to_autodiff() const final { return true; }
+  // @returns `true`.
+  bool is_cloneable_to_double() const final;
+
+  // @returns `true`.
+  bool is_cloneable_to_autodiff() const final;
+
+  // @returns `true`.
+  bool is_cloneable_to_symbolic() const final;
 
  private:
   // TODO(amcastro-tri): Instead of friendship consider another set of class(es)
   // with tighter functionality. For instance, a class that takes care of
   // getting proximity properties and creating DiscreteContactPairs.
   friend class SapDriver<T>;
+  friend class TamsiDriver<T>;
 
   // Struct used to conglomerate the indexes of cache entries declared by the
   // manager.
   struct CacheIndexes {
+    systems::CacheIndex contact_kinematics;
     systems::CacheIndex discrete_contact_pairs;
-    systems::CacheIndex non_contact_forces_accelerations;
+    systems::CacheIndex hydroelastic_contact_info;
+    systems::CacheIndex non_constraint_forces_accelerations;
   };
 
   // Allow different specializations to access each other's private data for
@@ -117,6 +142,8 @@ class CompliantContactManager final
   std::unique_ptr<DiscreteUpdateManager<double>> CloneToDouble() const final;
   std::unique_ptr<DiscreteUpdateManager<AutoDiffXd>> CloneToAutoDiffXd()
       const final;
+  std::unique_ptr<DiscreteUpdateManager<symbolic::Expression>> CloneToSymbolic()
+      const final;
 
   // Extracts non state dependent model information from MultibodyPlant. See
   // DiscreteUpdateManager for details.
@@ -130,9 +157,27 @@ class CompliantContactManager final
   // @pre model != nullptr.
   void ExtractConcreteModel(const DeformableModel<T>* model);
 
-  void DeclareCacheEntries() final;
+  // For testing purposes only, we provide a default no-op implementation on
+  // arbitrary models of unknown concrete model type. Otherwise, for the closed
+  // list of models forward declared in physical_model.h, we must provide a
+  // function that extracts the particular variant of the physical model.
+  void ExtractConcreteModel(std::monostate) {}
+
+  void DoDeclareCacheEntries() final;
+
+  // Computes the effective damping matrix D̃ used in discrete schemes treating
+  // damping terms implicitly. This includes joint damping and reflected
+  // inertias. That is, if R is the diagonal matrix of reflected inertias and D
+  // is the diagonal matrix of joint damping coefficients, then the effective
+  // discrete damping term D̃ is: D̃ = R + δt⋅D.
+  // Since D̃ is diagonal this method returns a VectorX with the diagonal
+  // entries only.
+  VectorX<T> CalcEffectiveDamping(const systems::Context<T>& context) const;
 
   // TODO(amcastro-tri): implement these APIs according to #16955.
+  // @throws For SAP if T = symbolic::Expression.
+  // @throws For TAMSI if T = symbolic::Expression only if the model contains
+  // contact geometry.
   void DoCalcContactSolverResults(
       const systems::Context<T>&,
       contact_solvers::internal::ContactSolverResults<T>*) const final;
@@ -141,10 +186,19 @@ class CompliantContactManager final
   void DoCalcAccelerationKinematicsCache(
       const systems::Context<T>&,
       multibody::internal::AccelerationKinematicsCache<T>*) const final;
+  void DoCalcContactResults(const systems::Context<T>&,
+                            ContactResults<T>* contact_results) const final;
+  void DoCalcDiscreteUpdateMultibodyForces(
+      const systems::Context<T>& context,
+      MultibodyForces<T>* forces) const final;
 
   // This method computes sparse kinematics information for each contact pair at
   // the given configuration stored in `context`.
   std::vector<ContactPairKinematics<T>> CalcContactKinematics(
+      const systems::Context<T>& context) const;
+
+  // Eval version of CalcContactKinematics().
+  const std::vector<ContactPairKinematics<T>>& EvalContactKinematics(
       const systems::Context<T>& context) const;
 
   // Given the configuration stored in `context`, this method appends discrete
@@ -174,24 +228,41 @@ class CompliantContactManager final
   const std::vector<internal::DiscreteContactPair<T>>& EvalDiscreteContactPairs(
       const systems::Context<T>& context) const;
 
-  // Computes all continuous forces in the MultibodyPlant model. Joint limits
-  // are not included as continuous compliant forces but rather as constraints
-  // in the solver, and therefore must be excluded.
-  // Values in `forces` will be overwritten.
-  // @pre forces != nullptr and is consistent with plant().
-  void CalcNonContactForcesExcludingJointLimits(
-      const systems::Context<T>& context, MultibodyForces<T>* forces) const;
-
-  // Calc non-contact forces and the accelerations they induce.
-  void CalcAccelerationsDueToNonContactForcesCache(
+  // Computes per-face contact information for the hydroelastic model (slip
+  // velocity, traction, etc). On return contact_info->size() will equal the
+  // number of faces discretizing the contact surface.
+  void CalcHydroelasticContactInfo(
       const systems::Context<T>& context,
-      AccelerationsDueToExternalForcesCache<T>* no_contact_accelerations_cache)
-      const;
+      std::vector<HydroelasticContactInfo<T>>* contact_info) const;
 
-  // Eval version of CalcAccelerationsDueToNonContactForcesCache().
-  const multibody::internal::AccelerationKinematicsCache<T>&
-  EvalAccelerationsDueToNonContactForcesCache(
+  // Eval version of CalcHydroelasticContactInfo() .
+  const std::vector<HydroelasticContactInfo<T>>& EvalHydroelasticContactInfo(
       const systems::Context<T>& context) const;
+
+  // Computes non-constraint forces and the accelerations they induce.
+  void CalcAccelerationsDueToNonConstraintForcesCache(
+      const systems::Context<T>& context,
+      AccelerationsDueNonConstraintForcesCache<T>*
+          non_constraint_accelerations_cache) const;
+
+  // Eval version of CalcAccelerationsDueToNonConstraintForcesCache().
+  const multibody::internal::AccelerationKinematicsCache<T>&
+  EvalAccelerationsDueToNonConstraintForcesCache(
+      const systems::Context<T>& context) const;
+
+  // Helper method to fill in contact_results with point contact information
+  // for the given state stored in `context`.
+  // @param[in,out] contact_results is appended to
+  void AppendContactResultsForPointContact(
+      const systems::Context<T>& context,
+      ContactResults<T>* contact_results) const;
+
+  // Helper method to fill in `contact_results` with hydroelastic contact
+  // information for the given state stored in `context`.
+  // @param[in,out] contact_results is appended to
+  void AppendContactResultsForHydroelasticContact(
+      const systems::Context<T>& context,
+      ContactResults<T>* contact_results) const;
 
   CacheIndexes cache_indexes_;
   // Vector of joint damping coefficients, of size plant().num_velocities().
@@ -204,12 +275,26 @@ class CompliantContactManager final
 
   // Specific contact solver drivers are created at ExtractModelInfo() time,
   // when the manager retrieves modeling information from MultibodyPlant.
+  // Only one of these drivers will be non-nullptr.
   std::unique_ptr<SapDriver<T>> sap_driver_;
+  std::unique_ptr<TamsiDriver<T>> tamsi_driver_;
 };
+
+// N.B. These geometry queries are not supported when T = symbolic::Expression
+// and therefore their implementation throws.
+template <>
+void CompliantContactManager<symbolic::Expression>::CalcDiscreteContactPairs(
+    const drake::systems::Context<symbolic::Expression>&,
+    std::vector<DiscreteContactPair<symbolic::Expression>>*) const;
+template <>
+void CompliantContactManager<symbolic::Expression>::
+    AppendDiscreteContactPairsForHydroelasticContact(
+        const drake::systems::Context<symbolic::Expression>&,
+        std::vector<DiscreteContactPair<symbolic::Expression>>*) const;
 
 }  // namespace internal
 }  // namespace multibody
 }  // namespace drake
 
-DRAKE_DECLARE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS(
+DRAKE_DECLARE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(
     class ::drake::multibody::internal::CompliantContactManager);

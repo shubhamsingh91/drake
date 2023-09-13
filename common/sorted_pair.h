@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <ostream>
 #include <type_traits>
 #include <utility>
 
@@ -27,21 +26,25 @@ namespace drake {
 /// assignment) is the same as whatever T provides .  All comparison operations
 /// (including equality, etc.) are always available.
 ///
+/// To format this class for logging, include `<fmt/ranges.h>` (exactly the same
+/// as for `std::pair`).
+///
 /// @tparam T A template type that provides `operator<`.
 template <class T>
 struct SortedPair {
-  static_assert(is_less_than_comparable<T>::value, "SortedPair can only be used"
-      " with types that can be compared using the less-than operator"
-      " (operator<).");
+  static_assert(is_less_than_comparable<T>::value,
+                "SortedPair can only be used with types that can be compared "
+                "using the less-than operator (operator<).");
 
   /// The default constructor creates `first()` and `second()` using T's default
   /// constructor, iff T has a default constructor.  Otherwise, this constructor
   /// is not available.
 #ifndef DRAKE_DOXYGEN_CXX
   template <typename T1 = T,
-      typename std::enable_if_t<std::is_constructible_v<T1>, bool> = true>
+            typename std::enable_if_t<std::is_constructible_v<T1>, bool> = true>
 #endif
-  SortedPair() {}
+  SortedPair() {
+  }
 
   /// Rvalue reference constructor, permits constructing with std::unique_ptr
   /// types, for example.
@@ -57,14 +60,16 @@ struct SortedPair {
 
   /// Constructs a %SortedPair from two objects.
   SortedPair(const T& a, const T& b) : first_(a), second_(b) {
-    if (second_ < first_)
+    if (second_ < first_) {
       std::swap(first_, second_);
+    }
   }
 
   /// Type-converting copy constructor.
   template <class U>
-  SortedPair(SortedPair<U>&& u) : first_{std::forward<T>(u.first())},
-      second_{std::forward<T>(u.second())} {}
+  SortedPair(SortedPair<U>&& u)
+      : first_{std::forward<T>(u.first())},
+        second_{std::forward<T>(u.second())} {}
 
   // N.B. We leave all of the copy/move/assign operations implicitly declared,
   // so that iff T provides that operation, then we will also provide it.  Do
@@ -76,8 +81,9 @@ struct SortedPair {
   void set(U&& a, U&& b) {
     first_ = std::forward<U>(a);
     second_ = std::forward<U>(b);
-    if (second_ < first_)
+    if (second_ < first_) {
       std::swap(first_, second_);
+    }
   }
 
   /// Gets the first (according to `operator<`) of the objects.
@@ -95,38 +101,28 @@ struct SortedPair {
   /// Implements the @ref hash_append concept.
   template <class HashAlgorithm>
   friend void hash_append(HashAlgorithm& hasher, const SortedPair& p) noexcept {
-     using drake::hash_append;
+    using drake::hash_append;
     hash_append(hasher, p.first_);
     hash_append(hasher, p.second_);
   }
 
   /// @name Support for using SortedPair in structured bindings.
   //@{
-  template<std::size_t Index>
-  std::tuple_element_t<Index, SortedPair<T>>& get() {
+  template <size_t Index>
+  const T& get() const {
     if constexpr (Index == 0) return first_;
     if constexpr (Index == 1) return second_;
   }
-
-  template<std::size_t Index>
-  const std::tuple_element_t<Index, SortedPair<T>>& get() const {
-    if constexpr (Index == 0) return first_;
-    if constexpr (Index == 1) return second_;
+  template <std::size_t Index>
+  friend const T& get(const SortedPair<T>& self) {
+    return self.get<Index>();
   }
   //@}
 
  private:
-  T first_{};          // The first of the two objects, according to operator<.
-  T second_{};         // The second of the two objects, according to operator<.
+  T first_{};   // The first of the two objects, according to operator<.
+  T second_{};  // The second of the two objects, according to operator<.
 };
-
-/// Support writing a SortedPair to a stream (conditional on the support of
-/// writing the underlying type T to a stream).
-template <typename T>
-inline std::ostream& operator<<(std::ostream& out, const SortedPair<T>& pair) {
-  out << "(" << pair.first() << ", " << pair.second() << ")";
-  return out;
-}
 
 /// Two pairs of the same type are equal iff their members are equal after
 /// sorting.
@@ -143,8 +139,7 @@ inline bool operator<(const SortedPair<T>& x, const SortedPair<T>& y) {
 
 /// Determine whether two SortedPair objects are not equal using `operator==`.
 template <class T>
-inline bool operator!=(
-    const SortedPair<T>& x, const SortedPair<T>& y) {
+inline bool operator!=(const SortedPair<T>& x, const SortedPair<T>& y) {
   return !(x == y);
 }
 
@@ -162,8 +157,7 @@ inline bool operator<=(const SortedPair<T>& x, const SortedPair<T>& y) {
 
 /// Determines whether `x >= y` using `operator<`.
 template <class T>
-inline bool
-operator>=(const SortedPair<T>& x, const SortedPair<T>& y) {
+inline bool operator>=(const SortedPair<T>& x, const SortedPair<T>& y) {
   return !(x < y);
 }
 
@@ -172,10 +166,10 @@ operator>=(const SortedPair<T>& x, const SortedPair<T>& y) {
 /// @param y  The second_ object.
 /// @return A newly-constructed SortedPair object.
 template <class T>
-inline constexpr SortedPair<typename std::decay<T>::type>
-MakeSortedPair(T&& x, T&& y) {
-  return SortedPair<
-      typename std::decay<T>::type>(std::forward<T>(x), std::forward<T>(y));
+inline constexpr SortedPair<typename std::decay<T>::type> MakeSortedPair(
+    T&& x, T&& y) {
+  return SortedPair<typename std::decay<T>::type>(std::forward<T>(x),
+                                                  std::forward<T>(y));
 }
 
 }  // namespace drake
@@ -190,8 +184,7 @@ void swap(drake::SortedPair<T>& t, drake::SortedPair<T>& u) {
 
 /// Provides std::hash<SortedPair<T>>.
 template <class T>
-struct hash<drake::SortedPair<T>>
-    : public drake::DefaultHash {};
+struct hash<drake::SortedPair<T>> : public drake::DefaultHash {};
 #if defined(__GLIBCXX__)
 // https://gcc.gnu.org/onlinedocs/libstdc++/manual/unordered_associative.html
 template <class T>
@@ -207,7 +200,7 @@ struct tuple_size<drake::SortedPair<T>> : std::integral_constant<size_t, 2> {};
 
 template <size_t Index, typename T>
 struct tuple_element<Index, drake::SortedPair<T>> {
-  using type = T;
+  using type = const T;
 };
 
 }  // namespace std

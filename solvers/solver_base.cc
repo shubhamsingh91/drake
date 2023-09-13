@@ -12,12 +12,11 @@ namespace drake {
 namespace solvers {
 
 SolverBase::SolverBase(
-    std::function<SolverId()> id,
-    std::function<bool()> available,
+    const SolverId& id, std::function<bool()> available,
     std::function<bool()> enabled,
     std::function<bool(const MathematicalProgram&)> are_satisfied,
     std::function<std::string(const MathematicalProgram&)> explain_unsatisfied)
-    : default_id_(std::move(id)),
+    : solver_id_(id),
       default_available_(std::move(available)),
       default_enabled_(std::move(enabled)),
       default_are_satisfied_(std::move(are_satisfied)),
@@ -93,11 +92,6 @@ bool SolverBase::enabled() const {
   return default_enabled_();
 }
 
-SolverId SolverBase::solver_id() const {
-  DRAKE_DEMAND(default_id_ != nullptr);
-  return default_id_();
-}
-
 bool SolverBase::AreProgramAttributesSatisfied(
     const MathematicalProgram& prog) const {
   DRAKE_DEMAND(default_are_satisfied_ != nullptr);
@@ -112,9 +106,8 @@ std::string SolverBase::ExplainUnsatisfiedProgramAttributes(
   if (AreProgramAttributesSatisfied(prog)) {
     return {};
   }
-  return fmt::format(
-      "{} is unable to solve a MathematicalProgram with {}.",
-      ShortName(*this), to_string(prog.required_capabilities()));
+  return fmt::format("{} is unable to solve a MathematicalProgram with {}.",
+                     ShortName(*this), to_string(prog.required_capabilities()));
 }
 
 }  // namespace solvers

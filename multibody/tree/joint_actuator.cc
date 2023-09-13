@@ -9,14 +9,25 @@ namespace multibody {
 template <typename T>
 JointActuator<T>::JointActuator(const std::string& name, const Joint<T>& joint,
                                 double effort_limit)
-    : MultibodyElement<JointActuator, T, JointActuatorIndex>(
-          joint.model_instance()),
+    : MultibodyElement<T>(joint.model_instance()),
       name_(name),
       joint_index_(joint.index()),
       effort_limit_(effort_limit) {
   if (effort_limit_ <= 0.0) {
     throw std::runtime_error("Effort limit must be strictly positive!");
   }
+}
+
+template <typename T>
+void JointActuator<T>::set_controller_gains(PdControllerGains gains) {
+  if (topology_.actuator_index_start >= 0) {
+    throw std::runtime_error(
+        "JointActuator::set_controller_gains() must be called before "
+        "MultibodyPlant::Finalize(). ");
+  }
+  DRAKE_THROW_UNLESS(gains.p > 0);
+  DRAKE_THROW_UNLESS(gains.d >= 0);
+  pd_controller_gains_ = gains;
 }
 
 template <typename T>

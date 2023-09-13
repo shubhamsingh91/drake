@@ -21,7 +21,7 @@ namespace {
 // cannot test TinyObjToSurfaceVertices directly because we hide tinyobj from
 // public API.
 GTEST_TEST(ObjToSurfaceMeshTest, TinyObjToSurfaceVertices) {
-  std::istringstream test_stream {
+  std::istringstream test_stream{
       "v  1.0 -1.0 -1.0\n"
       "v  1.0 -1.0  1.0\n"
       "v -1.0 -1.0  1.0\n"
@@ -45,7 +45,6 @@ GTEST_TEST(ObjToSurfaceMeshTest, TinyObjToSurfaceVertices) {
     }
   }
 }
-
 
 // Tests TinyObjToSurfaceFaces through ReadObjToTriangleSurfaceMesh. We cannot
 // test TinyObjToSurfaceFaces directly because we hide tinyobj from public API.
@@ -120,7 +119,7 @@ GTEST_TEST(ObjToSurfaceMeshTest, ReadObjToTriangleSurfaceMesh) {
   //    └───┘   └───┘
   //
   // This test may fail with subsequent updates to the triangulation algorithm.
-  int expect_faces[12][3] {
+  int expect_faces[12][3]{
       {0, 1, 3}, {1, 2, 3},  // face 1 2 3 4 in quad_cube.obj
       {4, 7, 5}, {7, 6, 5},  // face 5 8 7 6 in quad_cube.obj
       {0, 4, 1}, {4, 5, 1},  // face 1 5 6 2 in quad_cube.obj
@@ -157,7 +156,7 @@ GTEST_TEST(ObjToSurfaceMeshTest, ThrowExceptionInvalidFilePath) {
 GTEST_TEST(ObjToSurfaceMeshTest, ThrowExceptionForEmptyFile) {
   std::istringstream empty("");
   DRAKE_EXPECT_THROWS_MESSAGE(ReadObjToTriangleSurfaceMesh(&empty),
-                              "The Wavefront obj file has no faces.");
+                              ".*The Wavefront obj data has no faces.");
 }
 
 void FailOnWarning(std::string_view message) {
@@ -183,7 +182,7 @@ GTEST_TEST(ObjToSurfaceMeshTest, WarningCallback) {
     std::ifstream input(filename);
     DRAKE_EXPECT_THROWS_MESSAGE(
         ReadObjToTriangleSurfaceMesh(&input, 1.0, &FailOnWarning),
-        "FailOnWarning: Warning parsing Wavefront obj file : "
+        "FailOnWarning: .*Warning parsing Wavefront obj data : "
         ".*CubeMaterial.*not found.*");
   }
 
@@ -199,7 +198,7 @@ v 0.0 1.0 0.0
 v 0.0 0.0 1.0
 )"};
   DRAKE_EXPECT_THROWS_MESSAGE(ReadObjToTriangleSurfaceMesh(&no_faces),
-                              "The Wavefront obj file has no faces.");
+                              ".*The Wavefront obj data has no faces.");
 }
 
 GTEST_TEST(ObjToSurfaceMeshTest, ThrowExceptionObjectHasNoFaces) {
@@ -210,7 +209,7 @@ v 0.0 1.0 0.0
 v 0.0 0.0 1.0
 )"};
   DRAKE_EXPECT_THROWS_MESSAGE(ReadObjToTriangleSurfaceMesh(&no_faces),
-                              "The Wavefront obj file has no faces.");
+                              ".*The Wavefront obj data has no faces.");
 }
 
 // Confirms that we can accept an obj file with faces (f lines) without
@@ -225,9 +224,8 @@ f 1 2 3
   TriangleSurfaceMesh<double> surface =
       ReadObjToTriangleSurfaceMesh(&faces_without_objects);
   ASSERT_EQ(3, surface.num_vertices());
-  std::vector<Vector3<double>> expect_vertices {
-    {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, { 0.0, 0.0, 1.0 }
-  };
+  std::vector<Vector3<double>> expect_vertices{
+      {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
   for (int i = 0; i < 3; ++i) {
     EXPECT_EQ(expect_vertices[i], surface.vertex(i));
   }

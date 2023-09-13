@@ -9,8 +9,9 @@
 #include "drake/common/default_scalars.h"
 #include "drake/common/extract_double.h"
 #include "drake/math/linear_solve.h"
+#include "drake/multibody/contact_solvers/block_sparse_supernodal_solver.h"
+#include "drake/multibody/contact_solvers/conex_supernodal_solver.h"
 #include "drake/multibody/contact_solvers/newton_with_bisection.h"
-#include "drake/multibody/contact_solvers/supernodal_solver.h"
 
 namespace drake {
 namespace multibody {
@@ -180,7 +181,9 @@ SapSolverStatus SapSolver<double>::SolveWithGuess(
               "SapSolver: Non-monotonic convergence detected.");
         }
       }
-      if (!parameters_.use_dense_algebra && supernodal_solver == nullptr) {
+      if (parameters_.linear_solver_type !=
+              SapSolverParameters::LinearSolverType::kDense &&
+          supernodal_solver == nullptr) {
         // Instantiate supernodal solver on the first iteration when needed. If
         // the stopping criteria is satisfied at k = 0 (good guess), then we
         // skip the expensive instantiation of the solver.
@@ -257,7 +260,6 @@ T SapSolver<T>::CalcCostAlongLine(
   if (d2ell_dalpha2 != nullptr) DRAKE_DEMAND(d2ell_dalpha2_scratch != nullptr);
 
   // Data.
-  const VectorX<T>& R = model_->constraints_bundle().R();
   const VectorX<T>& v_star = model_->v_star();
 
   // Search direction quantities at state v.
@@ -284,7 +286,7 @@ T SapSolver<T>::CalcCostAlongLine(
   const VectorX<T>& gamma = model_->EvalImpulses(context_alpha);
 
   // Regularizer cost.
-  const T ellR = 0.5 * gamma.dot(R.asDiagonal() * gamma);
+  const T ellR = model_->EvalConstraintsCost(context_alpha);
 
   // Momentum cost. We use the O(n) strategy described in [Castro et al., 2021].
   // The momentum cost is: ellA(α) = 0.5‖v(α)−v*‖², where ‖⋅‖ is the norm
@@ -396,8 +398,8 @@ std::pair<T, int> SapSolver<T>::PerformBackTrackingLineSearch(
   // N.B. SAP checks that the cost decreases monotonically using a slop to avoid
   // false negatives due to round-off errors. Therefore if we are going to exit
   // when the gradient is near zero, we want to ensure the error introduced by a
-  // gradient close to zero (though not exaclty zero) is much smaller than the
-  // slop. Thefore we use a relative slop much smaller than the one used to
+  // gradient close to zero (though not exactly zero) is much smaller than the
+  // slop. Therefore we use a relative slop much smaller than the one used to
   // verify monotonic convergence.
   const double ell_slop =
       parameters_.relative_slop / 10.0 * std::max(1.0, ell_scale);
@@ -503,7 +505,7 @@ std::pair<double, int> SapSolver<double>::PerformExactLineSearch(
   // If the cost is still decreasing at alpha_max, we accept this value.
   if (dell <= 0) return std::make_pair(alpha_max, 0);
 
-  // If the user requests very tight tolerances (say, samller than 10⁻¹⁰) then
+  // If the user requests very tight tolerances (say, smaller than 10⁻¹⁰) then
   // we might enter the line search with a very small gradient. If close to
   // machine epsilon, the Newton method below might return inaccurate results.
   // Therefore return early if we detect this situation.
@@ -542,8 +544,8 @@ std::pair<double, int> SapSolver<double>::PerformExactLineSearch(
     double dell_dalpha;
     double d2ell_dalpha2;
     data.solver.CalcCostAlongLine(data.context0, data.search_direction_data, x,
-                                   &data.scratch, &dell_dalpha, &d2ell_dalpha2,
-                                   &data.vec_scratch);
+                                  &data.scratch, &dell_dalpha, &d2ell_dalpha2,
+                                  &data.vec_scratch);
     return std::make_pair(dell_dalpha / data.dell_scale,
                           d2ell_dalpha2 / data.dell_scale);
   };
@@ -612,8 +614,19 @@ template <typename T>
 std::unique_ptr<SuperNodalSolver> SapSolver<T>::MakeSuperNodalSolver() const {
   if constexpr (std::is_same_v<T, double>) {
     const BlockSparseMatrix<T>& J = model_->constraints_bundle().J();
-    return std::make_unique<SuperNodalSolver>(J.block_rows(), J.get_blocks(),
-                                              model_->dynamics_matrix());
+    switch (parameters_.linear_solver_type) {
+      case SapSolverParameters::LinearSolverType::kConex:
+        return std::make_unique<ConexSuperNodalSolver>(
+            J.block_rows(), J.get_blocks(), model_->dynamics_matrix());
+      case SapSolverParameters::LinearSolverType::kBlockSparseCholesky:
+        return std::make_unique<BlockSparseSuperNodalSolver>(
+            J.block_rows(), J.get_blocks(), model_->dynamics_matrix());
+      case SapSolverParameters::LinearSolverType::kDense:
+        throw std::logic_error(
+            "Supernodal solver should only be constructed when the linear "
+            "solver type is not dense.");
+    }
+    DRAKE_UNREACHABLE();
   } else {
     throw std::logic_error(
         "SapSolver::MakeSuperNodalSolver(): SuperNodalSolver only supports T "
@@ -688,9 +701,11 @@ template <typename T>
 void SapSolver<T>::CalcSearchDirectionData(
     const systems::Context<T>& context, SuperNodalSolver* supernodal_solver,
     SapSolver<T>::SearchDirectionData* data) const {
-  DRAKE_DEMAND(parameters_.use_dense_algebra || (supernodal_solver != nullptr));
+  const bool use_dense_algebra = parameters_.linear_solver_type ==
+                                 SapSolverParameters::LinearSolverType::kDense;
+  DRAKE_DEMAND(use_dense_algebra || (supernodal_solver != nullptr));
   // Update search direction dv.
-  if (!parameters_.use_dense_algebra) {
+  if (!use_dense_algebra) {
     CallSuperNodalSolver(context, supernodal_solver, &data->dv);
   } else {
     CallDenseSolver(context, &data->dv);

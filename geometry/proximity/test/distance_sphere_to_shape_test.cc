@@ -8,6 +8,7 @@
 #include <fmt/format.h>
 #include <gtest/gtest.h>
 
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
 #include "drake/common/test_utilities/expect_no_throw.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
@@ -83,7 +84,7 @@ GTEST_TEST(SphereShapeDistance, FallbackSupport) {
       CalcDistanceFallback<AutoDiffXd>(obj_a, obj_b, request,
                                        &distance_pair_ad),
       "Signed distance queries between shapes .+ and .+ are not supported for "
-      "scalar type .*AutoDiffXd");
+      "scalar type .*AutoDiffXd.*");
 }
 // TODO(SeanCurtis-TRI): Create a more general test framework when we have
 //  shape-shape primitives that *aren't* covered by the point-shape tests.
@@ -215,10 +216,10 @@ class DistancePairGeometryTest : public ::testing::Test {
     const Vector3d dd_dAo_point = point_result.distance.derivatives();
     result = CompareMatrices(dd_dAo_shape, dd_dAo_point);
     if (!result) {
-      return ::testing::AssertionFailure()
-             << "Distance derivatives don't match; "
-             << "expected: <" << dd_dAo_point << ">, got: <" << dd_dAo_shape
-             << ">";
+      const std::string message = fmt::format(
+          "Distance derivatives don't match; expected: <{}>, got: <{}>",
+          fmt_eigen(dd_dAo_point), fmt_eigen(dd_dAo_shape));
+      return ::testing::AssertionFailure() << message;
     }
 
     // Derivatives of nhat_BA_W; point distance grad_W member is the same
@@ -227,10 +228,10 @@ class DistancePairGeometryTest : public ::testing::Test {
     const auto dgrad_dAo_point = math::ExtractGradient(point_result.grad_W);
     result = CompareMatrices(dgrad_dAo_shape, dgrad_dAo_point);
     if (!result) {
-      return ::testing::AssertionFailure() << "Normal derivatives don't match; "
-                                           << "expected:\n"
-                                           << dgrad_dAo_point << "\ngot:\n"
-                                           << dgrad_dAo_shape;
+      const std::string message =
+          fmt::format("Normal derivatives don't match; expected:\n{}\ngot:\n{}",
+                      fmt_eigen(dgrad_dAo_point), fmt_eigen(dgrad_dAo_shape));
+      return ::testing::AssertionFailure() << message;
     }
 
     // Derivatives of p_BCb.
@@ -238,10 +239,10 @@ class DistancePairGeometryTest : public ::testing::Test {
     const auto dN_dAo = math::ExtractGradient(point_result.p_GN);
     result = CompareMatrices(dCb_dAo, dN_dAo);
     if (!result) {
-      return ::testing::AssertionFailure() << "p_BCb derivatives don't match; "
-                                           << "expected:\n"
-                                           << dN_dAo << "\ngot:\n"
-                                           << dCb_dAo;
+      const std::string message =
+          fmt::format("p_BCb derivatives don't match; expected:\n{}\ngot:\n{}",
+                      fmt_eigen(dN_dAo), fmt_eigen(dCb_dAo));
+      return ::testing::AssertionFailure() << message;
     }
 
     // Derivatives of p_ACa.
@@ -294,10 +295,10 @@ class DistancePairGeometryTest : public ::testing::Test {
     const auto dCa_dAo = math::ExtractGradient(shape_result.p_ACa);
     result = CompareMatrices(dCa_dAo, dCa_dAo_expected, 4 * kEps);
     if (!result) {
-      return ::testing::AssertionFailure() << "p_ACa derivatives don't match; "
-                                           << "expected:\n"
-                                           << dCa_dAo_expected << "\ngot:\n"
-                                           << dCa_dAo;
+      const std::string message =
+          fmt::format("p_ACa derivatives don't match; expected:\n{}\ngot:\n{}",
+                      fmt_eigen(dCa_dAo_expected), fmt_eigen(dCa_dAo));
+      return ::testing::AssertionFailure() << message;
     }
 
     return result;
@@ -483,7 +484,7 @@ class CallbackScalarSupport : public ::testing::Test {
     EncodedData data_B(id_B, true);
     collision_filter_.AddGeometry(data_A.id());
     collision_filter_.AddGeometry(data_B.id());
-    X_WGs_[id_A] = RigidTransform<T>{Translation3<T>{10, 11, 12}};
+    X_WGs_[id_A] = RigidTransform<T>{Eigen::Translation<T, 3>{10, 11, 12}};
     X_WGs_[id_B] = RigidTransform<T>::Identity();
 
     auto apply_data = [&data_A, &data_B](auto& shapes) {
@@ -625,7 +626,8 @@ GTEST_TEST(Callback, ScalarSupportWithFilters) {
   // Filter the pair (A, B); we'll put the ids in a set and simply return that
   // set for the extract ids function.
   std::unordered_set<GeometryId> ids{data_A.id(), data_B.id()};
-  CollisionFilter::ExtractIds extract = [&ids](const GeometrySet&) {
+  CollisionFilter::ExtractIds extract = [&ids](const GeometrySet&,
+                                               CollisionFilterScope) {
     return ids;
   };
   collision_filter.Apply(CollisionFilterDeclaration().ExcludeWithin(
@@ -678,7 +680,8 @@ GTEST_TEST(Callback, RespectCollisionFiltering) {
   // Filter the pair (A, B); we'll put the ids in a set and simply return that
   // set for the extract ids function.
   std::unordered_set<GeometryId> ids{data_A.id(), data_B.id()};
-  CollisionFilter::ExtractIds extract = [&ids](const GeometrySet&) {
+  CollisionFilter::ExtractIds extract = [&ids](const GeometrySet&,
+                                               CollisionFilterScope) {
     return ids;
   };
   collision_filter.Apply(CollisionFilterDeclaration().ExcludeWithin(
@@ -688,6 +691,12 @@ GTEST_TEST(Callback, RespectCollisionFiltering) {
   threshold = std::numeric_limits<double>::max();
   Callback<double>(&sphere_A, &sphere_B, &data, threshold);
   EXPECT_EQ(results.size(), 0u);
+
+  // However, if we explicitly request collision filters be ignored, it will do
+  // so.
+  data.collision_filter = nullptr;
+  Callback<double>(&sphere_A, &sphere_B, &data, threshold);
+  EXPECT_EQ(results.size(), 1u);
 }
 
 // Confirms that regardless of the order of the two objects, the result always
@@ -764,10 +773,10 @@ TYPED_TEST(CallbackMaxDistanceTest, MaxDistanceThreshold) {
   CollisionObjectd sphere_B(make_shared<fcl::Sphered>(radius_B));
   data_B.write_to(&sphere_B);
   const Vector3<T> p_WB = Vector3<T>(2, 3, 4).normalized() *
-      (kMaxDistance + radius_A + radius_B - kEps);
+                          (kMaxDistance + radius_A + radius_B - kEps);
   std::unordered_map<GeometryId, RigidTransform<T>> X_WGs{
       {id_A, RigidTransform<T>::Identity()},
-      {id_B, RigidTransform<T>{Translation3<T>{p_WB}}}};
+      {id_B, RigidTransform<T>{Eigen::Translation<T, 3>{p_WB}}}};
 
   // Case: just inside the max distance.
   {
@@ -783,8 +792,8 @@ TYPED_TEST(CallbackMaxDistanceTest, MaxDistanceThreshold) {
   // Case: just outside the max distance.
   {
     X_WGs.at(id_B) = RigidTransform<T>(
-        Translation3<T>{Vector3<T>(2, 3, 4).normalized() *
-                        (kMaxDistance + radius_A + radius_B + kEps)});
+        Eigen::Translation<T, 3>{Vector3<T>(2, 3, 4).normalized() *
+                                 (kMaxDistance + radius_A + radius_B + kEps)});
     std::vector<SignedDistancePair<T>> results;
     CallbackData<T> data(&collision_filter, &X_WGs, kMaxDistance, &results);
     // NOTE: When done, this should match kMaxDistance.

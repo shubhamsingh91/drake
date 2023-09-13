@@ -4,29 +4,34 @@
 #include <utility>
 #include <vector>
 
-#include <vtkCapsuleSource.h>
-#include <vtkCellArray.h>
-#include <vtkFloatArray.h>
-#include <vtkInformation.h>
-#include <vtkInformationVector.h>
-#include <vtkObjectFactory.h>
-#include <vtkPointData.h>
-#include <vtkPoints.h>
-#include <vtkPolyData.h>
-#include <vtkPolyDataAlgorithm.h>
-#include <vtkStreamingDemandDrivenPipeline.h>
+#include <fmt/format.h>
 
+// To ease build system upkeep, we annotate VTK includes with their deps.
+#include <vtkCapsuleSource.h>                  // vtkFiltersSources
+#include <vtkCellArray.h>                      // vtkCommonDataModel
+#include <vtkFloatArray.h>                     // vtkCommonCore
+#include <vtkInformation.h>                    // vtkCommonCore
+#include <vtkInformationVector.h>              // vtkCommonCore
+#include <vtkObjectFactory.h>                  // vtkCommonCore
+#include <vtkPointData.h>                      // vtkCommonDataModel
+#include <vtkPoints.h>                         // vtkCommonCore
+#include <vtkPolyData.h>                       // vtkCommonDataModel
+#include <vtkPolyDataAlgorithm.h>              // vtkCommonExecutionModel
+#include <vtkStreamingDemandDrivenPipeline.h>  // vtkCommonExecutionModel
+
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/scope_exit.h"
+#include "drake/geometry/render/render_mesh.h"
 
 namespace drake {
 namespace geometry {
-namespace render {
-
-using Eigen::Vector2d;
-
+namespace render_vtk {
+namespace internal {
 namespace {
 
+using Eigen::Vector2d;
 using Eigen::Vector3d;
+using geometry::internal::RenderMesh;
 
 // TODO(SeanCurtis-TRI): The semantics of this textured box needs to be
 //  explained *somewhere* in the documentation. The layout of the texture on the
@@ -69,8 +74,9 @@ class DrakeCubeSource : public vtkPolyDataAlgorithm {
   /* VTK boilerplate to support printing the source.  */
   void PrintSelf(std::ostream& os, vtkIndent indent) override {
     this->Superclass::PrintSelf(os, indent);
-    os << indent << "Size: " << size_.transpose() << "\n";
-    os << indent << "UV Scale: " << uv_scale_.transpose() << "\n";
+    os << indent << fmt::format("Size: {}\n", fmt_eigen(size_.transpose()));
+    os << indent
+       << fmt::format("UV Scale: {}\n", fmt_eigen(uv_scale_.transpose()));
   }
 
   /* Set the size of the box along each of its principal axes.
@@ -100,7 +106,7 @@ class DrakeCubeSource : public vtkPolyDataAlgorithm {
     vtkFloatArray* newTCoords = vtkFloatArray::New();
     vtkCellArray* newPolys = vtkCellArray::New();
 
-    ScopeExit guard([newPoints, newNormals, newTCoords, newPolys](){
+    ScopeExit guard([newPoints, newNormals, newTCoords, newPolys]() {
       newPoints->Delete();
       newNormals->Delete();
       newTCoords->Delete();
@@ -217,7 +223,7 @@ class DrakeCubeSource : public vtkPolyDataAlgorithm {
     output->GetPointData()->SetTCoords(newTCoords);
     output->SetPolys(newPolys);
 
-    return 1;
+    return 1;  // Signal success per VTK convention.
   }
 
   // The full measure of the box along its principal axes.
@@ -231,6 +237,88 @@ class DrakeCubeSource : public vtkPolyDataAlgorithm {
  private:
   DrakeCubeSource(const DrakeCubeSource&) = delete;
   void operator=(const DrakeCubeSource&) = delete;
+};
+
+class DrakeObjSource : public vtkPolyDataAlgorithm {
+ public:
+  static DrakeObjSource* New() {
+    DrakeObjSource* result = new DrakeObjSource;
+    result->InitializeObjectBase();
+    return result;
+  }
+
+  vtkTypeMacro(DrakeObjSource, vtkPolyDataAlgorithm);
+
+  void PrintSelf(std::ostream& os, vtkIndent indent) override {
+    this->Superclass::PrintSelf(os, indent);
+    os << indent << "Num triangles: " << mesh_.indices.rows();
+  }
+
+  void set_render_mesh(RenderMesh mesh) { mesh_ = std::move(mesh); }
+
+ protected:
+  DrakeObjSource() { this->SetNumberOfInputPorts(0); }
+
+  ~DrakeObjSource() override {}
+
+  int RequestData(vtkInformation*, vtkInformationVector**,
+                  vtkInformationVector* outputVector) override {
+    vtkPoints* newPoints = vtkPoints::New(VTK_DOUBLE);
+    vtkFloatArray* newNormals = vtkFloatArray::New();
+    vtkFloatArray* newTCoords = vtkFloatArray::New();
+    vtkCellArray* newPolys = vtkCellArray::New();
+
+    ScopeExit guard([newPoints, newNormals, newTCoords, newPolys]() {
+      newPoints->Delete();
+      newNormals->Delete();
+      newTCoords->Delete();
+      newPolys->Delete();
+    });
+
+    const int num_points = mesh_.positions.rows();
+    const int num_tris = mesh_.indices.rows();
+    newPoints->Allocate(num_points);
+    newNormals->SetNumberOfComponents(3);
+    newNormals->Allocate(num_points);
+    newNormals->SetName("Normals");
+    newTCoords->SetNumberOfComponents(2);
+    newTCoords->Allocate(num_points);
+    newTCoords->SetName("TCoords");
+    // This estimate is exact because every polygon is a triangle.
+    newPolys->Allocate(newPolys->EstimateSize(num_tris, 3));
+
+    for (int p = 0; p < num_points; ++p) {
+      newPoints->InsertNextPoint(mesh_.positions(p, 0), mesh_.positions(p, 1),
+                                 mesh_.positions(p, 2));
+      const double n[] = {mesh_.normals(p, 0), mesh_.normals(p, 1),
+                          mesh_.normals(p, 2)};
+      newNormals->InsertNextTuple(n);
+      const double uv[] = {mesh_.uvs(p, 0), mesh_.uvs(p, 1)};
+      newTCoords->InsertNextTuple(uv);
+    }
+    for (int t = 0; t < num_tris; ++t) {
+      const auto& row = mesh_.indices.row(t);
+      const vtkIdType triangle[] = {row[0], row[1], row[2]};
+      newPolys->InsertNextCell(3, triangle);
+    }
+
+    // Populates the output with the compute data.
+    vtkInformation* out_info = outputVector->GetInformationObject(0);
+    vtkPolyData* output =
+        vtkPolyData::SafeDownCast(out_info->Get(vtkDataObject::DATA_OBJECT()));
+    output->SetPoints(newPoints);
+    output->GetPointData()->SetNormals(newNormals);
+    output->GetPointData()->SetTCoords(newTCoords);
+    output->SetPolys(newPolys);
+
+    return 1;  // Signal success per VTK convention.
+  }
+
+ private:
+  DrakeObjSource(const DrakeObjSource&) = delete;
+  void operator=(const DrakeObjSource&) = delete;
+
+  RenderMesh mesh_;
 };
 
 }  // namespace
@@ -259,8 +347,8 @@ vtkSmartPointer<vtkPolyDataAlgorithm> CreateVtkBox(
   vtkSmartPointer<DrakeCubeSource> vtk_box =
       vtkSmartPointer<DrakeCubeSource>::New();
   vtk_box->set_size({box.width(), box.depth(), box.height()});
-  const Vector2d& uv_scale = properties.GetPropertyOrDefault(
-      "phong", "diffuse_scale", Vector2d{1, 1});
+  const Vector2d& uv_scale =
+      properties.GetPropertyOrDefault("phong", "diffuse_scale", Vector2d{1, 1});
   vtk_box->set_uv_scale(uv_scale);
   return vtk_box;
 }
@@ -282,6 +370,14 @@ vtkSmartPointer<vtkPolyDataAlgorithm> CreateVtkEllipsoid(
   transform_filter->SetTransform(transform);
   transform_filter->Update();
   return transform_filter;
+}
+
+vtkSmartPointer<vtkPolyDataAlgorithm> CreateVtkMesh(RenderMesh mesh_data) {
+  vtkSmartPointer<DrakeObjSource> mesh_source =
+      vtkSmartPointer<DrakeObjSource>::New();
+  mesh_source->set_render_mesh(std::move(mesh_data));
+  mesh_source->Update();
+  return mesh_source;
 }
 
 void SetSphereOptions(vtkTexturedSphereSource* vtk_sphere, double radius) {
@@ -308,6 +404,7 @@ void TransformToDrakeCylinder(vtkTransform* transform,
   transform_filter->Update();
 }
 
-}  // namespace render
+}  // namespace internal
+}  // namespace render_vtk
 }  // namespace geometry
 }  // namespace drake

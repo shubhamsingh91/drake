@@ -941,6 +941,23 @@ GTEST_TEST(RotationMatrixTest, OperatorMultiplyByMatrix3X) {
   }
 }
 
+// Tests RotationMatrix::ToRollPitchYaw() is exactly the same as the constructor
+// RollPitchYaw(RotationMatrix).
+GTEST_TEST(RotationMatrixTest, ToRollPitchYaw) {
+  // Create a somewhat arbitrary RotationMatrix.
+  const double r(0.5), p(0.4), y(0.3);
+  const RollPitchYaw<double> rpy(r, p, y);
+  const RotationMatrix<double> R_AB(rpy);
+
+  // Ensure R_AB.ToRollPitchYaw() is exactly the same as RollPitchYaw(R_AB).
+  const RollPitchYaw<double> roll_pitch_yaw = R_AB.ToRollPitchYaw();
+  const RollPitchYaw<double> roll_pitch_yaw_expected(R_AB);
+  EXPECT_TRUE(roll_pitch_yaw.IsNearlyEqualTo(roll_pitch_yaw_expected, 0));
+
+  // Ensure roll_pitch_yaw is nearly the same as rpy (to within 2 bits).
+  constexpr double kTolerance = 2 * std::numeric_limits<double>::epsilon();;
+  EXPECT_TRUE(roll_pitch_yaw.IsNearlyEqualTo(rpy, kTolerance));
+}
 
 class RotationMatrixConversionTests : public ::testing::Test {
  protected:
@@ -1291,6 +1308,88 @@ GTEST_TEST(RotationMatrixTest, MakeFromOneVectorExceptions) {
   const Vector3<double> huge_vector(1.2E21, 3.4E42, -5.6E63);
   R_AB = RotationMatrix<double>::MakeFromOneVector(huge_vector, axis_index);
   VerifyMakeFromOneUnitVector(R_AB, huge_vector.normalized(), axis_index);
+}
+
+class MakeClosestRotationToIdentityFromUnitZTest
+    : public ::testing::TestWithParam<Vector3d> {};
+
+TEST_P(MakeClosestRotationToIdentityFromUnitZTest, TestDouble) {
+  const Vector3d u_A = GetParam();
+  const RotationMatrixd R_AB =
+      RotationMatrixd::MakeClosestRotationToIdentityFromUnitZ(u_A);
+
+  ASSERT_TRUE(R_AB.IsValid());
+  EXPECT_TRUE(CompareMatrices(u_A, R_AB.col(2), 4.0 * kEpsilon));
+
+  // The resulting rotation from MakeClosestRotationToIdentityFromUnitZ is the
+  // one with the minimum rotation angle that satisfies the z-axis requirement,
+  // so it should be smaller than or equal to the rotation angle of an arbitrary
+  // rotation that also satisfies the z-axis requirement.
+  const RotationMatrixd other_R_AB = RotationMatrixd::MakeFromOneVector(u_A, 2);
+  EXPECT_LE(R_AB.ToAngleAxis().angle(),
+            other_R_AB.ToAngleAxis().angle() + 4.0 * kEpsilon);
+}
+
+// Make an std::vector of arbitrary unit Vector3d's.
+std::vector<Vector3d> MakeUnitVectors() {
+  std::vector<Vector3d> result;
+  result.reserve(342);  // 7³−1
+  for (int z = -3; z <= 3; ++z) {
+    for (int y = -3; y <= 3; ++y) {
+      for (int x = -3; x <= 3; ++x) {
+        if (x != 0 || y != 0 || z != 0) {
+          result.emplace_back(Vector3d(x, y, z).normalized());
+        }
+      }
+    }
+  }
+  return result;
+}
+
+INSTANTIATE_TEST_SUITE_P(MakeClosestRotationToIdentityFromUnitZTest,
+                         MakeClosestRotationToIdentityFromUnitZTest,
+                         ::testing::ValuesIn(MakeUnitVectors()));
+
+GTEST_TEST(MakeClosestRotationToIdentityFromUnitZTest, SpecialCase) {
+  {
+    const RotationMatrixd R_AB =
+        RotationMatrixd::MakeClosestRotationToIdentityFromUnitZ(
+            Vector3d(0, 0, 1));
+    EXPECT_TRUE(R_AB.IsExactlyIdentity());
+  }
+  {
+    // When u_A is [0, 0, -1], minimum angle rotation is not unique, and we have
+    // chosen the one that fixes the x-axis.
+    const RotationMatrixd R_AB =
+        RotationMatrixd::MakeClosestRotationToIdentityFromUnitZ(
+            Vector3d(0, 0, -1));
+    const RotationMatrixd R_expected =
+        RotationMatrixd::MakeFromOrthonormalColumns(
+            Vector3d(1, 0, 0), Vector3d(0, -1, 0), Vector3d(0, 0, -1));
+    EXPECT_TRUE(
+        CompareMatrices(R_AB.matrix(), R_expected.matrix(), 4.0 * kEpsilon));
+  }
+}
+
+GTEST_TEST(MakeClosestRotationToIdentityFromUnitZTest, Symbolic) {
+  const Vector3d b_A(1, 2, 3);
+  const Vector3d u_A = b_A.normalized();
+  const RotationMatrixd R_AB =
+      RotationMatrixd::MakeClosestRotationToIdentityFromUnitZ(u_A);
+  const RotationMatrix<symbolic::Expression> R_AB_sym = RotationMatrix<
+      symbolic::Expression>::MakeClosestRotationToIdentityFromUnitZ(u_A);
+  EXPECT_TRUE(
+      CompareMatrices(R_AB.matrix(), ExtractDoubleOrThrow(R_AB_sym.matrix())));
+}
+
+GTEST_TEST(MakeClosestRotationToIdentityFromUnitZTest, ThrowCondition) {
+  // Verify that a invalid input throws.
+  const Vector3<double> nonunit_vector(1, 2, 3);
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      RotationMatrix<double>::MakeClosestRotationToIdentityFromUnitZ(
+          nonunit_vector),
+      "RotationMatrix::MakeClosestRotationToIdentityFromUnitZ.*requires.*unit-"
+      "length[^]+");
 }
 
 }  // namespace

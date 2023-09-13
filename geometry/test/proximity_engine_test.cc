@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <fcl/fcl.h>
+#include <fmt/ostream.h>
 #include <gtest/gtest.h>
 
 #include "drake/common/find_resource.h"
@@ -114,7 +115,6 @@ using Eigen::Vector3d;
 
 using std::make_shared;
 using std::make_unique;
-using std::move;
 using std::shared_ptr;
 using std::unordered_map;
 using std::vector;
@@ -474,7 +474,7 @@ GTEST_TEST(ProximityEngineTests, VtkForPointContactThrow) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       engine.AddAnchoredGeometry(vtk_mesh, RigidTransformd::Identity(),
                                  GeometryId::get_new_id()),
-      "ProximityEngine: expect an Obj file for non-hydroelastics but get.*");
+      ".*only support .obj files.*");
 }
 
 // Tests simple addition of anchored geometry.
@@ -684,8 +684,8 @@ GTEST_TEST(ProximityEngineTests, FailedParsing) {
         "The file parsed contains no objects;.+");
   }
 
-  // The file is not an OBJ.
-  { const std::filesystem::path file = temp_dir / "not_an_obj.txt";
+  // The file does not have OBJ contents..
+  { const std::filesystem::path file = temp_dir / "not_really_an_obj.obj";
     std::ofstream f(file.string());
     f << "I'm not a valid obj\n";
     f.close();
@@ -746,7 +746,7 @@ GTEST_TEST(ProximityEngineTests, MoveSemantics) {
   engine.AddAnchoredGeometry(sphere, pose, GeometryId::get_new_id());
   engine.AddDynamicGeometry(sphere, pose, GeometryId::get_new_id());
 
-  ProximityEngine<double> move_construct(move(engine));
+  ProximityEngine<double> move_construct(std::move(engine));
   EXPECT_EQ(move_construct.num_geometries(), 2);
   EXPECT_EQ(move_construct.num_anchored(), 1);
   EXPECT_EQ(move_construct.num_dynamic(), 1);
@@ -755,7 +755,7 @@ GTEST_TEST(ProximityEngineTests, MoveSemantics) {
   EXPECT_EQ(engine.num_dynamic(), 0);
 
   ProximityEngine<double> move_assign;
-  move_assign = move(move_construct);
+  move_assign = std::move(move_construct);
   EXPECT_EQ(move_assign.num_geometries(), 2);
   EXPECT_EQ(move_assign.num_anchored(), 1);
   EXPECT_EQ(move_assign.num_dynamic(), 1);
@@ -905,20 +905,19 @@ GTEST_TEST(ProximityEngineTests, SignedDistancePairClosestPoint) {
                     "a signed distance query", bad_id));
   }
 
-  // Case: the pair is filtered.
+  // Case: the distance is evaluated even though the pair is filtered.
   {
     // I know the GeometrySet only has id_A and id_B, so I'll construct the
     // extracted set by hand.
-    auto extract_ids = [id_A, id_B](const GeometrySet&) {
+    auto extract_ids = [id_A, id_B](const GeometrySet&,
+                                    CollisionFilterScope) {
       return std::unordered_set<GeometryId>{id_A, id_B};
     };
     engine.collision_filter().Apply(
         CollisionFilterDeclaration().ExcludeWithin(GeometrySet{id_A, id_B}),
         extract_ids, false /* is_invariant */);
-    DRAKE_EXPECT_THROWS_MESSAGE(
-        engine.ComputeSignedDistancePairClosestPoints(id_A, id_B, X_WGs),
-        fmt::format("The geometry pair \\({}, {}\\) does not support a signed "
-                    "distance query", id_A, id_B));
+    EXPECT_NO_THROW(
+        engine.ComputeSignedDistancePairClosestPoints(id_A, id_B, X_WGs));
   }
 }
 
@@ -1071,17 +1070,20 @@ struct SignedDistanceToPointTestData {
   // when a test fails.
   friend std::ostream& operator<<(std::ostream& os,
                                   const SignedDistanceToPointTestData& obj) {
-    return os << "{\n"
-              << "  geometry: (not printed)\n"
-              << "  X_WG: (not printed)\n"
-              << "  p_WQ: " << obj.p_WQ.transpose() << "\n"
-              << "  expected_result.p_GN: "
-              << obj.expected_result.p_GN.transpose() << "\n"
-              << "  expected_result.distance: " << obj.expected_result.distance
-              << "\n"
-              << "  expected_result.grad_W: "
-              << obj.expected_result.grad_W.transpose() << "\n"
-              << "}" << std::flush;
+    fmt::print(os,
+               "{{\n"
+               "  geometry: (not printed)\n"
+               "  X_WG: (not printed)\n"
+               "  p_WQ: {}\n"
+               "  expected_result.p_GN: {}\n"
+               "  expected_result.distance: {}\n"
+               "  expected_result.grad_W: {}\n"
+               "}}",
+               fmt_eigen(obj.p_WQ.transpose()),
+               fmt_eigen(obj.expected_result.p_GN.transpose()),
+               obj.expected_result.distance,
+               fmt_eigen(obj.expected_result.grad_W.transpose()));
+    return os;
   }
 
   shared_ptr<Shape> geometry;
@@ -2459,7 +2461,8 @@ TEST_F(SimplePenetrationTest, WithCollisionFilters) {
 
   // I know the GeometrySet only has id_A and id_B, so I'll construct the
   // extracted set by hand.
-  auto extract_ids = [origin_id, collide_id](const GeometrySet&) {
+  auto extract_ids = [origin_id, collide_id](const GeometrySet&,
+                                             CollisionFilterScope) {
     return std::unordered_set<GeometryId>{origin_id, collide_id};
   };
   engine_.collision_filter().Apply(CollisionFilterDeclaration().ExcludeWithin(
@@ -2601,22 +2604,23 @@ class SignedDistancePairTestData {
   // when a test fails.
   friend std::ostream& operator<<(std::ostream& os,
                                   const SignedDistancePairTestData& obj) {
-    return os << "{\n"
-              << " geometry A: (not printed)\n"
-              << " geometry B: (not printed)\n"
-              << " X_WA: (not printed)\n"
-              << " X_WB: (not printed)\n"
-              << " expected_result.id_A: "
-              << obj.expected_result_.id_A << "\n"
-              << " expected_result.id_B: "
-              << obj.expected_result_.id_B << "\n"
-              << " expected_result.distance: "
-              << obj.expected_result_.distance << "\n"
-              << " expected_result.p_ACa: "
-              << obj.expected_result_.p_ACa.transpose() << "\n"
-              << " expected_result.p_BCb: "
-              << obj.expected_result_.p_BCb.transpose() << "\n"
-              << "}" << std::flush;
+    fmt::print(os,
+               "{{\n"
+               " geometry A: (not printed)\n"
+               " geometry B: (not printed)\n"
+               " X_WA: (not printed)\n"
+               " X_WB: (not printed)\n"
+               " expected_result.id_A: {}\n"
+               " expected_result.id_B: {}\n"
+               " expected_result.distance: {}\n"
+               " expected_result.p_ACa: {}\n"
+               " expected_result.p_BCb: {}\n"
+               "}}",
+               obj.expected_result_.id_A, obj.expected_result_.id_B,
+               obj.expected_result_.distance,
+               fmt_eigen(obj.expected_result_.p_ACa.transpose()),
+               fmt_eigen(obj.expected_result_.p_BCb.transpose()));
+    return os;
   }
 
   shared_ptr<const Shape> a_;
@@ -4331,7 +4335,7 @@ GTEST_TEST(ProximityEngineTests,
   DRAKE_EXPECT_THROWS_MESSAGE(
       engine.ComputeSignedDistancePairwiseClosestPoints(X_WGs, kInf),
       "Signed distance queries between shapes 'Box' and 'Box' are not "
-      "supported for scalar type drake::AutoDiffXd");
+      "supported for scalar type drake::AutoDiffXd.*");
 }
 
 // Tests that an unsupported geometry causes the engine to throw.
@@ -4350,15 +4354,15 @@ GTEST_TEST(ProximityEngineTests, ExpressionUnsupported) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       engine.ComputeSignedDistancePairwiseClosestPoints(X_WGs, kInf),
       "Signed distance queries between shapes 'Box' and 'Box' are not "
-      "supported for scalar type drake::symbolic::Expression");
+      "supported for scalar type drake::symbolic::Expression.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
       engine.ComputeSignedDistancePairClosestPoints(id1, id2, X_WGs),
       "Signed distance queries between shapes 'Box' and 'Box' are not "
-      "supported for scalar type drake::symbolic::Expression");
+      "supported for scalar type drake::symbolic::Expression.*");
   DRAKE_EXPECT_THROWS_MESSAGE(
       engine.ComputePointPairPenetration(X_WGs),
       "Penetration queries between shapes 'Box' and 'Box' are not supported "
-      "for scalar type drake::symbolic::Expression");
+      "for scalar type drake::symbolic::Expression.*");
 }
 
 // Test fixture for deformable contact.

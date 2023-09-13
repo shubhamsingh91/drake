@@ -84,6 +84,9 @@ class LinearModelPredictiveController : public LeafSystem<T> {
  private:
   void CalcControl(const Context<T>& context, BasicVector<T>* control) const;
 
+  EventStatus DoNothingButPretendItWasSomething(const Context<T>&,
+                                                DiscreteValues<T>*) const;
+
   // Sets up a DirectTranscription problem and solves for the current control
   // input.
   VectorX<T> SetupAndSolveQp(const Context<T>& base_context,
@@ -105,7 +108,7 @@ class LinearModelPredictiveController : public LeafSystem<T> {
   const double time_period_{};
   const double time_horizon_{};
 
-  // Descrption of the linearized plant model.
+  // Description of the linearized plant model.
   std::unique_ptr<LinearSystem<double>> linear_model_;
 };
 

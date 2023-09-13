@@ -1,4 +1,3 @@
-#include <iostream>
 #include <string>
 
 #include <gmock/gmock.h>
@@ -16,17 +15,15 @@ namespace {
 GTEST_TEST(Wsg50DescriptionSdfTest, TestBoxSchunkSdf) {
   const std::string prefix("drake/manipulation/models/wsg_50_description/sdf/");
   const std::vector<std::string> file_names{
-    "schunk_wsg_50.sdf",
-    "schunk_wsg_50_ball_contact.sdf",
-    "schunk_wsg_50_no_tip.sdf",
-    "schunk_wsg_50_with_tip.sdf"};
+      "schunk_wsg_50.sdf", "schunk_wsg_50_ball_contact.sdf",
+      "schunk_wsg_50_no_tip.sdf", "schunk_wsg_50_with_tip.sdf"};
 
   for (size_t i = 0; i < file_names.size(); i++) {
     const std::string kPath(FindResourceOrThrow(prefix + file_names[i]));
 
     multibody::MultibodyPlant<double> plant(0.0);
     multibody::Parser parser(&plant);
-    parser.AddModelFromFile(kPath);
+    parser.AddModels(kPath);
     plant.Finalize();
 
     // Expect 3 model instances. One for the world, one default model instance
@@ -43,9 +40,7 @@ GTEST_TEST(Wsg50DescriptionSdfTest, TestBoxSchunkSdf) {
 
     ASSERT_EQ(plant.num_bodies(), 4);
     const std::vector<std::string> expected_body_names{
-      "" /* Ignore the world body name */,
-        "body",
-        "left_finger",
+        "" /* Ignore the world body name */, "body", "left_finger",
         "right_finger"};
     for (multibody::BodyIndex j{1}; j < plant.num_bodies(); ++j) {
       EXPECT_THAT(plant.get_body(j).name(),

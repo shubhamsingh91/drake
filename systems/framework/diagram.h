@@ -3,7 +3,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -46,8 +48,12 @@ class OwnedSystems {
   decltype(auto) begin() const { return vec_.begin(); }
   decltype(auto) end() const { return vec_.end(); }
   decltype(auto) operator[](size_t i) const { return vec_[i]; }
+  decltype(auto) operator[](size_t i) { return vec_[i]; }
   void push_back(std::unique_ptr<System<T>>&& sys) {
     vec_.push_back(std::move(sys));
+  }
+  void pop_back() {
+    vec_.pop_back();
   }
 
  private:
@@ -139,6 +145,10 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
 
   std::unique_ptr<DiscreteValues<T>> AllocateDiscreteVariables() const final;
 
+  /// Returns true iff this contains a subsystem with the given name.
+  /// @see GetSubsystemByName()
+  bool HasSubsystemNamed(std::string_view name) const;
+
   /// Retrieves a const reference to the subsystem with name @p name returned
   /// by get_name().
   /// @throws std::exception if a match cannot be found.
@@ -154,8 +164,23 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
   /// @see System<T>::get_name()
   template <template <typename> class MySystem>
   const MySystem<T>& GetDowncastSubsystemByName(std::string_view name) const {
+    return GetDowncastSubsystemByName<MySystem<T>>(name);
+  }
+
+  /// Alternate signature for a subsystem that has the Diagram's scalar type T
+  /// but is not explicitly templatized on T. This can happen if the
+  /// subsystem class declaration inherits, for example, from a `LeafSystem<T>`.
+  /// @pre The Scalar type of MyUntemplatizedSystem matches the %Diagram
+  ///      Scalar type T (will fail to compile if not).
+  template <class MyUntemplatizedSystem>
+  const MyUntemplatizedSystem& GetDowncastSubsystemByName(std::string_view name)
+      const {
+    static_assert(std::is_same_v<
+        typename MyUntemplatizedSystem::Scalar, T>,
+        "Scalar type of untemplatized System doesn't match the Diagram's.");
     const System<T>& subsystem = this->GetSubsystemByName(name);
-    return *dynamic_pointer_cast_or_throw<const MySystem<T>>(&subsystem);
+    return *dynamic_pointer_cast_or_throw<const MyUntemplatizedSystem>
+        (&subsystem);
   }
 
   /// Retrieves the state derivatives for a particular subsystem from the
@@ -255,6 +280,18 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
   /// See @ref system_scalar_conversion for detailed background and examples
   /// related to scalar-type conversion support.
   explicit Diagram(SystemScalarConverter converter);
+
+  /// (Advanced) Scalar-converting constructor, for used by derived classes
+  /// that are performing a conversion and also need to supply a `converter`
+  /// that preserves subtypes for additional conversions.
+  ///
+  /// See @ref system_scalar_conversion for detailed background and examples
+  /// related to scalar-type conversion support.
+  template <typename U>
+  Diagram(SystemScalarConverter converter, const Diagram<U>& other)
+      : Diagram(std::move(converter)) {
+    Initialize(other.template ConvertScalarType<T>());
+  }
 
   /// For the subsystem associated with @p witness_func, gets its subcontext
   /// from @p context, passes the subcontext to @p witness_func' Evaluate
@@ -364,8 +401,13 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
   const SystemBase& GetRootSystemBase() const final;
 
   // Returns true if there might be direct feedthrough from the given
-  // @p input_port of the Diagram to the given @p output_port of the Diagram.
-  bool DiagramHasDirectFeedthrough(int input_port, int output_port) const;
+  // `input_port` of the Diagram to the given `output_port` of the Diagram.
+  // The `memoize` dictionary caches the subsystem's reported feedthrough,
+  // to accelerate repeated calls to this function.
+  bool DiagramHasDirectFeedthrough(
+      int input_port, int output_port,
+      std::unordered_map<const System<T>*, std::multimap<int, int>>* memoize)
+      const;
 
   // Allocates a collection of homogeneous events (e.g., publish events) for
   // this Diagram.
@@ -388,7 +430,7 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
       const EventCollection<PublishEvent<T>>& event_info) const final;
 
   // For each subsystem, if there is a discrete update event in its
-  // corresponding subevent collection, calls its CalcDiscreteVariableUpdates
+  // corresponding subevent collection, calls its CalcDiscreteVariableUpdate()
   // method with the appropriate subcontext, subevent collection and
   // substate.
   void DispatchDiscreteVariableUpdateHandler(
@@ -448,15 +490,25 @@ class Diagram : public System<T>, internal::SystemParentServiceInterface {
       const;
 
   std::map<PeriodicEventData, std::vector<const Event<T>*>,
-      PeriodicEventDataComparator> DoGetPeriodicEvents() const override;
+           PeriodicEventDataComparator>
+  DoMapPeriodicEventsByTiming(const Context<T>& context) const final;
+
+  void DoFindUniquePeriodicDiscreteUpdatesOrThrow(
+      const char* api_name, const Context<T>& context,
+      std::optional<PeriodicEventData>* timing,
+      EventCollection<DiscreteUpdateEvent<T>>* events) const final;
+
+  void DoGetPeriodicEvents(
+      const Context<T>& context,
+      CompositeEventCollection<T>* events) const final;
 
   void DoGetPerStepEvents(
       const Context<T>& context,
-      CompositeEventCollection<T>* event_info) const override;
+      CompositeEventCollection<T>* event_info) const final;
 
   void DoGetInitializationEvents(
       const Context<T>& context,
-      CompositeEventCollection<T>* event_info) const override;
+      CompositeEventCollection<T>* event_info) const final;
 
   void DoCalcTimeDerivatives(const Context<T>& context,
                              ContinuousState<T>* derivatives) const final;

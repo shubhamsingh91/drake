@@ -11,6 +11,7 @@
 
 #include "drake/common/default_scalars.h"
 #include "drake/common/drake_copyable.h"
+#include "drake/common/hash.h"
 #include "drake/common/pointer_cast.h"
 #include "drake/systems/framework/diagram.h"
 #include "drake/systems/framework/system.h"
@@ -243,6 +244,18 @@ class DiagramBuilder {
         name, std::make_unique<S<T>>(std::forward<Args>(args)...));
   }
 
+  /// Removes the given system from this builder and disconnects any connections
+  /// or exported ports associated with it.
+  ///
+  /// Note that un-exporting this system's ports might have a ripple effect on
+  /// other exported port index assignments. The relative order will remain
+  /// intact, but any "holes" created by this removal will be filled in by
+  /// decrementing the indices of all higher-numbered ports that remain.
+  ///
+  /// @warning Because a DiagramBuilder owns the objects it contains, the system
+  /// will be deleted.
+  void RemoveSystem(const System<T>& system);
+
   /// Returns whether any Systems have been added yet.
   bool empty() const {
     ThrowIfAlreadyBuilt();
@@ -265,6 +278,10 @@ class DiagramBuilder {
   /// @see GetMutableSubsystemByName()
   /// @see GetSystems()
   std::vector<System<T>*> GetMutableSystems();
+
+  /// Returns true iff this contains a subsystem with the given name.
+  /// @see GetSubsystemByName()
+  bool HasSubsystemNamed(std::string_view name) const;
 
   /// Retrieves a const reference to the subsystem with name @p name returned
   /// by get_name().
@@ -290,8 +307,7 @@ class DiagramBuilder {
   /// @see GetSubsystemByName()
   template <template <typename> class MySystem>
   const MySystem<T>& GetDowncastSubsystemByName(std::string_view name) const {
-    const System<T>& subsystem = this->GetSubsystemByName(name);
-    return *dynamic_pointer_cast_or_throw<const MySystem<T>>(&subsystem);
+    return GetDowncastSubsystemByName<MySystem<T>>(name);
   }
 
   /// Retrieves a mutable reference to the subsystem with name @p name returned
@@ -302,9 +318,37 @@ class DiagramBuilder {
   /// @see GetMutableSubsystemByName()
   template <template <typename> class MySystem>
   MySystem<T>& GetMutableDowncastSubsystemByName(std::string_view name) {
-    System<T>& subsystem = this->GetMutableSubsystemByName(name);
-    return *dynamic_pointer_cast_or_throw<MySystem<T>>(&subsystem);
+    return GetMutableDowncastSubsystemByName<MySystem<T>>(name);
   }
+
+#ifndef DRAKE_DOXYGEN_CXX
+  // We're omitting this from doxygen as the details are unhelpful.
+
+  // Variants of Get[Mutable]DowncastSubsystemByName that allow for leaf
+  // systems that are not templatized.
+  // The requested LeafSystem must still have the same underlying scalar type
+  // as this builder.
+  template <class MyUntemplatizedSystem>
+  const MyUntemplatizedSystem& GetDowncastSubsystemByName(
+      std::string_view name) const {
+    static_assert(std::is_same_v<typename MyUntemplatizedSystem::Scalar, T>,
+                  "Scalar type of untemplatized System doesn't match the "
+                  "DiagramBuilder's.");
+    const System<T>& subsystem = this->GetSubsystemByName(name);
+    return *dynamic_pointer_cast_or_throw<const MyUntemplatizedSystem>(
+        &subsystem);
+  }
+
+  template <class MyUntemplatizedSystem>
+  MyUntemplatizedSystem& GetMutableDowncastSubsystemByName(
+      std::string_view name) {
+    static_assert(std::is_same_v<typename MyUntemplatizedSystem::Scalar, T>,
+                  "Scalar type of untemplatized System doesn't match the "
+                  "DiagramBuilder's.");
+    System<T>& subsystem = this->GetMutableSubsystemByName(name);
+    return *dynamic_pointer_cast_or_throw<MyUntemplatizedSystem>(&subsystem);
+  }
+#endif
 
   /// (Advanced) Returns a reference to the map of connections between Systems.
   /// The reference becomes invalid upon any call to Build or BuildInto.
@@ -321,6 +365,8 @@ class DiagramBuilder {
 
   /// Declares that sole input port on the @p dest system is connected to sole
   /// output port on the @p src system.
+  /// This function ignores deprecated ports, unless there is only one port in
+  /// which case it will use the deprecated port.
   /// @note The connection created between @p src and @p dest via a call to
   /// this method can be effectively overridden by any subsequent call to
   /// InputPort::FixValue(). That is, calling InputPort::FixValue() on an
@@ -436,6 +482,8 @@ class DiagramBuilder {
 
   void ThrowIfAlgebraicLoopsExist() const;
 
+  void CheckInvariants() const;
+
   // Produces the Blueprint that has been described by the calls to
   // Connect, ExportInput, and ExportOutput. Throws std::exception if the
   // graph is empty or contains algebraic loops.
@@ -453,7 +501,7 @@ class DiagramBuilder {
   std::vector<std::string> output_port_names_;
 
   // For fast membership queries: has this input port already been wired?
-  std::set<InputPortLocator> diagram_input_set_;
+  std::unordered_set<InputPortLocator, DefaultHash> diagram_input_set_;
 
   // A vector of data about exported input ports.
   struct ExportedInputData {

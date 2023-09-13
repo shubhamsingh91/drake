@@ -73,10 +73,11 @@ Diagram<T>::get_output_port_locator(OutputPortIndex port_index) const {
 
 template <typename T>
 std::multimap<int, int> Diagram<T>::GetDirectFeedthroughs() const {
+  std::unordered_map<const System<T>*, std::multimap<int, int>> memoize;
   std::multimap<int, int> pairs;
   for (InputPortIndex u(0); u < this->num_input_ports(); ++u) {
     for (OutputPortIndex v(0); v < this->num_output_ports(); ++v) {
-      if (DiagramHasDirectFeedthrough(u, v)) {
+      if (DiagramHasDirectFeedthrough(u, v, &memoize)) {
         pairs.emplace(u, v);
       }
     }
@@ -352,15 +353,32 @@ void Diagram<T>::DoCalcImplicitTimeDerivativesResidual(
 }
 
 template <typename T>
+bool Diagram<T>::HasSubsystemNamed(std::string_view name) const {
+  for (const auto& child : registered_systems_) {
+    if (child->get_name() == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename T>
 const System<T>& Diagram<T>::GetSubsystemByName(std::string_view name) const {
   for (const auto& child : registered_systems_) {
     if (child->get_name() == name) {
       return *child;
     }
   }
+  std::vector<std::string> subsystem_names;
+  subsystem_names.reserve(registered_systems_.size());
+  for (const auto& child : registered_systems_) {
+    subsystem_names.emplace_back(child->get_name());
+  }
+
   throw std::logic_error(fmt::format(
-      "System {} does not have a subsystem named {}",
-      this->GetSystemName(), name));
+      "System {} does not have a subsystem named {}. The existing subsystems "
+      "are named {{{}}}.",
+      this->GetSystemName(), name, fmt::join(subsystem_names, ", ")));
 }
 
 template <typename T>
@@ -1034,8 +1052,8 @@ const AbstractValue* Diagram<T>::EvalConnectedSubsystemInputPort(
   // A static_cast is safe as long as the given input_port_base was actually
   // an InputPort<T>, and since our sole caller is SystemBase which always
   // retrieves the input_port_base from `this`, the <T> must be correct.
-  auto& system =
-      static_cast<const System<T>&>(input_port_base.get_system_interface());
+  auto& system = static_cast<const System<T>&>(
+      internal::PortBaseAttorney::get_system_interface(input_port_base));
   const InputPortLocator id{&system, input_port_base.get_index()};
 
   // Find if this input port is exported (connected to an input port of this
@@ -1080,12 +1098,15 @@ const SystemBase& Diagram<T>::GetRootSystemBase() const {
 }
 
 template <typename T>
-bool Diagram<T>::DiagramHasDirectFeedthrough(int input_port, int output_port)
+bool Diagram<T>::DiagramHasDirectFeedthrough(
+    int input_port, int output_port,
+    std::unordered_map<const System<T>*, std::multimap<int, int>>* memoize)
     const {
   DRAKE_ASSERT(input_port >= 0);
   DRAKE_ASSERT(input_port < this->num_input_ports());
   DRAKE_ASSERT(output_port >= 0);
   DRAKE_ASSERT(output_port < this->num_output_ports());
+  DRAKE_ASSERT(memoize != nullptr);
 
   const auto input_ids = GetInputPortLocators(InputPortIndex(input_port));
   std::set<InputPortLocator> target_input_ids(input_ids.begin(),
@@ -1098,10 +1119,19 @@ bool Diagram<T>::DiagramHasDirectFeedthrough(int input_port, int output_port)
   active_set.insert(output_port_ids_[output_port]);
   while (!active_set.empty()) {
     const OutputPortLocator current_output_id = *active_set.begin();
-    size_t removed_count = active_set.erase(current_output_id);
+    const size_t removed_count = active_set.erase(current_output_id);
     DRAKE_ASSERT(removed_count == 1);
-    const System<T>* sys = current_output_id.first;
-    for (const auto& [sys_input, sys_output] : sys->GetDirectFeedthroughs()) {
+    const System<T>* const sys = current_output_id.first;
+    auto memoized_feedthroughs = memoize->find(sys);
+    if (memoized_feedthroughs == memoize->end()) {
+      bool inserted{};
+      std::tie(memoized_feedthroughs, inserted) =
+          memoize->emplace(sys, sys->GetDirectFeedthroughs());
+      DRAKE_ASSERT(inserted);
+    }
+    const std::multimap<int, int>& sys_feedthroughs =
+        memoized_feedthroughs->second;
+    for (const auto& [sys_input, sys_output] : sys_feedthroughs) {
       if (sys_output == current_output_id.second) {
         const InputPortLocator curr_input_id(sys, sys_input);
         if (target_input_ids.count(curr_input_id)) {
@@ -1191,7 +1221,7 @@ void Diagram<T>::DispatchDiscreteVariableUpdateHandler(
       DiscreteValues<T>& subdiscrete =
           diagram_discrete->get_mutable_subdiscrete(i);
 
-      registered_systems_[i]->CalcDiscreteVariableUpdates(
+      registered_systems_[i]->CalcDiscreteVariableUpdate(
           subcontext, subevents, &subdiscrete);
     }
   }
@@ -1378,13 +1408,16 @@ Diagram<T>::ConvertScalarType() const {
 
 template <typename T>
 std::map<PeriodicEventData, std::vector<const Event<T>*>,
-    PeriodicEventDataComparator> Diagram<T>::DoGetPeriodicEvents() const {
-  std::map<PeriodicEventData,
-      std::vector<const Event<T>*>,
-      PeriodicEventDataComparator> periodic_events_map;
+         PeriodicEventDataComparator>
+Diagram<T>::DoMapPeriodicEventsByTiming(const Context<T>& context) const {
+  std::map<PeriodicEventData, std::vector<const Event<T>*>,
+           PeriodicEventDataComparator>
+      periodic_events_map;
 
   for (int i = 0; i < num_subsystems(); ++i) {
-    auto sub_map = registered_systems_[i]->GetPeriodicEvents();
+    const System<T>& sub_system = *registered_systems_[i];
+    const Context<T>& sub_context = GetSubsystemContext(sub_system, context);
+    auto sub_map = sub_system.MapPeriodicEventsByTiming(&sub_context);
     for (const auto& sub_attr_events : sub_map) {
       const auto& sub_vec = sub_attr_events.second;
       auto& vec = periodic_events_map[sub_attr_events.first];
@@ -1393,6 +1426,48 @@ std::map<PeriodicEventData, std::vector<const Event<T>*>,
   }
 
   return periodic_events_map;
+}
+
+// Strategy:
+// For each subsystem, obtain its set of uniquely-timed periodic discrete
+// updates (if any) in an EventCollection. The first of these sets the timing;
+// all others must have the same timing. Once the full collection has been
+// assembled, we can use CalcDiscreteVariableUpdate() to get the result.
+// See the LeafSystem implementation of this virtual for clarification.
+template <typename T>
+void Diagram<T>::DoFindUniquePeriodicDiscreteUpdatesOrThrow(
+    const char* api_name, const Context<T>& context,
+    std::optional<PeriodicEventData>* timing,
+    EventCollection<DiscreteUpdateEvent<T>>* events) const {
+  auto& diagram_collection =
+      dynamic_cast<DiagramEventCollection<DiscreteUpdateEvent<T>>&>(*events);
+
+  for (int i = 0; i < num_subsystems(); ++i) {
+    const System<T>& sub_system = *registered_systems_[i];
+    const Context<T>& sub_context = GetSubsystemContext(sub_system, context);
+    EventCollection<DiscreteUpdateEvent<T>>& sub_collection =
+        diagram_collection.get_mutable_subevent_collection(i);
+    System<T>::FindUniquePeriodicDiscreteUpdatesOrThrow(
+        api_name, sub_system, sub_context, &*timing, &sub_collection);
+  }
+}
+
+template <typename T>
+void Diagram<T>::DoGetPeriodicEvents(
+    const Context<T>& context,
+    CompositeEventCollection<T>* event_info) const {
+  auto diagram_context = dynamic_cast<const DiagramContext<T>*>(&context);
+  auto info = dynamic_cast<DiagramCompositeEventCollection<T>*>(event_info);
+  DRAKE_DEMAND(diagram_context != nullptr);
+  DRAKE_DEMAND(info != nullptr);
+
+  for (SubsystemIndex i(0); i < num_subsystems(); ++i) {
+    const Context<T>& subcontext = diagram_context->GetSubsystemContext(i);
+    CompositeEventCollection<T>& subinfo =
+        info->get_mutable_subevent_collection(i);
+
+    registered_systems_[i]->GetPeriodicEvents(subcontext, &subinfo);
+  }
 }
 
 template <typename T>

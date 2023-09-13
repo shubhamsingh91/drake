@@ -97,12 +97,15 @@ DEFINE_string(
     save_dir, "",
     "If not empty, the rendered images will be saved to this directory. "
     "Otherwise, no files will be saved.");
-DEFINE_string(
-    server_base_url, RenderEngineGltfClientParams{}.base_url,
-    "The base_url for the render server.");
-DEFINE_string(
-    server_render_endpoint, RenderEngineGltfClientParams{}.render_endpoint,
-    "The render_endpoint for the render server.");
+DEFINE_string(server_base_url, RenderEngineGltfClientParams{}.base_url,
+              "The base_url for the render server.");
+DEFINE_string(server_render_endpoint,
+              RenderEngineGltfClientParams{}.render_endpoint,
+              "The render_endpoint for the render server.");
+DEFINE_bool(
+    cleanup, RenderEngineGltfClientParams{}.cleanup,
+    "Whether the client should cleanup files generated or retrieved from the "
+    "server.");
 
 static bool valid_render_engine(const char* flagname, const std::string& val) {
   if (val == "vtk")
@@ -162,13 +165,12 @@ RigidTransformd ParseCameraPose(const std::string& input_str) {
 // Validates `save_dir` and determines whether image saving will be enabled.
 // Throws if an non-empty but invalid directory is supplied.
 bool IsValidSaveDirectory(const std::string& save_dir) {
-  if (save_dir.empty())
-    return false;
+  if (save_dir.empty()) return false;
 
   if (!std::filesystem::exists(save_dir) ||
       !std::filesystem::is_directory(save_dir)) {
-    throw std::logic_error(fmt::format(
-        "Provided save_dir {} is invalid", save_dir));
+    throw std::logic_error(
+        fmt::format("Provided save_dir {} is invalid", save_dir));
   }
   return true;
 }
@@ -180,15 +182,19 @@ int DoMain() {
   auto [plant, scene_graph] =
       multibody::AddMultibodyPlantSceneGraph(&builder, 0.0);
 
+  // Log debug messages and set `params.verbose` to true if `cleanup=false`.
+  if (!FLAGS_cleanup) logging::set_log_level("debug");
+
   const std::string renderer_name("renderer");
   if (FLAGS_render_engine == "vtk") {
-    scene_graph.AddRenderer(renderer_name, geometry::MakeRenderEngineVtk({}));
+    scene_graph.AddRenderer(renderer_name, MakeRenderEngineVtk({}));
   } else {  // FLAGS_render_engine == "client"
     RenderEngineGltfClientParams params;
     params.base_url = FLAGS_server_base_url;
     params.render_endpoint = FLAGS_server_render_endpoint;
-    scene_graph.AddRenderer(renderer_name,
-                            geometry::MakeRenderEngineGltfClient(params));
+    params.cleanup = FLAGS_cleanup;
+    params.verbose = !FLAGS_cleanup;
+    scene_graph.AddRenderer(renderer_name, MakeRenderEngineGltfClient(params));
   }
 
   // We assume the example sdf contains a body called "base_link_mustard".  We
@@ -196,10 +202,8 @@ int DoMain() {
   // we don't want to have to wait for gravity to take effect to observe a
   // difference in position.
   Parser parser{&plant};
-  parser.AddModelFromFile(
-      FindResourceOrThrow(
-          "drake/geometry/render_gltf_client/test/example_scene.sdf"),
-      "example_scene");
+  parser.AddModels(FindResourceOrThrow(
+      "drake/geometry/render_gltf_client/test/example_scene.sdf"));
 
   DrakeLcm lcm;
   DrakeVisualizerd::AddToBuilder(&builder, scene_graph, &lcm);
@@ -214,7 +218,7 @@ int DoMain() {
   builder.Connect(scene_graph.get_query_output_port(),
                   camera->query_object_input_port());
 
-  // Broadcast images via LCM for visualization (via drake visualizer).
+  // Broadcast images via LCM for visualization (requires #18862 to see them).
   const double image_publish_period = 1. / FLAGS_render_fps;
   ImageToLcmImageArrayT* image_to_lcm_image_array =
       builder.template AddSystem<ImageToLcmImageArrayT>();
@@ -236,8 +240,8 @@ int DoMain() {
   }
 
   const std::string filename =
-      (std::filesystem::path(FLAGS_save_dir) / "{image_type}_{count:03}").
-          string();
+      (std::filesystem::path(FLAGS_save_dir) / "{image_type}_{count:03}")
+          .string();
 
   if (FLAGS_color) {
     const auto& port =

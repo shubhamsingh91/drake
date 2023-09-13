@@ -3,13 +3,14 @@
 #include <fcl/fcl.h>
 
 #include "drake/common/drake_assert.h"
+#include "drake/common/drake_export.h"
 #include "drake/geometry/geometry_ids.h"
 #include "drake/geometry/proximity/collision_filter.h"
 
 namespace drake {
 namespace geometry {
 namespace internal {
-namespace has_collisions {
+namespace has_collisions DRAKE_NO_EXPORT {
 
 /* Supporting data for the collisions exist callback (see Callback below).
    It includes:
@@ -45,10 +46,11 @@ struct CallbackData {
           process early.
   */
 bool Callback(fcl::CollisionObjectd* object_A_ptr,
-              fcl::CollisionObjectd* object_B_ptr,
-              void* callback_data);
+              fcl::CollisionObjectd* object_B_ptr, void* callback_data);
 
+// clang-format off
 }  // namespace has_collisions
+// clang-format on
 }  // namespace internal
 }  // namespace geometry
 }  // namespace drake

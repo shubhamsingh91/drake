@@ -20,7 +20,6 @@ using multibody::MultibodyPlant;
 using multibody::Parser;
 using multibody::RigidBody;
 using multibody::SpatialInertia;
-using multibody::parsing::GetScopedFrameName;
 using multibody::parsing::ModelInstanceInfo;
 using systems::Context;
 
@@ -28,11 +27,13 @@ namespace {
 
 bool AreFramesWelded(const MultibodyPlant<double>& plant,
                      const Frame<double>& A, const Frame<double>& B) {
-  if (&A.body() == &B.body())
+  if (&A.body() == &B.body()) {
     return true;
+  }
   for (const auto* body : plant.GetBodiesWeldedTo(A.body())) {
-    if (body == &B.body())
+    if (body == &B.body()) {
       return true;
+    }
   }
   return false;
 }
@@ -53,8 +54,9 @@ std::unique_ptr<MultibodyPlant<double>> MakeArmControllerModel(
 
   auto plant = std::make_unique<MultibodyPlant<double>>(0.0);
   Parser parser(plant.get());
-  const ModelInstanceIndex arm_model_index =
-      parser.AddModelFromFile(arm_info.model_path, arm_info.model_name);
+  const auto models = parser.AddModels(arm_info.model_path);
+  DRAKE_DEMAND(models.size() == 1);
+  const ModelInstanceIndex arm_model_index = models[0];
   // The arm must be anchored to the world.
   const Frame<double>& sim_arm_child_frame = simulation_plant.GetFrameByName(
       arm_info.child_frame_name, sim_arm_model_index);
@@ -126,7 +128,7 @@ std::unique_ptr<MultibodyPlant<double>> MakeArmControllerModel(
     const Frame<double>& gripper_grand_parent_frame =
         plant->GetFrameByName(gripper_grand_parent_frame_name, arm_model_index);
     log()->trace("    gripper_grand_parent_frame: {}",
-                 GetScopedFrameName(*plant, gripper_grand_parent_frame));
+                 gripper_grand_parent_frame.scoped_name());
     const RigidTransform<double> gripper_X_PpP =
         sim_gripper_parent_frame.GetFixedPoseInBodyFrame();
     const RigidTransform<double> gripper_X_PpC =

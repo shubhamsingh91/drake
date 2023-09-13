@@ -8,8 +8,8 @@
 #include "drake/common/drake_copyable.h"
 #include "drake/common/eigen_types.h"
 #include "drake/lcmt_robot_plan.hpp"
-#include "drake/manipulation/planner/constraint_relaxing_ik.h"
 #include "drake/math/rigid_transform.h"
+#include "drake/multibody/inverse_kinematics/constraint_relaxing_ik.h"
 #include "drake/multibody/plant/multibody_plant.h"
 
 namespace drake {
@@ -41,17 +41,15 @@ class MoveIkDemoBase {
   ///
   /// @param print_interval Print an updated end effector position every N
   /// calls to HandleStatus.
-  MoveIkDemoBase(std::string robot_description,
-                 std::string base_link,
-                 std::string ik_link,
-                 int print_interval);
+  MoveIkDemoBase(std::string robot_description, std::string base_link,
+                 std::string ik_link, int print_interval);
 
   ~MoveIkDemoBase();
 
   /// @return a reference to the internal plant.
   const multibody::MultibodyPlant<double>& plant() const { return plant_; }
 
-  /// Set the joint velocity limts when building the plan.  The default
+  /// Set the joint velocity limits when building the plan.  The default
   /// velocity limits from the robot description will be used if this isn't
   /// set.
   ///
@@ -71,8 +69,7 @@ class MoveIkDemoBase {
   /// nullopt if planning failed.
   ///
   /// @throw If HandleStatus has not been invoked.
-  std::optional<lcmt_robot_plan> Plan(
-      const math::RigidTransformd& goal_pose);
+  std::optional<lcmt_robot_plan> Plan(const math::RigidTransformd& goal_pose);
 
   /// Returns a count of how many times `HandleStatus` has been called.
   int status_count() const { return status_count_; }
@@ -86,7 +83,7 @@ class MoveIkDemoBase {
   std::vector<std::string> joint_names_;
   Eigen::VectorXd joint_velocity_limits_;
   int status_count_{0};
-  planner::ConstraintRelaxingIk constraint_relaxing_ik_;
+  multibody::ConstraintRelaxingIk constraint_relaxing_ik_;
 };
 
 }  // namespace util

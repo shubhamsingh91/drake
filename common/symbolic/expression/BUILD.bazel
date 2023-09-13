@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load(
     "@drake//tools/skylark:drake_cc.bzl",
     "drake_cc_googletest",
@@ -54,6 +52,8 @@ drake_cc_library(
         "//common:random",
     ],
     deps = [
+        "@abseil_cpp_internal//absl/container:flat_hash_set",
+        "@abseil_cpp_internal//absl/container:inlined_vector",
         "@fmt",
     ],
 )
@@ -173,6 +173,22 @@ drake_cc_googletest(
     name = "mixing_scalar_types_test",
     deps = [
         ":expression",
+        "//common/test_utilities:limit_malloc",
+    ],
+)
+
+drake_cc_googletest(
+    name = "ostream_test",
+    deps = [
+        ":expression",
+    ],
+)
+
+drake_cc_googletest(
+    name = "sparse_test",
+    deps = [
+        ":expression",
+        "//common/test_utilities:symbolic_test_util",
     ],
 )
 

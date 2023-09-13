@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <vector>
 
 #include "drake/systems/controllers/zmp_planner.h"
@@ -9,10 +10,10 @@ namespace systems {
 namespace controllers {
 
 /** A structure for storing trajectories from simulating a linear inverted
- * pendulum model (LIPM) using the policy from a ZMPPlanner.
+ * pendulum model (LIPM) using the policy from a ZmpPlanner.
  */
-struct ZMPTestTraj {
-  explicit ZMPTestTraj(int N) {
+struct ZmpTestTraj {
+  explicit ZmpTestTraj(int N) {
     time.resize(N);
     nominal_com.resize(6, N);
     desired_zmp.resize(2, N);
@@ -38,9 +39,9 @@ struct ZMPTestTraj {
  * @param dt, Time step.
  * @param extra_time_at_the_end, Simulate `extra_time_at_the_end` seconds past
  * the end of the trajectories for convergence.
- * @return ZMPTestTraj that contains all the information.
+ * @return ZmpTestTraj that contains all the information.
  */
-ZMPTestTraj SimulateZMPPolicy(const ZMPPlanner& zmp_planner,
+ZmpTestTraj SimulateZmpPolicy(const ZmpPlanner& zmp_planner,
                               const Eigen::Vector4d& x0, double dt,
                               double extra_time_at_the_end);
 
@@ -63,7 +64,7 @@ ZMPTestTraj SimulateZMPPolicy(const ZMPPlanner& zmp_planner,
  * @param single_support_duration, Duration for single support.
  * @return Three trajectories: 0 is zero-order-hold, 1 is linear, 2 is cubic.
  */
-std::vector<trajectories::PiecewisePolynomial<double>> GenerateDesiredZMPTrajs(
+std::vector<trajectories::PiecewisePolynomial<double>> GenerateDesiredZmpTrajs(
     const std::vector<Eigen::Vector2d>& footsteps,
     double double_support_duration, double single_support_duration);
 

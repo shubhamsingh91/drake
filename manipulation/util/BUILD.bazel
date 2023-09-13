@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load(
     "@drake//tools/skylark:drake_cc.bzl",
     "drake_cc_binary",
@@ -34,6 +32,7 @@ drake_cc_package_library(
         ":make_arm_controller_model",
         ":move_ik_demo_base",
         ":moving_average_filter",
+        ":robot_plan_interpolator",
         ":robot_plan_utils",
         ":zero_force_driver",
         ":zero_force_driver_functions",
@@ -51,7 +50,7 @@ drake_cc_library(
     deps = [
         ":robot_plan_utils",
         "//lcmtypes:robot_plan",
-        "//manipulation/planner:constraint_relaxing_ik",
+        "//multibody/inverse_kinematics:constraint_relaxing_ik",
         "//multibody/parsing",
         "//multibody/plant",
     ],
@@ -120,14 +119,23 @@ drake_cc_library(
     ],
 )
 
+drake_cc_library(
+    name = "robot_plan_interpolator",
+    srcs = ["robot_plan_interpolator.cc"],
+    hdrs = ["robot_plan_interpolator.h"],
+    deps = [
+        "//common/trajectories:piecewise_polynomial",
+        "//lcmtypes:robot_plan",
+        "//multibody/parsing",
+        "//systems/framework:leaf_system",
+    ],
+)
+
 drake_py_binary(
     name = "show_model",
     srcs = ["show_model.py"],
     data = ["//manipulation/models/jaco_description:models"],
-    deps = [
-        ":module_py",
-        "//bindings/pydrake",
-    ],
+    deps = ["//bindings/pydrake"],
 )
 
 drake_py_binary(
@@ -143,7 +151,8 @@ drake_cc_binary(
         "//common:add_text_logging_gflags",
         "//common:essential",
         "@gflags",
-        "@vtk//:vtkIOGeometry",
+        "@vtk_internal//:vtkFiltersCore",
+        "@vtk_internal//:vtkIOGeometry",
     ],
 )
 
@@ -185,7 +194,7 @@ drake_cc_googletest(
 drake_cc_googletest(
     name = "zero_force_driver_functions_test",
     data = [
-        "//manipulation/models/wsg_50_description:prod_models",
+        "//manipulation/models/wsg_50_description:models",
     ],
     deps = [
         ":zero_force_driver_functions",
@@ -214,6 +223,19 @@ drake_cc_googletest(
     ],
 )
 
+drake_cc_googletest(
+    name = "robot_plan_interpolator_test",
+    data = [
+        "//examples/kuka_iiwa_arm:models",
+        "//manipulation/models/iiwa_description:models",
+    ],
+    deps = [
+        ":robot_plan_interpolator",
+        "//common:find_resource",
+        "//systems/framework",
+    ],
+)
+
 filegroup(
     name = "test_directives",
     testonly = True,
@@ -224,22 +246,10 @@ filegroup(
 
 filegroup(
     name = "test_models",
+    testonly = True,
     srcs = [
         ":test/simple_nested_model.sdf",
         ":test/simple_world_with_two_models.sdf",
-    ],
-)
-
-drake_py_unittest(
-    name = "show_model_test",
-    data = [
-        ":show_model",
-        ":test_models",
-        "//multibody/benchmarks/acrobot:models",
-    ],
-    deps = [
-        ":show_model",
-        "@bazel_tools//tools/python/runfiles",
     ],
 )
 

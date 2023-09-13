@@ -31,9 +31,8 @@ output_ports:
 The output port is of size `plant.num_positions()`, and the order of its
 elements matches `plant.GetPositions()`.
 
-At the moment, any positions that are not associated with joints (e.g.,
-floating-base "mobilizers") are held fixed at a nominal value.  In the future,
-this class might add in sliders for a floating base as well.
+Only positions associated with joints get sliders. All other positions are fixed
+at nominal values.
 
 Beware that the output port of this system always provides the sliders' current
 values, even if evaluated by multiple different downstream input ports during a
@@ -113,18 +112,24 @@ class JointSliders final : public systems::LeafSystem<T> {
   will return promptly, without waiting for the timeout. When no timeout is
   given, this function will block indefinitely.
 
-  @param a keycode that will be assigned to the "Stop" button.  Setting this to
-  the empty string means no keycode. See Meschat::AddButton for details.
-  @default "Escape".
+  @param stop_button_keycode a keycode that will be assigned to the "Stop"
+  button.  Setting this to the empty string means no keycode. See
+  Meshcat::AddButton for details. @default "Escape".
+
+  @returns the output of plant.GetPositions() given the most recently published
+  value of the plant Context.
 
   @pre `diagram` must be a top-level (i.e., "root") diagram.
-  @pre `diagram` must contain this JointSliders system.
   @pre `diagram` must contain the `plant` that was passed into this
   JointSliders system's constructor.
+  @pre `diagram` must contain this JointSliders system, however the output of
+  these sliders need not be connected (even indirectly) to any `plant` input
+  port. The positions of the `plant` will be updated directly using a call to
+  `plant.SetPositions(...)` when the slider values change.
   */
-  void Run(const systems::Diagram<T>& diagram,
-           std::optional<double> timeout = std::nullopt,
-           std::string stop_button_keycode = "Escape") const;
+  Eigen::VectorXd Run(const systems::Diagram<T>& diagram,
+                      std::optional<double> timeout = std::nullopt,
+                      std::string stop_button_keycode = "Escape") const;
 
   /** Sets all robot positions (corresponding to joint positions and potentially
   positions not associated with any joint) to the values in `q`.  The meshcat
@@ -144,7 +149,9 @@ class JointSliders final : public systems::LeafSystem<T> {
   std::shared_ptr<geometry::Meshcat> meshcat_;
   const MultibodyPlant<T>* const plant_;
   const std::map<int, std::string> position_names_;
-  Eigen::VectorXd initial_value_;
+  /* The nominal values for all positions; positions with sliders will not use
+   their nominal value except for defining the slider's initial value. */
+  Eigen::VectorXd nominal_value_;
   std::atomic<bool> is_registered_;
 };
 

@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "drake/geometry/geometry_roles.h"
@@ -39,6 +40,10 @@ By default, %MeshcatVisualizer visualizes geometries with the illustration role
 geometries with other roles. Only one role can be specified.  See
 DrakeVisualizer which uses the same mechanisms for more details.
 
+@warning MeshcatVisualizer does not support Context-per-thread parallelism.
+This is because of limitations in both Meshcat and MeshcatVisualizer.
+We may generalize this in the future if Meshcat limitations are removed.
+
 Instances of %MeshcatVisualizer created by scalar-conversion will publish to the
 same Meshcat instance.
 @tparam_nonsymbolic_scalar
@@ -64,7 +69,14 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   template <typename U>
   explicit MeshcatVisualizer(const MeshcatVisualizer<U>& other);
 
-  /** Calls Meschat::Delete(std::string path), with the path set to
+  /** Resets the realtime rate calculator. Calculation will resume on the next
+   periodic publish event. This is useful for correcting the realtime rate after
+   simulation is resumed from a paused state, etc. */
+  void ResetRealtimeRateCalculator() const {
+    realtime_rate_calculator_.Reset();
+  }
+
+  /** Calls Meshcat::Delete(std::string path), with the path set to
    MeshcatVisualizerParams::prefix.  Since this visualizer will only ever add
    geometry under this prefix, this will remove all geometry/transforms added
    by the visualizer, or by a previous instance of this visualizer using the
@@ -88,15 +100,11 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   @returns a mutable pointer to the current recording.  See
   get_mutable_recording().
   */
-  MeshcatAnimation* StartRecording(bool set_transforms_while_recording = true) {
-    recording_ = true;
-    set_transforms_while_recording_ = set_transforms_while_recording;
-    return get_mutable_recording();
-  }
+  MeshcatAnimation* StartRecording(bool set_transforms_while_recording = true);
 
   /** Sets a flag to pause/stop recording.  When stopped, publish events will
   not add frames to the animation. */
-  void StopRecording() { recording_ = false; }
+  void StopRecording();
 
   /** Sends the recording to Meshcat as an animation. The published animation
   only includes transforms and properties; the objects that they modify must be
@@ -117,8 +125,11 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   into the same animation.
 
   The MeshcatAnimation object will only remain valid for the lifetime of `this`
-  or until DeleteRecording() is called. */
-  MeshcatAnimation* get_mutable_recording() { return animation_.get(); }
+  or until DeleteRecording() is called.
+
+  @throws std::exception if meshcat does not have a recording.
+  */
+  MeshcatAnimation* get_mutable_recording();
 
   /** Returns the QueryObject-valued input port. It should be connected to
    SceneGraph's QueryObject-valued output port. Failure to do so will cause a
@@ -130,14 +141,20 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   /** Adds a MeshcatVisualizer and connects it to the given SceneGraph's
    QueryObject-valued output port. See
    MeshcatVisualizer::MeshcatVisualizer(MeshcatVisualizer*,
-   MeshcatVisualizerParams) for details. */
+   MeshcatVisualizerParams) for details.
+   The %MeshcatVisualizer's name (see systems::SystemBase::set_name) will be set
+   to a sensible default value, unless the default name was already in use by
+   another system. */
   static MeshcatVisualizer<T>& AddToBuilder(
       systems::DiagramBuilder<T>* builder, const SceneGraph<T>& scene_graph,
       std::shared_ptr<Meshcat> meshcat, MeshcatVisualizerParams params = {});
 
-  /** Adds a MescatVisualizer and connects it to the given QueryObject-valued
+  /** Adds a MeshcatVisualizer and connects it to the given QueryObject-valued
    output port. See MeshcatVisualizer::MeshcatVisualizer(MeshcatVisualizer*,
-   MeshcatVisualizerParams) for details. */
+   MeshcatVisualizerParams) for details.
+   The %MeshcatVisualizer's name (see systems::SystemBase::set_name) will be set
+   to a sensible default value, unless the default name was already in use by
+   another system. */
   static MeshcatVisualizer<T>& AddToBuilder(
       systems::DiagramBuilder<T>* builder,
       const systems::OutputPort<T>& query_object_port,
@@ -161,6 +178,12 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
   void SetTransforms(const systems::Context<T>& context,
                      const QueryObject<T>& query_object) const;
 
+  /* Makes calls to Meshcat::SetProperty to update geometry alphas. During
+   initialization, it is necessary to explicitly configure each geometry
+   individually due to race conditions between declaring the geometry and
+   configuring it. Once the geometry is loaded, they can be updated en masse. */
+  void SetAlphas(bool initializing) const;
+
   /* Handles the initialization event. */
   systems::EventStatus OnInitialization(const systems::Context<T>&) const;
 
@@ -181,7 +204,7 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
    before SetTransforms. This is intended to track the information in meshcat_,
    and is therefore also a mutable member variable (instead of declared state).
    */
-  mutable GeometryVersion version_;
+  mutable std::optional<GeometryVersion> version_;
 
   /* A store of the dynamic frames and their path. It is coupled with the
    version_.  This is only for efficiency; it does not represent undeclared
@@ -192,32 +215,20 @@ class MeshcatVisualizer final : public systems::LeafSystem<T> {
    new geometry version appears that does not contain them. */
   mutable std::map<GeometryId, std::string> geometries_{};
 
+  /* The last alpha value applied to the objects in geometries_; used to avoid
+   unnecessary updates to geometry opacities. */
+  mutable double alpha_value_{1.0};
+
   /* The parameters for the visualizer.  */
   MeshcatVisualizerParams params_;
-
-  /* TODO(russt): Consider moving the MeshcatAnimation into the Context.
-  Full-fledged support for multi-threaded recording requires some additional
-  design thinking and may require either moving the prefix into the Context as
-  well (e.g. multiple copies of the MeshcatVisualizer publish to the same
-  Meshcat, but on different prefixes) or support for SetObject in
-  MeshcatAnimation (each animation keeps track of the objects, instead of the
-  shared Meshcat instance keeping track).  We may also want to allow users to
-  disable the default publishing behavior (to record without visualizing
-  immediately). */
-
-  /* MeshcatAnimation object for recording. It must be mutable so that frames
-   * can be added to it during Publish events. */
-  mutable std::unique_ptr<MeshcatAnimation> animation_;
-
-  /* Recording status.  True means that each new Publish event will record a
-  frame in the animation. */
-  bool recording_{false};
-  bool set_transforms_while_recording_{true};
 
   /* TODO(#16486): ideally this mutable state will go away once it is safe to
   run Meshcat multithreaded */
   mutable systems::internal::InstantaneousRealtimeRateCalculator
       realtime_rate_calculator_{};
+
+  /* The name of the alpha slider, if any. */
+  std::string alpha_slider_name_;
 };
 
 /** A convenient alias for the MeshcatVisualizer class when using the `double`

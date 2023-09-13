@@ -48,12 +48,32 @@ SolutionResult SolveUnconstrainedQP(const Eigen::Ref<const Eigen::MatrixXd>& G,
     // 2. Otherwise, if G * x = -c does not have a solution, or G is not
     //    positive semidefinite, then the problem is unbounded.
 
-    // We first check if G is positive semidefinite, by doing an LDLT
-    // decomposition.
+    // We check if G is positive semidefinite.
+    bool is_G_psd = false;
+    // We first use LDLT (which is fast) decomposition. But we found that LDLT
+    // sometimes fails, so we then fall back to Eigen value decomposition.
     Eigen::LDLT<Eigen::MatrixXd> ldlt(G);
+    bool use_ldlt = false;
+
     if (ldlt.info() == Eigen::Success && ldlt.isPositive()) {
+      is_G_psd = true;
+      use_ldlt = true;
+    } else {
+      Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(G);
+      if (es.info() == Eigen::Success &&
+          (es.eigenvalues().array() >= -feasibility_tol).all()) {
+        is_G_psd = true;
+        use_ldlt = false;
+      }
+    }
+    if (is_G_psd) {
       // G is positive semidefinite.
-      *x = ldlt.solve(-c);
+      if (use_ldlt) {
+        *x = ldlt.solve(-c);
+      } else {
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(G);
+        *x = qr.solve(-c);
+      }
       if ((G * (*x)).isApprox(-c, feasibility_tol)) {
         return SolutionResult::kSolutionFound;
       }
@@ -103,14 +123,13 @@ void SetDualSolutions(const MathematicalProgram& prog,
 }  // namespace
 
 EqualityConstrainedQPSolver::EqualityConstrainedQPSolver()
-    : SolverBase(&id, &is_available, &is_enabled,
+    : SolverBase(id(), &is_available, &is_enabled,
                  &ProgramAttributesSatisfied) {}
 
 EqualityConstrainedQPSolver::~EqualityConstrainedQPSolver() = default;
 
 void EqualityConstrainedQPSolver::DoSolve(
-    const MathematicalProgram& prog,
-    const Eigen::VectorXd& initial_guess,
+    const MathematicalProgram& prog, const Eigen::VectorXd& initial_guess,
     const SolverOptions& merged_options,
     MathematicalProgramResult* result) const {
   if (!prog.GetVariableScaling().empty()) {
@@ -189,7 +208,7 @@ void EqualityConstrainedQPSolver::DoSolve(
   }
 
   Eigen::VectorXd x{};
-  SolutionResult solution_result{SolutionResult::kUnknownError};
+  SolutionResult solution_result{SolutionResult::kSolverSpecificError};
   // lambda stores the dual variable solutions.
   Eigen::VectorXd lambda(num_constraints);
   if (num_constraints > 0) {
@@ -323,13 +342,17 @@ std::string EqualityConstrainedQPSolver::FeasibilityTolOptionName() {
 }
 
 SolverId EqualityConstrainedQPSolver::id() {
-  static const never_destroyed<SolverId> singleton{"Equality constrained QP"};
+  static const never_destroyed<SolverId> singleton{"EqConstrainedQP"};
   return singleton.access();
 }
 
-bool EqualityConstrainedQPSolver::is_available() { return true; }
+bool EqualityConstrainedQPSolver::is_available() {
+  return true;
+}
 
-bool EqualityConstrainedQPSolver::is_enabled() { return true; }
+bool EqualityConstrainedQPSolver::is_enabled() {
+  return true;
+}
 
 bool EqualityConstrainedQPSolver::ProgramAttributesSatisfied(
     const MathematicalProgram& prog) {

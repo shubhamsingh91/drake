@@ -1,7 +1,6 @@
 #include <string>
 
 #include "pybind11/eval.h"
-#include "pybind11/pybind11.h"
 
 #include "drake/bindings/pydrake/common/cpp_param_pybind.h"
 #include "drake/bindings/pydrake/common/value_pybind.h"
@@ -15,15 +14,21 @@ namespace {
 
 // Local specialization of C++ implementation for `Value[object]`
 // instantiation.
+// TODO(eric.cousineau): Per discussion in #18655, should consider enforcing
+// value semantics (always deepcopy, even on `set_value()`).
 class PyObjectValue : public drake::Value<Object> {
  public:
   using Base = Value<Object>;
   using Base::Base;
+
   // Override `Clone()` to perform a deep copy on the object.
   std::unique_ptr<AbstractValue> Clone() const override {
-    py::object py_copy = py::module::import("copy").attr("deepcopy");
-    py::object copied = py_copy(get_value().to_pyobject<py::object>());
-    return std::make_unique<PyObjectValue>(Object::from_pyobject(copied));
+    return std::make_unique<PyObjectValue>(get_value().Clone());
+  }
+
+  // Override `SetFrom()` to perform a deep copy on the object.
+  void SetFrom(const AbstractValue& other) override {
+    get_mutable_value() = other.get_value<Object>().Clone();
   }
 };
 
@@ -49,10 +54,13 @@ PYBIND11_MODULE(value, m) {
   auto abstract_stub = [](const std::string& method) {
     return [method](const AbstractValue* self, py::args, py::kwargs) {
       std::string type_name = NiceTypeName::Get(*self);
-      throw std::runtime_error(
-          "This derived class of `AbstractValue`, `" + type_name + "`, " +
-          "is not exposed to pybind11, so `" + method + "` cannot be " +
-          "called. See `AddValueInstantiation` for how to bind it.");
+      throw std::runtime_error(fmt::format(
+          "This C++ derived class of `AbstractValue`, `{}`, is not known to "
+          "Python, so `AbstractValue.{}` cannot be called. One likely source "
+          "of this problem is a missing `import` statement. Or, if the binding "
+          "truly doesn't exist in any module, see `AddValueInstantiation` for "
+          "how to bind it.",
+          type_name, method));
     };
   };
 
@@ -70,7 +78,6 @@ PYBIND11_MODULE(value, m) {
   // Add value instantiations for nominal data types.
   AddPrimitiveValueInstantiations(m);
 
-  // This adds Pythonic AbstractValue.Make.
   ExecuteExtraPythonCode(m);
 }
 

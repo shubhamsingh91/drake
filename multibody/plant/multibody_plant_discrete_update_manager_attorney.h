@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -42,44 +43,39 @@ class MultibodyPlantDiscreteUpdateManagerAttorney {
                                     std::move(prerequisites_of_calc));
   }
 
-  static const contact_solvers::internal::ContactSolverResults<T>&
-  EvalContactSolverResults(const MultibodyPlant<T>& plant,
-                           const systems::Context<T>& context) {
-    return plant.EvalContactSolverResults(context);
-  }
-
-  static const internal::ContactJacobians<T>& EvalContactJacobians(
-      const MultibodyPlant<T>& plant, const systems::Context<T>& context) {
-    return plant.EvalContactJacobians(context);
-  }
-
   static const std::vector<geometry::ContactSurface<T>>& EvalContactSurfaces(
       const MultibodyPlant<T>& plant, const systems::Context<T>& context) {
     return plant.EvalContactSurfaces(context);
   }
 
-  static void AddInForcesFromInputPorts(const MultibodyPlant<T>& plant,
-                                        const systems::Context<T>& context,
-                                        MultibodyForces<T>* forces) {
+  static void AddJointLimitsPenaltyForces(const MultibodyPlant<T>& plant,
+                                          const systems::Context<T>& context,
+                                          MultibodyForces<T>* forces) {
+    plant.AddJointLimitsPenaltyForces(context, forces);
+  }
+
+  static void AddInForcesFromInputPorts(
+      const MultibodyPlant<T>& plant, const drake::systems::Context<T>& context,
+      MultibodyForces<T>* forces) {
     plant.AddInForcesFromInputPorts(context, forces);
-  }
-
-  static void CalcNonContactForces(const MultibodyPlant<T>& plant,
-                            const drake::systems::Context<T>& context,
-                            MultibodyForces<T>* forces) {
-    return plant.CalcNonContactForces(context, true /* is discrete */, forces);
-  }
-
-  [[nodiscard]] static ScopeExit ThrowIfNonContactForceInProgress(
-      const MultibodyPlant<T>& plant,
-      const drake::systems::Context<T>& context) {
-    return plant.ThrowIfNonContactForceInProgress(context);
   }
 
   static void CalcForceElementsContribution(
       const MultibodyPlant<T>& plant, const drake::systems::Context<T>& context,
       MultibodyForces<T>* forces) {
     return plant.CalcForceElementsContribution(context, forces);
+  }
+
+  static VectorX<T> AssembleActuationInput(
+      const MultibodyPlant<T>& plant,
+      const systems::Context<T>& context) {
+    return plant.AssembleActuationInput(context);
+  }
+
+  static VectorX<T> AssembleDesiredStateInput(
+      const MultibodyPlant<T>& plant,
+      const systems::Context<T>& context) {
+    return plant.AssembleDesiredStateInput(context);
   }
 
   // TODO(xuchenhan-tri): Remove this when SceneGraph takes control of all
@@ -104,9 +100,37 @@ class MultibodyPlantDiscreteUpdateManagerAttorney {
     return plant.geometry_id_to_body_index_;
   }
 
-  static const std::vector<internal::CouplerConstraintSpecs<T>>&
+  static const internal::JointLockingCacheData<T>&
+  EvalJointLockingCache(const MultibodyPlant<T>& plant,
+                                       const systems::Context<T>& context) {
+    return plant.EvalJointLockingCache(context);
+  }
+
+  static const std::map<MultibodyConstraintId, internal::CouplerConstraintSpec>&
   coupler_constraints_specs(const MultibodyPlant<T>& plant) {
     return plant.coupler_constraints_specs_;
+  }
+
+  static const std::map<MultibodyConstraintId,
+                        internal::DistanceConstraintSpec>&
+  distance_constraints_specs(const MultibodyPlant<T>& plant) {
+    return plant.distance_constraints_specs_;
+  }
+
+  static const std::map<MultibodyConstraintId, internal::BallConstraintSpec>&
+  ball_constraints_specs(const MultibodyPlant<T>& plant) {
+    return plant.ball_constraints_specs_;
+  }
+
+  static const std::map<MultibodyConstraintId, bool>&
+  GetConstraintActiveStatus(const systems::Context<T>& context,
+                               const MultibodyPlant<T>& plant) {
+    return plant.GetConstraintActiveStatus(context);
+  }
+
+  static BodyIndex FindBodyByGeometryId(const MultibodyPlant<T>& plant,
+                                        geometry::GeometryId geometry_id) {
+    return plant.FindBodyByGeometryId(geometry_id);
   }
 };
 }  // namespace internal

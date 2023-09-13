@@ -6,6 +6,7 @@
 
 #include "drake/common/copyable_unique_ptr.h"
 #include "drake/common/trajectories/piecewise_polynomial.h"
+#include "drake/systems/analysis/simulator_config.h"
 #include "drake/systems/framework/system.h"
 
 namespace drake {
@@ -75,6 +76,12 @@ struct FiniteHorizonLinearQuadraticRegulatorOptions {
   then you must also set a (positive definite and symmetric) Qf in this options
   struct. */
   bool use_square_root_method{false};
+
+  /**
+  For continuous-time dynamical systems, the Riccati equation is solved by the
+  Simulator (running backwards in time). Use this parameter to configure the
+  simulator (e.g. choose non-default integrator or integrator parameters). */
+  SimulatorConfig simulator_config{};
 };
 
 /**
@@ -135,7 +142,7 @@ values given by @p context.
 @param options is the optional FiniteHorizonLinearQuadraticRegulatorOptions.
 
 @pre @p system must be a System<double> with (only) n continuous state variables
-and m inputs.  It must be convertable to System<AutoDiffXd>.
+and m inputs.  It must be convertible to System<AutoDiffXd>.
 
 @note Support for difference-equation systems (@see
 System<T>::IsDifferenceEquationSystem()) by solving the differential Riccati

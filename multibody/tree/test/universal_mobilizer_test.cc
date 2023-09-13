@@ -9,6 +9,7 @@
 #include "drake/multibody/tree/multibody_tree-inl.h"
 #include "drake/multibody/tree/multibody_tree_system.h"
 #include "drake/multibody/tree/test/mobilizer_tester.h"
+#include "drake/multibody/tree/universal_joint.h"
 #include "drake/systems/framework/context.h"
 
 namespace drake {
@@ -32,9 +33,9 @@ class UniversalMobilizerTest : public MobilizerTester {
   // Creates a simple model consisting of a single body with a universal
   // mobilizer connecting it to the world.
   void SetUp() override {
-    mobilizer_ =
-        &AddMobilizerAndFinalize(std::make_unique<UniversalMobilizer<double>>(
-            tree().world_body().body_frame(), body_->body_frame()));
+    mobilizer_ = &AddJointAndFinalize<UniversalJoint, UniversalMobilizer>(
+        std::make_unique<UniversalJoint<double>>(
+            "joint0", tree().world_body().body_frame(), body_->body_frame()));
   }
 
   MatrixXd CalcHMatrix(const Vector2d angles) {
@@ -225,6 +226,8 @@ TEST_F(UniversalMobilizerTest, ProjectSpatialForce) {
 }
 
 TEST_F(UniversalMobilizerTest, MapVelocityToQDotAndBack) {
+  EXPECT_TRUE(mobilizer_->is_velocity_equal_to_qdot());
+
   Vector2d v(1.5, 2.5);
   Vector2d qdot;
   mobilizer_->MapVelocityToQDot(*context_, v, &qdot);
@@ -255,6 +258,43 @@ TEST_F(UniversalMobilizerTest, KinematicMapping) {
   EXPECT_EQ(Nplus, Matrix2d::Identity());
 }
 
+TEST_F(UniversalMobilizerTest, MapUsesN) {
+  // Set an arbitrary "non-zero" state.
+  const Vector2d some_values(1.5, 2.5);
+  mobilizer_->set_angles(context_.get(), some_values);
+
+  // Set arbitrary v and MapVelocityToQDot.
+  Vector2d v(3.5, 4.5);
+  Vector2d qdot;
+  mobilizer_->MapVelocityToQDot(*context_, v, &qdot);
+
+  // Compute N.
+  MatrixX<double> N(2, 2);
+  mobilizer_->CalcNMatrix(*context_, &N);
+
+  // Ensure N(q) is used in `q̇ = N(q)⋅v`
+  EXPECT_TRUE(
+      CompareMatrices(qdot, N * v, kTolerance, MatrixCompareType::relative));
+}
+
+TEST_F(UniversalMobilizerTest, MapUsesNplus) {
+  // Set an arbitrary "non-zero" state.
+  const Vector2d some_values(1.5, 2.5);
+  mobilizer_->set_angles(context_.get(), some_values);
+
+  // Set arbitrary qdot and MapQDotToVelocity.
+  Vector2d qdot(3.5, 4.5);
+  Vector2d v;
+  mobilizer_->MapQDotToVelocity(*context_, qdot, &v);
+
+  // Compute Nplus.
+  MatrixX<double> Nplus(2, 2);
+  mobilizer_->CalcNplusMatrix(*context_, &Nplus);
+
+  // Ensure N⁺(q) is used in `v = N⁺(q)⋅q̇`
+  EXPECT_TRUE(CompareMatrices(v, Nplus * qdot, kTolerance,
+                              MatrixCompareType::relative));
+}
 }  // namespace
 }  // namespace internal
 }  // namespace multibody

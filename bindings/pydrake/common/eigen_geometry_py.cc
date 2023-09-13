@@ -1,8 +1,6 @@
 #include <cmath>
 #include <stdexcept>
 
-#include "pybind11/pybind11.h"
-
 #include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/eigen_geometry_pybind.h"
@@ -86,8 +84,6 @@ void CheckSe3(const Isometry3<Expression>&) {}
 void CheckQuaternion(const Eigen::Quaternion<Expression>&) {}
 
 void CheckAngleAxis(const Eigen::AngleAxis<Expression>&) {}
-
-}  // namespace
 
 template <typename T>
 void DoScalarDependentDefinitions(py::module m, T) {
@@ -269,8 +265,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
         .def("__str__",
             [py_class_obj](const Class* self) {
               return py::str("{}(w={}, x={}, y={}, z={})")
-                  .format(py_class_obj.attr("__name__"), self->w(), self->x(),
-                      self->y(), self->z());
+                  .format(internal::PrettyClassName(py_class_obj), self->w(),
+                      self->x(), self->y(), self->z());
             })
         .def(
             "multiply",
@@ -388,8 +384,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
         .def("__str__",
             [py_class_obj](const Class* self) {
               return py::str("{}(angle={}, axis={})")
-                  .format(py_class_obj.attr("__name__"), self->angle(),
-                      self->axis());
+                  .format(internal::PrettyClassName(py_class_obj),
+                      self->angle(), self->axis());
             })
         .def(
             "multiply",
@@ -412,6 +408,8 @@ void DoScalarDependentDefinitions(py::module m, T) {
   }
 }
 
+}  // namespace
+
 PYBIND11_MODULE(eigen_geometry, m) {
   m.doc() = "Bindings for Eigen geometric types.";
 
@@ -419,6 +417,8 @@ PYBIND11_MODULE(eigen_geometry, m) {
   py::module::import("pydrake.symbolic");
   type_visit([m](auto dummy) { DoScalarDependentDefinitions(m, dummy); },
       CommonScalarPack{});
+
+  ExecuteExtraPythonCode(m);
 }
 
 }  // namespace pydrake

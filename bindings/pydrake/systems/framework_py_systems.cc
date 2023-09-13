@@ -1,10 +1,6 @@
 #include "drake/bindings/pydrake/systems/framework_py_systems.h"
 
-#include "pybind11/eigen.h"
 #include "pybind11/eval.h"
-#include "pybind11/functional.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 
 #include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
@@ -92,9 +88,9 @@ struct Impl {
     using Base::DeclareDiscreteState;
     using Base::DeclareInitializationEvent;
     using Base::DeclareNumericParameter;
-    using Base::DeclarePeriodicDiscreteUpdate;
+    using Base::DeclarePeriodicDiscreteUpdateNoHandler;
     using Base::DeclarePeriodicEvent;
-    using Base::DeclarePeriodicPublish;
+    using Base::DeclarePeriodicPublishNoHandler;
     using Base::DeclarePeriodicUnrestrictedUpdateEvent;
     using Base::DeclarePerStepEvent;
     using Base::DeclareStateOutputPort;
@@ -170,15 +166,24 @@ struct Impl {
     // trampoline if this is needed outside of LeafSystem.
     void DoGetWitnessFunctions(const Context<T>& context,
         std::vector<const WitnessFunction<T>*>* witnesses) const override {
-      auto wrapped = [&]() -> std::vector<const WitnessFunction<T>*> {
-        PYBIND11_OVERLOAD_INT(std::vector<const WitnessFunction<T>*>,
+      auto wrapped =
+          [&]() -> std::optional<std::vector<const WitnessFunction<T>*>> {
+        PYBIND11_OVERLOAD_INT(
+            std::optional<std::vector<const WitnessFunction<T>*>>,
             LeafSystem<T>, "DoGetWitnessFunctions", &context);
         std::vector<const WitnessFunction<T>*> result;
         // If the macro did not return, use default functionality.
         Base::DoGetWitnessFunctions(context, &result);
-        return result;
+        return {result};
       };
-      *witnesses = wrapped();
+      auto result = wrapped();
+      if (!result.has_value()) {
+        // Give a good error message in case the user forgot to return anything.
+        throw py::type_error(
+            "Overrides of DoGetWitnessFunctions() must return "
+            "List[WitnessFunction], not NoneType.");
+      }
+      *witnesses = std::move(*result);
     }
   };
 
@@ -324,59 +329,13 @@ struct Impl {
             "Accept",
             [](const System<T>* self, PySystemVisitor* v) { self->Accept(v); },
             py::arg("v"), doc.System.Accept.doc)
-        .def("get_input_port",
-            overload_cast_explicit<const InputPort<T>&, int>(
-                &System<T>::get_input_port),
-            py_rvp::reference_internal, py::arg("port_index"),
-            doc.System.get_input_port.doc_1args)
-        .def("get_input_port",
-            overload_cast_explicit<const InputPort<T>&>(
-                &System<T>::get_input_port),
-            py_rvp::reference_internal, doc.System.get_input_port.doc_0args)
-        .def("GetInputPort", &System<T>::GetInputPort,
-            py_rvp::reference_internal, py::arg("port_name"),
-            doc.System.GetInputPort.doc)
-        .def("get_output_port",
-            overload_cast_explicit<const OutputPort<T>&, int>(
-                &System<T>::get_output_port),
-            py_rvp::reference_internal, py::arg("port_index"),
-            doc.System.get_output_port.doc_1args)
-        .def("get_output_port",
-            overload_cast_explicit<const OutputPort<T>&>(
-                &System<T>::get_output_port),
-            py_rvp::reference_internal, doc.System.get_output_port.doc_0args)
-        .def("GetOutputPort", &System<T>::GetOutputPort,
-            py_rvp::reference_internal, py::arg("port_name"),
-            doc.System.GetOutputPort.doc)
-        .def("DeclareInputPort",
-            overload_cast_explicit<InputPort<T>&,
-                std::variant<std::string, UseDefaultName>, PortDataType, int,
-                std::optional<RandomDistribution>>(&PySystem::DeclareInputPort),
-            py_rvp::reference_internal, py::arg("name"), py::arg("type"),
-            py::arg("size"), py::arg("random_type") = std::nullopt,
-            doc.System.DeclareInputPort.doc)
-        // Feedthrough.
-        .def("HasAnyDirectFeedthrough", &System<T>::HasAnyDirectFeedthrough,
-            doc.System.HasAnyDirectFeedthrough.doc)
-        .def("HasDirectFeedthrough",
-            overload_cast_explicit<bool, int>(  // BR
-                &System<T>::HasDirectFeedthrough),
-            py::arg("output_port"), doc.System.HasDirectFeedthrough.doc_1args)
-        .def("HasDirectFeedthrough",
-            overload_cast_explicit<bool, int, int>(
-                &System<T>::HasDirectFeedthrough),
-            py::arg("input_port"), py::arg("output_port"),
-            doc.System.HasDirectFeedthrough.doc_2args)
-        // Context.
+        // Resource allocation and initialization.
         .def("AllocateContext", &System<T>::AllocateContext,
             doc.System.AllocateContext.doc)
-        .def("CreateDefaultContext", &System<T>::CreateDefaultContext,
-            doc.System.CreateDefaultContext.doc)
-        .def("SetDefaultContext", &System<T>::SetDefaultContext,
-            doc.System.SetDefaultContext.doc)
-        .def("SetRandomContext", &System<T>::SetRandomContext,
-            py::arg("context"), py::arg("generator"),
-            doc.System.SetRandomContext.doc)
+        .def("AllocateInputVector", &System<T>::AllocateInputVector,
+            py::arg("input_port"), doc.System.AllocateInputVector.doc)
+        .def("AllocateInputAbstract", &System<T>::AllocateInputAbstract,
+            py::arg("input_port"), doc.System.AllocateInputAbstract.doc)
         .def("AllocateOutput",
             overload_cast_explicit<unique_ptr<SystemOutput<T>>>(
                 &System<T>::AllocateOutput),
@@ -392,33 +351,46 @@ struct Impl {
             overload_cast_explicit<unique_ptr<DiscreteValues<T>>>(
                 &System<T>::AllocateDiscreteVariables),
             doc.System.AllocateDiscreteVariables.doc)
+        .def("CreateDefaultContext", &System<T>::CreateDefaultContext,
+            doc.System.CreateDefaultContext.doc)
+        .def("SetDefaultContext", &System<T>::SetDefaultContext,
+            py::arg("context"), doc.System.SetDefaultContext.doc)
+        .def("SetRandomContext", &System<T>::SetRandomContext,
+            py::arg("context"), py::arg("generator"),
+            doc.System.SetRandomContext.doc)
+        .def("HasAnyDirectFeedthrough", &System<T>::HasAnyDirectFeedthrough,
+            doc.System.HasAnyDirectFeedthrough.doc)
+        .def("HasDirectFeedthrough",
+            overload_cast_explicit<bool, int>(  // BR
+                &System<T>::HasDirectFeedthrough),
+            py::arg("output_port"), doc.System.HasDirectFeedthrough.doc_1args)
+        .def("HasDirectFeedthrough",
+            overload_cast_explicit<bool, int, int>(
+                &System<T>::HasDirectFeedthrough),
+            py::arg("input_port"), py::arg("output_port"),
+            doc.System.HasDirectFeedthrough.doc_2args)
+        // Publishing.
+        .def("ForcedPublish", &System<T>::ForcedPublish, py::arg("context"),
+            doc.System.ForcedPublish.doc)
+        // Cached evaluations.
+        .def("EvalTimeDerivatives", &System<T>::EvalTimeDerivatives,
+            py_rvp::reference,
+            // Keep alive, ownership: `return` keeps `Context` alive.
+            py::keep_alive<0, 2>(), py::arg("context"),
+            doc.System.EvalTimeDerivatives.doc)
+        .def("EvalPotentialEnergy", &System<T>::EvalPotentialEnergy,
+            py::arg("context"), doc.System.EvalPotentialEnergy.doc)
+        .def("EvalKineticEnergy", &System<T>::EvalKineticEnergy,
+            py::arg("context"), doc.System.EvalKineticEnergy.doc)
         .def(
             "EvalVectorInput",
             [](const System<T>* self, const Context<T>& arg1, int arg2) {
               return self->EvalVectorInput(arg1, arg2);
             },
-            py_rvp::reference,
+            py::arg("context"), py::arg("port_index"), py_rvp::reference,
             // Keep alive, ownership: `return` keeps `Context` alive.
             py::keep_alive<0, 2>(), doc.System.EvalVectorInput.doc)
-        .def(
-            "EvalAbstractInput",
-            [](const System<T>* self, const Context<T>& arg1, int arg2) {
-              return self->EvalAbstractInput(arg1, arg2);
-            },
-            py_rvp::reference,
-            // Keep alive, ownership: `return` keeps `Context` alive.
-            py::keep_alive<0, 2>(), doc.SystemBase.EvalAbstractInput.doc)
-        // Computation.
-        .def("CalcOutput", &System<T>::CalcOutput, py::arg("context"),
-            py::arg("outputs"), doc.System.CalcOutput.doc)
-        .def("CalcPotentialEnergy", &System<T>::CalcPotentialEnergy,
-            py::arg("context"), doc.System.CalcPotentialEnergy.doc)
-        .def("CalcKineticEnergy", &System<T>::CalcKineticEnergy,
-            py::arg("context"), doc.System.CalcKineticEnergy.doc)
-        .def("CalcConservativePower", &System<T>::CalcConservativePower,
-            py::arg("context"), doc.System.CalcConservativePower.doc)
-        .def("CalcNonConservativePower", &System<T>::CalcNonConservativePower,
-            py::arg("context"), doc.System.CalcNonConservativePower.doc)
+        // Calculations.
         .def("CalcTimeDerivatives", &System<T>::CalcTimeDerivatives,
             py::arg("context"), py::arg("derivatives"),
             doc.System.CalcTimeDerivatives.doc)
@@ -440,59 +412,24 @@ struct Impl {
             },
             py::arg("context"), py::arg("proposed_derivatives"),
             doc.System.CalcImplicitTimeDerivativesResidual.doc)
-        .def("CalcDiscreteVariableUpdates",
-            overload_cast_explicit<void, const Context<T>&, DiscreteValues<T>*>(
-                &System<T>::CalcDiscreteVariableUpdates),
-            py::arg("context"), py::arg("discrete_state"),
-            doc.System.CalcDiscreteVariableUpdates.doc_2args)
-        .def("CalcUnrestrictedUpdate",
-            overload_cast_explicit<void, const Context<T>&, State<T>*>(
-                &System<T>::CalcUnrestrictedUpdate),
-            py::arg("context"), py::arg("state"),
-            doc.System.CalcUnrestrictedUpdate.doc_2args)
-        .def("GetSubsystemContext",
-            overload_cast_explicit<const Context<T>&, const System<T>&,
-                const Context<T>&>(&System<T>::GetSubsystemContext),
-            py_rvp::reference,
-            // Keep alive, ownership: `return` keeps `Context` alive.
-            py::keep_alive<0, 3>(), doc.System.GetMutableSubsystemContext.doc)
-        .def("GetMutableSubsystemContext",
-            overload_cast_explicit<Context<T>&, const System<T>&, Context<T>*>(
-                &System<T>::GetMutableSubsystemContext),
-            py_rvp::reference,
-            // Keep alive, ownership: `return` keeps `Context` alive.
-            py::keep_alive<0, 3>(), doc.System.GetMutableSubsystemContext.doc)
-        .def("GetMyContextFromRoot",
-            overload_cast_explicit<const Context<T>&, const Context<T>&>(
-                &System<T>::GetMyContextFromRoot),
-            py_rvp::reference,
-            // Keep alive, ownership: `return` keeps `Context` alive.
-            py::keep_alive<0, 2>(), doc.System.GetMyMutableContextFromRoot.doc)
-        .def("GetMyMutableContextFromRoot",
-            overload_cast_explicit<Context<T>&, Context<T>*>(
-                &System<T>::GetMyMutableContextFromRoot),
-            py_rvp::reference,
-            // Keep alive, ownership: `return` keeps `Context` alive.
-            py::keep_alive<0, 2>(), doc.System.GetMyMutableContextFromRoot.doc)
-        // Sugar.
-        .def(
-            "GetGraphvizString",
-            [str_py](const System<T>* self, int max_depth) {
-              // @note This is a workaround; for some reason,
-              // casting this using `py::str` does not work, but directly
-              // calling the Python function (`str_py`) does.
-              return str_py(self->GetGraphvizString(max_depth));
-            },
-            py::arg("max_depth") = std::numeric_limits<int>::max(),
-            doc.System.GetGraphvizString.doc)
-        // Events.
-        .def("Publish",
-            overload_cast_explicit<void, const Context<T>&>(
-                &System<T>::Publish),
-            doc.System.Publish.doc_1args)
+        .def("CalcForcedDiscreteVariableUpdate",
+            &System<T>::CalcForcedDiscreteVariableUpdate, py::arg("context"),
+            py::arg("discrete_state"),
+            doc.System.CalcForcedDiscreteVariableUpdate.doc)
+        .def("CalcForcedUnrestrictedUpdate",
+            &System<T>::CalcForcedUnrestrictedUpdate, py::arg("context"),
+            py::arg("state"), doc.System.CalcForcedUnrestrictedUpdate.doc)
+        .def("ExecuteInitializationEvents",
+            &System<T>::ExecuteInitializationEvents, py::arg("context"),
+            doc.System.ExecuteInitializationEvents.doc)
         .def("GetUniquePeriodicDiscreteUpdateAttribute",
             &System<T>::GetUniquePeriodicDiscreteUpdateAttribute,
             doc.System.GetUniquePeriodicDiscreteUpdateAttribute.doc)
+        .def("EvalUniquePeriodicDiscreteUpdate",
+            &System<T>::EvalUniquePeriodicDiscreteUpdate, py_rvp::reference,
+            // Keep alive, ownership: `return` keeps `context` alive.
+            py::keep_alive<0, 2>(), py::arg("context"),
+            doc.System.EvalUniquePeriodicDiscreteUpdate.doc)
         .def(
             "IsDifferenceEquationSystem",
             [](const System<T>& self) {
@@ -504,31 +441,100 @@ struct Impl {
 Note: The above is for the C++ documentation. For Python, use
 `is_diff_eq, period = IsDifferenceEquationSystem()`)"")
                 .c_str())
-        // Cached evaluations.
-        .def("EvalTimeDerivatives", &System<T>::EvalTimeDerivatives,
-            py_rvp::reference,
+        .def("CalcOutput", &System<T>::CalcOutput, py::arg("context"),
+            py::arg("outputs"), doc.System.CalcOutput.doc)
+        .def("CalcPotentialEnergy", &System<T>::CalcPotentialEnergy,
+            py::arg("context"), doc.System.CalcPotentialEnergy.doc)
+        .def("CalcKineticEnergy", &System<T>::CalcKineticEnergy,
+            py::arg("context"), doc.System.CalcKineticEnergy.doc)
+        .def("CalcConservativePower", &System<T>::CalcConservativePower,
+            py::arg("context"), doc.System.CalcConservativePower.doc)
+        .def("CalcNonConservativePower", &System<T>::CalcNonConservativePower,
+            py::arg("context"), doc.System.CalcNonConservativePower.doc)
+        // Subcontext access.
+        .def("GetSubsystemContext",
+            overload_cast_explicit<const Context<T>&, const System<T>&,
+                const Context<T>&>(&System<T>::GetSubsystemContext),
+            py::arg("subsystem"), py::arg("context"), py_rvp::reference,
             // Keep alive, ownership: `return` keeps `Context` alive.
-            py::keep_alive<0, 2>(), doc.System.EvalTimeDerivatives.doc)
-        .def("EvalPotentialEnergy", &System<T>::EvalPotentialEnergy,
-            py::arg("context"), doc.System.EvalPotentialEnergy.doc)
-        .def("EvalKineticEnergy", &System<T>::EvalKineticEnergy,
-            py::arg("context"), doc.System.EvalKineticEnergy.doc)
-        // Scalar types.
+            py::keep_alive<0, 3>(), doc.System.GetMutableSubsystemContext.doc)
+        .def("GetMutableSubsystemContext",
+            overload_cast_explicit<Context<T>&, const System<T>&, Context<T>*>(
+                &System<T>::GetMutableSubsystemContext),
+            py::arg("subsystem"), py::arg("context"), py_rvp::reference,
+            // Keep alive, ownership: `return` keeps `Context` alive.
+            py::keep_alive<0, 3>(), doc.System.GetMutableSubsystemContext.doc)
+        .def("GetMyContextFromRoot",
+            overload_cast_explicit<const Context<T>&, const Context<T>&>(
+                &System<T>::GetMyContextFromRoot),
+            py::arg("root_context"), py_rvp::reference,
+            // Keep alive, ownership: `return` keeps `Context` alive.
+            py::keep_alive<0, 2>(), doc.System.GetMyMutableContextFromRoot.doc)
+        .def("GetMyMutableContextFromRoot",
+            overload_cast_explicit<Context<T>&, Context<T>*>(
+                &System<T>::GetMyMutableContextFromRoot),
+            py::arg("root_context"), py_rvp::reference,
+            // Keep alive, ownership: `return` keeps `Context` alive.
+            py::keep_alive<0, 2>(), doc.System.GetMyMutableContextFromRoot.doc)
+        // Utility methods.
+        .def("get_input_port",
+            overload_cast_explicit<const InputPort<T>&, int>(
+                &System<T>::get_input_port),
+            py_rvp::reference_internal, py::arg("port_index"),
+            doc.System.get_input_port.doc_1args)
+        .def("get_input_port",
+            overload_cast_explicit<const InputPort<T>&>(
+                &System<T>::get_input_port),
+            py_rvp::reference_internal, doc.System.get_input_port.doc_0args)
+        .def("GetInputPort", &System<T>::GetInputPort,
+            py_rvp::reference_internal, py::arg("port_name"),
+            doc.System.GetInputPort.doc)
+        .def("HasInputPort", &System<T>::HasInputPort, py::arg("port_name"),
+            doc.System.HasInputPort.doc)
+        .def("get_output_port",
+            overload_cast_explicit<const OutputPort<T>&, int>(
+                &System<T>::get_output_port),
+            py_rvp::reference_internal, py::arg("port_index"),
+            doc.System.get_output_port.doc_1args)
+        .def("get_output_port",
+            overload_cast_explicit<const OutputPort<T>&>(
+                &System<T>::get_output_port),
+            py_rvp::reference_internal, doc.System.get_output_port.doc_0args)
+        .def("GetOutputPort", &System<T>::GetOutputPort,
+            py_rvp::reference_internal, py::arg("port_name"),
+            doc.System.GetOutputPort.doc)
+        .def("HasOutputPort", &System<T>::HasOutputPort, py::arg("port_name"),
+            doc.System.HasOutputPort.doc)
+        // Graphviz methods.
+        .def(
+            "GetGraphvizString",
+            [str_py](const System<T>* self, int max_depth) {
+              // @note This is a workaround; for some reason,
+              // casting this using `py::str` does not work, but directly
+              // calling the Python function (`str_py`) does.
+              return str_py(self->GetGraphvizString(max_depth));
+            },
+            py::arg("max_depth") = std::numeric_limits<int>::max(),
+            doc.System.GetGraphvizString.doc)
+        // Automatic differentiation.
         .def(
             "ToAutoDiffXd",
             [](const System<T>& self) { return self.ToAutoDiffXd(); },
             doc.System.ToAutoDiffXd.doc_0args)
         .def("ToAutoDiffXdMaybe", &System<T>::ToAutoDiffXdMaybe,
             doc.System.ToAutoDiffXdMaybe.doc)
+        // Symbolics
         .def(
             "ToSymbolic",
             [](const System<T>& self) { return self.ToSymbolic(); },
             doc.System.ToSymbolic.doc_0args)
         .def("ToSymbolicMaybe", &System<T>::ToSymbolicMaybe,
             doc.System.ToSymbolicMaybe.doc)
+        // Scalar type conversion utilities.
         .def("FixInputPortsFrom", &System<T>::FixInputPortsFrom,
             py::arg("other_system"), py::arg("other_context"),
             py::arg("target_context"), doc.System.FixInputPortsFrom.doc)
+        // Witness functions.
         .def(
             "GetWitnessFunctions",
             [](const System<T>& self, const Context<T>& context) {
@@ -540,7 +546,36 @@ Note: The above is for the C++ documentation. For Python, use
             (string(doc.System.DoGetWitnessFunctions.doc) + R""(
 Note: The above is for the C++ documentation. For Python, use
 `witnesses = GetWitnessFunctions(context)`)"")
-                .c_str());
+                .c_str())
+        // Protected System construction.
+        .def("DeclareInputPort",
+            overload_cast_explicit<InputPort<T>&,
+                std::variant<std::string, UseDefaultName>, PortDataType, int,
+                std::optional<RandomDistribution>>(&PySystem::DeclareInputPort),
+            py_rvp::reference_internal, py::arg("name"), py::arg("type"),
+            py::arg("size"), py::arg("random_type") = std::nullopt,
+            doc.System.DeclareInputPort.doc)
+        // Not part of System; SystemBase method promoted in bindings.
+        .def(
+            "EvalAbstractInput",
+            [](const System<T>* self, const Context<T>& arg1, int arg2) {
+              return self->EvalAbstractInput(arg1, arg2);
+            },
+            py::arg("context"), py::arg("port_index"), py_rvp::reference,
+            // Keep alive, ownership: `return` keeps `Context` alive.
+            py::keep_alive<0, 2>(), doc.SystemBase.EvalAbstractInput.doc)
+        // TODO(jwnimmer-tri) Use DefClone here, once it has support for
+        // docstrings and overload resolution.
+        .def(
+            "Clone", [](const System<T>* self) { return self->Clone(); },
+            doc.System.Clone.doc_0args)
+        .def("__copy__", [](const System<T>* self) { return self->Clone(); })
+        .def("__deepcopy__", [](const System<T>* self, py::dict /* memo */) {
+          return self->Clone();
+        });
+
+    // Out-of-order binding for Scalar type conversion by template parameter
+    // group.
     auto def_to_scalar_type = [&system_cls, doc](auto dummy) {
       using U = decltype(dummy);
       AddTemplateMethod(
@@ -717,14 +752,14 @@ Note: The above is for the C++ documentation. For Python, use
               self->DeclareInitializationEvent(event);
             },
             py::arg("event"), doc.LeafSystem.DeclareInitializationEvent.doc)
-        .def("DeclarePeriodicPublish",
-            &LeafSystemPublic::DeclarePeriodicPublish, py::arg("period_sec"),
-            py::arg("offset_sec") = 0.,
-            doc.LeafSystem.DeclarePeriodicPublish.doc)
-        .def("DeclarePeriodicDiscreteUpdate",
-            &LeafSystemPublic::DeclarePeriodicDiscreteUpdate,
+        .def("DeclarePeriodicPublishNoHandler",
+            &LeafSystemPublic::DeclarePeriodicPublishNoHandler,
             py::arg("period_sec"), py::arg("offset_sec") = 0.,
-            doc.LeafSystem.DeclarePeriodicDiscreteUpdate.doc)
+            doc.LeafSystem.DeclarePeriodicPublishNoHandler.doc)
+        .def("DeclarePeriodicDiscreteUpdateNoHandler",
+            &LeafSystemPublic::DeclarePeriodicDiscreteUpdateNoHandler,
+            py::arg("period_sec"), py::arg("offset_sec") = 0.,
+            doc.LeafSystem.DeclarePeriodicDiscreteUpdateNoHandler.doc)
         .def("DeclarePeriodicPublishEvent",
             WrapCallbacks(
                 [](PyLeafSystem* self, double period_sec, double offset_sec,
@@ -868,10 +903,20 @@ Note: The above is for the C++ documentation. For Python, use
         .def("MakeWitnessFunction",
             WrapCallbacks([](PyLeafSystem* self, const std::string& description,
                               const WitnessFunctionDirection& direction_type,
-                              std::function<T(const Context<T>&)> calc)
-                              -> std::unique_ptr<WitnessFunction<T>> {
-              return self->MakeWitnessFunction(
-                  description, direction_type, calc);
+                              std::function<std::optional<T>(const Context<T>&)>
+                                  calc) -> std::unique_ptr<WitnessFunction<T>> {
+              return self->MakeWitnessFunction(description, direction_type,
+                  [calc](const Context<T>& context) -> T {
+                    const std::optional<T> result = calc(context);
+                    if (!result.has_value()) {
+                      // Give a good error message in case the user forgot to
+                      // return anything.
+                      throw py::type_error(
+                          "The MakeWitnessFunction() calc callback must return "
+                          "a floating point value, not NoneType.");
+                    }
+                    return *result;
+                  });
             }),
             py_rvp::reference_internal, py::arg("description"),
             py::arg("direction_type"), py::arg("calc"),
@@ -937,7 +982,7 @@ Note: The above is for the C++ documentation. For Python, use
         .def("DeclareAbstractState",
             py::overload_cast<const AbstractValue&>(
                 &LeafSystemPublic::DeclareAbstractState),
-            doc.LeafSystem.DeclareAbstractState.doc);
+            py::arg("model_value"), doc.LeafSystem.DeclareAbstractState.doc);
 
     DefineTemplateClassWithDefault<Diagram<T>, PyDiagram, System<T>>(
         m, "Diagram", GetPyParam<T>(), doc.Diagram.doc)
@@ -953,21 +998,21 @@ Note: The above is for the C++ documentation. For Python, use
               py::object self_py = py::cast(self, py_rvp::reference);
               for (auto& [input_locator, output_locator] :
                   self->connection_map()) {
-                py::object input_system_py =
-                    py::cast(input_locator.first, py_rvp::reference);
-                py::object input_port_index_py = py::cast(input_locator.second);
                 // Keep alive, ownership: `input_system_py` keeps `self` alive.
-                py_keep_alive(input_system_py, self_py);
+                py::object input_system_py = py::cast(
+                    input_locator.first, py_rvp::reference_internal, self_py);
+                py::object input_port_index_py = py::cast(input_locator.second);
+
                 py::tuple input_locator_py(2);
                 input_locator_py[0] = input_system_py;
                 input_locator_py[1] = input_port_index_py;
 
-                py::object output_system_py =
-                    py::cast(output_locator.first, py_rvp::reference);
+                // Keep alive, ownership: `output_system_py` keeps `self` alive.
+                py::object output_system_py = py::cast(
+                    output_locator.first, py_rvp::reference_internal, self_py);
                 py::object output_port_index_py =
                     py::cast(output_locator.second);
-                // Keep alive, ownership: `output_system_py` keeps `self` alive.
-                py_keep_alive(output_system_py, self_py);
+
                 py::tuple output_locator_py(2);
                 output_locator_py[0] = output_system_py;
                 output_locator_py[1] = output_port_index_py;
@@ -983,11 +1028,11 @@ Note: The above is for the C++ documentation. For Python, use
               py::list out;
               py::object self_py = py::cast(self, py_rvp::reference);
               for (auto& locator : self->GetInputPortLocators(port_index)) {
-                py::object system_py =
-                    py::cast(locator.first, py_rvp::reference);
-                py::object port_index_py = py::cast(locator.second);
                 // Keep alive, ownership: `system_py` keeps `self` alive.
-                py_keep_alive(system_py, self_py);
+                py::object system_py = py::cast(
+                    locator.first, py_rvp::reference_internal, self_py);
+                py::object port_index_py = py::cast(locator.second);
+
                 py::tuple locator_py(2);
                 locator_py[0] = system_py;
                 locator_py[1] = port_index_py;
@@ -1001,10 +1046,11 @@ Note: The above is for the C++ documentation. For Python, use
             [](Diagram<T>* self, OutputPortIndex port_index) {
               py::object self_py = py::cast(self, py_rvp::reference);
               const auto& locator = self->get_output_port_locator(port_index);
-              py::object system_py = py::cast(locator.first, py_rvp::reference);
-              py::object port_index_py = py::cast(locator.second);
               // Keep alive, ownership: `system_py` keeps `self` alive.
-              py_keep_alive(system_py, self_py);
+              py::object system_py =
+                  py::cast(locator.first, py_rvp::reference_internal, self_py);
+              py::object port_index_py = py::cast(locator.second);
+
               py::tuple locator_py(2);
               locator_py[0] = system_py;
               locator_py[1] = port_index_py;
@@ -1018,22 +1064,12 @@ Note: The above is for the C++ documentation. For Python, use
             // Keep alive, ownership: `return` keeps `Context` alive.
             py::keep_alive<0, 3>(),
             doc.Diagram.GetMutableSubsystemState.doc_2args_subsystem_context)
+        .def("HasSubsystemNamed", &Diagram<T>::HasSubsystemNamed,
+            py::arg("name"), doc.Diagram.HasSubsystemNamed.doc)
         .def("GetSubsystemByName", &Diagram<T>::GetSubsystemByName,
             py::arg("name"), py_rvp::reference_internal,
             doc.Diagram.GetSubsystemByName.doc)
-        .def(
-            "GetSystems",
-            [](Diagram<T>* self) {
-              py::list out;
-              py::object self_py = py::cast(self, py_rvp::reference);
-              for (auto* system : self->GetSystems()) {
-                py::object system_py = py::cast(system, py_rvp::reference);
-                // Keep alive, ownership: `system` keeps `self` alive.
-                py_keep_alive(system_py, self_py);
-                out.append(system_py);
-              }
-              return out;
-            },
+        .def("GetSystems", &Diagram<T>::GetSystems, py_rvp::reference_internal,
             doc.Diagram.GetSystems.doc);
 
     // N.B. This will effectively allow derived classes of `VectorSystem` to
@@ -1102,6 +1138,10 @@ void DoScalarIndependentDefinitions(py::module m) {
         .def("implicit_time_derivatives_residual_size",
             &Class::implicit_time_derivatives_residual_size,
             cls_doc.implicit_time_derivatives_residual_size.doc)
+        .def("ValidateContext",
+            overload_cast_explicit<void, const ContextBase&>(
+              &Class::ValidateContext),
+            py::arg("context"), cls_doc.ValidateContext.doc)
         // Parameters.
         .def("num_abstract_parameters", &Class::num_abstract_parameters,
             cls_doc.num_abstract_parameters.doc)

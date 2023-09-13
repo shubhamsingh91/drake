@@ -3,7 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "drake/multibody/parsing/test/diagnostic_policy_test_base.h"
+#include "drake/common/test_utilities/diagnostic_policy_test_base.h"
 
 namespace drake {
 namespace multibody {
@@ -16,7 +16,8 @@ class SelectParserTest : public test::DiagnosticPolicyTestBase {
  protected:
   MultibodyPlant<double> plant_{0.0};
   CollisionFilterGroupResolver resolver_{&plant_};
-  ParsingWorkspace w_{{}, diagnostic_policy_, &plant_,
+  ParsingOptions options_;
+  ParsingWorkspace w_{options_, {}, diagnostic_policy_, &plant_,
                       &resolver_, SelectParser};
 };
 

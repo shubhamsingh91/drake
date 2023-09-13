@@ -13,16 +13,16 @@ import webbrowser
 
 import numpy as np
 
-from pydrake.common.value import AbstractValue
+from pydrake.common.value import Value
 from pydrake.examples import (
     ManipulationStation, ManipulationStationHardwareInterface,
     CreateClutterClearingYcbObjectList, SchunkCollisionModel)
-from pydrake.geometry import DrakeVisualizer, Meshcat, MeshcatVisualizerCpp
-from pydrake.multibody.plant import MultibodyPlant
-from pydrake.manipulation.planner import (
+from pydrake.geometry import DrakeVisualizer, Meshcat, MeshcatVisualizer
+from pydrake.math import RigidTransform, RollPitchYaw, RotationMatrix
+from pydrake.multibody.inverse_kinematics import (
     DifferentialInverseKinematicsIntegrator,
     DifferentialInverseKinematicsParameters)
-from pydrake.math import RigidTransform, RollPitchYaw, RotationMatrix
+from pydrake.multibody.plant import MultibodyPlant
 from pydrake.systems.analysis import Simulator
 from pydrake.systems.framework import DiagramBuilder, LeafSystem
 from pydrake.systems.primitives import FirstOrderLowPassFilter
@@ -171,7 +171,7 @@ class DualShock4Teleop(LeafSystem):
 
         # Note: This timing affects the keyboard teleop performance. A larger
         #       time step causes more lag in the response.
-        self.DeclarePeriodicPublish(1.0, 0.0)
+        self.DeclarePeriodicPublishNoHandler(1.0, 0.0)
 
         self.teleop_manager = TeleopDualShock4Manager(joystick)
         self.roll = self.pitch = self.yaw = 0
@@ -272,7 +272,7 @@ class ToPose(LeafSystem):
         LeafSystem.__init__(self)
         self.DeclareVectorInputPort("rpy_xyz", 6)
         self.DeclareAbstractOutputPort(
-            "pose", lambda: AbstractValue.Make(RigidTransform()),
+            "pose", lambda: Value(RigidTransform()),
             self.DoCalcOutput)
 
     def DoCalcOutput(self, context, output):
@@ -372,7 +372,7 @@ def main():
         DrakeVisualizer.AddToBuilder(builder, query_port)
         if args.meshcat:
             meshcat = Meshcat()
-            MeshcatVisualizerCpp.AddToBuilder(
+            MeshcatVisualizer.AddToBuilder(
                 builder=builder,
                 query_object_port=query_port,
                 meshcat=meshcat)

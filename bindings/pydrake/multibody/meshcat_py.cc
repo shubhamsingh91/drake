@@ -1,6 +1,3 @@
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
-
 #include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/monostate_pybind.h"
@@ -63,7 +60,7 @@ void DoScalarIndependentDefinitions(py::module m) {
         .def(py::init<std::shared_ptr<geometry::Meshcat>,
                  ContactVisualizerParams>(),
             py::arg("meshcat"), py::arg("params"), doc_internal)
-        .def("Update", &Class::Update, py::arg("items"));
+        .def("Update", &Class::Update, py::arg("time"), py::arg("items"));
   }
 
   // HydroelasticContactVisualizerItem (internal)
@@ -97,7 +94,7 @@ void DoScalarIndependentDefinitions(py::module m) {
         .def(py::init<std::shared_ptr<geometry::Meshcat>,
                  ContactVisualizerParams>(),
             py::arg("meshcat"), py::arg("params"), doc_internal)
-        .def("Update", &Class::Update, py::arg("items"))
+        .def("Update", &Class::Update, py::arg("time"), py::arg("items"))
         .def("Delete", &Class::Delete);
   }
 }

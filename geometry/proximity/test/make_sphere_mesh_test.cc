@@ -146,8 +146,8 @@ GTEST_TEST(MakeSphereMesh, SplitOctohedron) {
   // infrastructure.
   const int a(0), b(1), c(2), d(3);
   const std::vector<Vector3d> tet_vertices{
-      Vector3d(1, -1, -1), Vector3d(1, 1, 1),
-      Vector3d(-1, 1, -1), Vector3d(-1, -1, 1)};
+      Vector3d(1, -1, -1), Vector3d(1, 1, 1), Vector3d(-1, 1, -1),
+      Vector3d(-1, -1, 1)};
 
   auto mid_point = [&tet_vertices](int i, int j) -> Vector3d {
     return (tet_vertices[i] + tet_vertices[j]) / 2;
@@ -158,11 +158,11 @@ GTEST_TEST(MakeSphereMesh, SplitOctohedron) {
   const int e(0), f(1), g(2), h(3), i(4), j(5);
   const std::array<int, 6> octo_vertices{e, f, g, h, i, j};
   const std::vector<Vector3d> unit_p_MVs{
-      Vector3d(mid_point(a, b)),  // e = (a + b) / 2
-      Vector3d(mid_point(a, c)),  // f = (a + c) / 2
-      Vector3d(mid_point(a, d)),  // g = (a + d) / 2
-      Vector3d(mid_point(b, c)),  // h = (b + c) / 2
-      Vector3d(mid_point(b, d)),  // i = (b + d) / 2
+      Vector3d(mid_point(a, b)),   // e = (a + b) / 2
+      Vector3d(mid_point(a, c)),   // f = (a + c) / 2
+      Vector3d(mid_point(a, d)),   // g = (a + d) / 2
+      Vector3d(mid_point(b, c)),   // h = (b + c) / 2
+      Vector3d(mid_point(b, d)),   // i = (b + d) / 2
       Vector3d(mid_point(c, d))};  // j = (c + d) / 2
 
   // Confirm the tetrahedron works as advertised; that the vertices at edge
@@ -196,11 +196,11 @@ GTEST_TEST(MakeSphereMesh, SplitOctohedron) {
     scale_factor(axis) = 1;
 
     std::vector<Vector3d> p_MVs;
-    std::transform(
-        unit_p_MVs.begin(), unit_p_MVs.end(), std::back_inserter(p_MVs),
-        [&scale_factor](const Vector3d& v) {
-          return Vector3d(v.cwiseProduct(scale_factor));
-        });
+    std::transform(unit_p_MVs.begin(), unit_p_MVs.end(),
+                   std::back_inserter(p_MVs),
+                   [&scale_factor](const Vector3d& v) {
+                     return Vector3d(v.cwiseProduct(scale_factor));
+                   });
     std::vector<VolumeElement> split_tetrahedra;
 
     SplitOctohedron(octo_vertices, p_MVs, &split_tetrahedra);
@@ -368,7 +368,7 @@ int CountSurfaceVertices(const VolumeMesh<double>& mesh, double radius = 1.0) {
 
 // Refines with single interior vertex. We confirm that only a single vertex is
 // not radius distance from the origin. We also confirm the implication of this
-// that each level of refinment has 4X the previous number of tets.
+// that each level of refinement has 4X the previous number of tets.
 GTEST_TEST(SparseSphereTest, RefinesWithSingleInteriorVertex) {
   const TessellationStrategy strategy =
       TessellationStrategy::kSingleInteriorVertex;
@@ -380,8 +380,7 @@ GTEST_TEST(SparseSphereTest, RefinesWithSingleInteriorVertex) {
 
   int prev_tet_count = 8;
   for (int level = 1; level < 6; ++level) {
-    VolumeMesh<double> mesh_i =
-        MakeUnitSphereMesh<double>(level, strategy);
+    VolumeMesh<double> mesh_i = MakeUnitSphereMesh<double>(level, strategy);
     EXPECT_EQ(mesh_i.num_elements(), prev_tet_count * 4);
     prev_tet_count *= 4;
     EXPECT_EQ(CountSurfaceVertices(mesh_i), mesh_i.num_vertices() - 1);
@@ -390,7 +389,7 @@ GTEST_TEST(SparseSphereTest, RefinesWithSingleInteriorVertex) {
 
 // Simply confirms that calling MakeSphereVolumeMesh respects the
 // strategy parameter. All other aspects of that function  (e.g., limits on
-// refinment level and effect of resolution_hint has been tested elsewhere).
+// refinement level and effect of resolution_hint has been tested elsewhere).
 GTEST_TEST(SparseSphereTest, SparseSphereOfArbitraryRadius) {
   const double r = 1.5;
   Sphere sphere(r);

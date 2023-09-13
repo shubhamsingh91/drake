@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/test_utilities/eigen_matrix_compare.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/common/test_utilities/symbolic_test_util.h"
@@ -155,6 +156,30 @@ TEST_F(SymbolicExpressionMatrixTest, EigenMul4) {
                 (z_ * 2), (pi_ * 2);
   // clang-format on
   EXPECT_EQ(M, M_expected);
+}
+
+TEST_F(SymbolicExpressionMatrixTest, EigenMul5) {
+  auto const M(matrix_var_1_ * matrix_var_2_);
+  Eigen::Matrix<Expression, 2, 2> M_expected;
+  // clang-format off
+  M_expected << x_ * y_ + x_ * y_, x_ * y_ + x_ * z_,
+                y_ * z_ + x_ * x_, x_ * x_ + z_ * z_;
+  // clang-format on
+  EXPECT_TRUE(CheckStructuralEquality(M, M_expected))
+      << fmt::to_string(fmt_eigen(M));
+}
+
+TEST_F(SymbolicExpressionMatrixTest, EigenDot) {
+  const auto vec = Vector3<Expression>(x_, y_, z_);
+  const Expression expected = (x_ * x_) + (y_ * y_) + (z_ * z_);
+
+  const Expression dot1 = vec.dot(vec);
+  const Expression dot2 = vec.transpose() * vec;
+  const Eigen::Matrix<Expression, 1, 1> dot3 = vec.transpose() * vec;
+
+  EXPECT_TRUE(ExprEqual(dot1, expected));
+  EXPECT_TRUE(ExprEqual(dot2, expected));
+  EXPECT_TRUE(ExprEqual(dot3(0), expected));
 }
 
 TEST_F(SymbolicExpressionMatrixTest, EigenDiv) {
@@ -532,29 +557,87 @@ TEST_F(SymbolicExpressionMatrixTest, EvaluateWithRandomGenerator) {
   EXPECT_EQ(B_eval(0, 0), B_eval(1, 1));
 }
 
-// Tests Eigen `.inverse` method works for symbolic matrices. We demonstrate it
-// by showing that the following two values are matched for a 2x2 symbolic
-// matrix `M` and a substitution (Variable -> double) `subst`:
+MatrixX<Variable> MakeMatrixVariable(int rows, int cols) {
+  MatrixX<Variable> M(rows, cols);
+  for (int i = 0; i < rows; ++i) {
+    for (int j = 0; j < cols; ++j) {
+      M(i, j) = Variable(fmt::format("m{}_{}", i, j));
+    }
+  }
+  return M;
+}
+
+Eigen::MatrixXd MakeSimpleInvertibleMatrix(int N) {
+  Eigen::MatrixXd M(N, N);
+  for (int i = 0; i < N * N; ++i) {
+    M(i) = std::pow(i, N - 1);
+  }
+  return M;
+}
+
+const char* kBadMatrixInversion =
+    R"""(.*does not have an entry for the variable[\s\S]*)""";
+
+// Tests Eigen `.inverse` method works for certain shapes of symbolic matrices.
+// We demonstrate it  by showing that the following two values are matched for
+// a statically-sized symbolic matrix `M` and a substitution (Variable ->
+// double) `subst`:
 //
 //  1. Substitute(M.inverse(), subst)
 //  2. Substitute(M, subst).inverse()
 //
 // Note that in 1) Matrix<Expression>::inverse() is called while in 2)
 // Matrix<double>::inverse() is used.
-TEST_F(SymbolicExpressionMatrixTest, Inverse) {
-  Eigen::Matrix<Expression, 2, 2> M;
-  // clang-format off
-  M << x_, y_,
-       z_, w_;
-  // clang-format on
-  const Substitution subst{
-      {var_x_, 1.0},
-      {var_y_, 2.0},
-      {var_w_, 3.0},
-      {var_z_, 4.0},
-  };
-  EXPECT_TRUE(CompareMatrices(Substitute(M.inverse(), subst),
+// Also show that it fails for matrices larger than 4x4 and any
+// dynamically-sized matrix.
+template <int N>
+void CheckSymbolicMatrixInversion() {
+  drake::log()->debug("CheckSymbolicMatrixInversion<{}>()", N);
+  const Eigen::Matrix<Variable, N, N> Mvar = MakeMatrixVariable(N, N);
+  const Eigen::Matrix<Expression, N, N> M = Mvar;
+  const Eigen::Matrix<Expression, N, N> Minv = M.inverse();
+  const Eigen::MatrixXd Mvalue = MakeSimpleInvertibleMatrix(N);
+  Substitution subst;
+  for (int i = 0; i < N * N; ++i) {
+    subst[Mvar(i)] = Mvalue(i);
+  }
+  EXPECT_TRUE(CompareMatrices(Substitute(Minv, subst),
                               Substitute(M, subst).inverse(), 1e-10));
+  // Show that the dynamically-sized variant fails.
+  const MatrixX<Expression> Mdyn = M;
+  DRAKE_EXPECT_THROWS_MESSAGE(Mdyn.inverse().eval(), kBadMatrixInversion);
+}
+
+// Positive tests for symbolic inversion of 1x1, 2x2, 3x3, and 4x4 matrices.
+// Negative test for 5x5 matrix.
+TEST_F(SymbolicExpressionMatrixTest, Inverse) {
+  CheckSymbolicMatrixInversion<1>();
+  CheckSymbolicMatrixInversion<2>();
+  CheckSymbolicMatrixInversion<3>();
+  CheckSymbolicMatrixInversion<4>();
+  DRAKE_EXPECT_THROWS_MESSAGE(CheckSymbolicMatrixInversion<5>(),
+                              kBadMatrixInversion);
+}
+
+// Shows that a purely numeric matrix of Expression is invertible.
+template <int N>
+void CheckNumericExpressionMatrixInversion() {
+  const Eigen::Matrix<double, N, N> M_f = MakeSimpleInvertibleMatrix(N);
+  const Eigen::Matrix<Expression, N, N> M_sym = M_f;
+  // Statically sized.
+  EXPECT_TRUE(CompareMatrices(M_f.inverse(), M_sym.inverse(), 1e-9));
+  // Dynamically sized.
+  EXPECT_TRUE(CompareMatrices(Eigen::MatrixXd(M_f).inverse(),
+                              MatrixX<Expression>(M_sym).inverse(), 1e-9));
+}
+
+TEST_F(SymbolicExpressionMatrixTest, InverseNumeric) {
+  CheckNumericExpressionMatrixInversion<1>();
+  CheckNumericExpressionMatrixInversion<2>();
+  CheckNumericExpressionMatrixInversion<3>();
+  CheckNumericExpressionMatrixInversion<4>();
+  CheckNumericExpressionMatrixInversion<5>();
+  CheckNumericExpressionMatrixInversion<10>();
 }
 
 // We found that the following example could leak memory. This test makes sure

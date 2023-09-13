@@ -55,12 +55,16 @@ class LinearSystem : public AffineSystem<T> {
   /// | C       | num outputs | num states  |
   /// | D       | num outputs | num inputs  |
   ///
+  /// Empty matrices are treated as zero matrices with the appropriate number
+  /// of rows and columns.
+  ///
   /// Subclasses must use the protected constructor, not this one.
-  LinearSystem(const Eigen::Ref<const Eigen::MatrixXd>& A,
-               const Eigen::Ref<const Eigen::MatrixXd>& B,
-               const Eigen::Ref<const Eigen::MatrixXd>& C,
-               const Eigen::Ref<const Eigen::MatrixXd>& D,
-               double time_period = 0.0);
+  explicit LinearSystem(
+      const Eigen::Ref<const Eigen::MatrixXd>& A = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::MatrixXd>& B = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::MatrixXd>& C = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::MatrixXd>& D = Eigen::MatrixXd(),
+      double time_period = 0.0);
 
   /// Scalar-converting copy constructor.  See @ref system_scalar_conversion.
   template <typename U>
@@ -269,6 +273,16 @@ Eigen::MatrixXd ObservabilityMatrix(const LinearSystem<double>& sys);
 /// Returns true iff the observability matrix is full column rank.
 /// @ingroup estimator_systems
 bool IsObservable(const LinearSystem<double>& sys,
+                  std::optional<double> threshold = std::nullopt);
+
+/// Returns true iff the system is stabilizable.
+/// @ingroup control_systems
+bool IsStabilizable(const LinearSystem<double>& sys,
+                    std::optional<double> threshold = std::nullopt);
+
+/// Returns true iff the system is detectable.
+/// @ingroup estimator_systems
+bool IsDetectable(const LinearSystem<double>& sys,
                   std::optional<double> threshold = std::nullopt);
 
 }  // namespace systems

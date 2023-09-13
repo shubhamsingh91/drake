@@ -34,7 +34,7 @@ namespace {
 
 // With SAP we can model implicit springs using constraints. For these
 // constraint the projection is the identity, i.e. γ = P(y) = y.
-// For testing purposes, this is a simple constraints that models a spring
+// For testing purposes, this is a simple constraint that models a spring
 // between a particle mass and the origin. The spring has stiffness k and
 // damping d = tau_d * k, where tau_d is the dissipation time scale. That is,
 // the force applied by this constraint on the mass is γ/δt = −k⋅x − d⋅v, where
@@ -42,42 +42,67 @@ namespace {
 template <typename T>
 class SpringConstraint final : public SapConstraint<T> {
  public:
-  DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(SpringConstraint);
+  struct Data {
+    Vector3<T> vc;
+    T R;
+    Vector3<T> v_hat;
+  };
 
   // Model a spring attached to `clique`, expected to be a 3D particle.
-  explicit SpringConstraint(int clique, Vector3<T> x, T k, T tau_d)
+  SpringConstraint(int clique, Vector3<T> x0, T k, T tau_d)
       // N.B. For this constraint the Jacobian is the identity matrix.
-      : SapConstraint<T>(clique, std::move(x), Matrix3<T>::Identity()),
+      : SapConstraint<T>({clique, Matrix3<T>::Identity()}, {}),
+        x0_(std::move(x0)),
         k_(k),
         tau_d_(tau_d) {}
 
-  // Bias and regularization setup so that:
-  //   γ = y = -δt⋅(k⋅x + d⋅v) = −R⁻¹⋅(v−v̂).
-  VectorX<T> CalcBiasTerm(const T& time_step, const T&) const final {
-    return -this->constraint_function() / (time_step + tau_d_);
-  }
-  VectorX<T> CalcDiagonalRegularization(const T& time_step,
-                                        const T&) const final {
-    const T R = 1. / (time_step * (time_step + tau_d_) * k_);
-    return Vector3<T>(R, R, R);
+  std::unique_ptr<AbstractValue> DoMakeData(
+      const T& time_step, const Eigen::Ref<const VectorX<T>>&) const final {
+    using std::max;
+    Data data;
+    // Bias and regularization setup so that:
+    //   γ = y = -δt⋅(k⋅x + d⋅v) = −R⁻¹⋅(v−v̂).
+    data.R = 1. / (time_step * (time_step + tau_d_) * k_);
+    data.v_hat = -x0_ / (time_step + tau_d_);
+    return AbstractValue::Make(data);
   }
 
-  // For this constraint the projection is the identity operation.
-  void Project(const Eigen::Ref<const VectorX<double>>& y,
-               const Eigen::Ref<const VectorX<double>>& R,
-               EigenPtr<VectorX<double>> gamma,
-               MatrixX<double>* dPdy) const final {
-    (*gamma) = y;
-    if (dPdy != nullptr) dPdy->setIdentity(3, 3);
-  };
+  void DoCalcData(const Eigen::Ref<const VectorX<T>>& vc,
+                  AbstractValue* data) const final {
+    data->get_mutable_value<Data>().vc = vc;
+  }
 
-  std::unique_ptr<SapConstraint<T>> Clone() const final {
-    return std::make_unique<SpringConstraint<T>>(*this);
+  T DoCalcCost(const AbstractValue& data) const final {
+    const Vector3<T>& vc = data.get_value<Data>().vc;
+    const Vector3<T>& v_hat = data.get_value<Data>().v_hat;
+    const T& R = data.get_value<Data>().R;
+    const T cost = 0.5 / R * (vc - v_hat).squaredNorm();
+    return cost;
+  }
+
+  void DoCalcImpulse(const AbstractValue& data,
+                     EigenPtr<VectorX<T>> gamma) const final {
+    const Vector3<T>& vc = data.get_value<Data>().vc;
+    const Vector3<T>& v_hat = data.get_value<Data>().v_hat;
+    const T& R = data.get_value<Data>().R;
+    *gamma = -(vc - v_hat) / R;
+  }
+
+  void DoCalcCostHessian(const AbstractValue& data, MatrixX<T>* G) const final {
+    const T& R = data.get_value<Data>().R;
+    *G = Matrix3<T>::Identity() / R;
   }
 
  private:
-  T k_{0.0};      // Stiffness, in N/m.
-  T tau_d_{0.0};  // Dissipation time scale, in N⋅s/m.
+  SpringConstraint(const SpringConstraint&) = default;
+
+  std::unique_ptr<SapConstraint<T>> DoClone() const override {
+    return std::unique_ptr<SpringConstraint<T>>(new SpringConstraint<T>(*this));
+  }
+
+  VectorX<T> x0_;  // Previous time step configuration.
+  T k_{0.0};       // Stiffness, in N/m.
+  T tau_d_{0.0};   // Dissipation time scale, in seconds.
 };
 
 // Sets up a simple problem for two 3D particles, six DOFs.
@@ -174,7 +199,7 @@ TEST_F(SpringMassTest, VelocitiesPermutation) {
 // correspond to that of the first spring only.
 TEST_F(SpringMassTest, ProblemData) {
   // We setup the problem with two distinct initial velocities so that v* for
-  // each clique is also distinct and we can tell them appart.
+  // each clique is also distinct and we can tell them apart.
   const Vector3d v1(1., 2., 3.);
   const Vector3d v2(4., 5., 6.);
   const Vector6d v = (Vector6d() << v1, v2).finished();
@@ -194,7 +219,8 @@ TEST_F(SpringMassTest, ProblemData) {
   // For this case, J = I₃ and M = m₁⋅I₃. Therefore W = J⋅M⁻¹⋅Jᵀ = I₃/m₁.
   // Then the diagonal approximation is ‖W‖ᵣₘₛ = ‖W‖/3 = (m₁√3)⁻¹.
   const VectorXd W_diag = SapModelTester::delassus_diagonal(*sap_model_);
-  const VectorXd W_diag_expected = Vector1d(1.0/model_.mass1()/sqrt(3.0));
+  const VectorXd W_diag_expected =
+      Vector3d::Constant(1.0 / model_.mass1() / sqrt(3.0));
   EXPECT_TRUE(CompareMatrices(W_diag, W_diag_expected, kEpsilon,
                               MatrixCompareType::relative));
 }
@@ -232,50 +258,50 @@ TEST_F(SpringMassTest, EvalMomentumCost) {
 template <typename T>
 class DummyConstraint final : public SapConstraint<T> {
  public:
-  DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(DummyConstraint);
-
   DummyConstraint(int clique, MatrixX<T> J, VectorX<T> R, VectorX<T> v_hat)
       // N.B. For this constraint the Jacobian is the identity matrix.
-      : SapConstraint<T>(clique, VectorX<T>::Zero(R.size()), std::move(J)),
+      : SapConstraint<T>({clique, std::move(J)}, {}),
         R_(std::move(R)),
         v_hat_(std::move(v_hat)) {}
 
   DummyConstraint(int clique1, MatrixX<T> J1, int clique2, MatrixX<T> J2,
                   VectorX<T> R, VectorX<T> v_hat)
       // N.B. For this constraint the Jacobian is the identity matrix.
-      : SapConstraint<T>(clique1, clique2, VectorX<T>::Zero(R.size()),
-                         std::move(J1), std::move(J2)),
+      : SapConstraint<T>({clique1, std::move(J1), clique2, std::move(J2)}, {}),
         R_(std::move(R)),
         v_hat_(std::move(v_hat)) {}
 
-  // Returns the bias v_hat provided at construction.
-  VectorX<T> CalcBiasTerm(const T&, const T&) const final { return v_hat_; }
-  // Returns the regularization R provided at construction.
-  VectorX<T> CalcDiagonalRegularization(const T&, const T&) const final {
-    return R_;
+  std::unique_ptr<AbstractValue> DoMakeData(
+      const T& time_step,
+      const Eigen::Ref<const VectorX<T>>& delassus_estimation) const final {
+    // Data to store constraint velocities vc only.
+    return AbstractValue::Make(VectorX<T>(this->num_constraint_equations()));
   }
-
-  // Dummy projection for testing. γ = P(y) = max(0, y), where max() is applied
-  // componentwise. dγ/dy = H(y), where H() is the Heaviside function, also
-  // applied componentwise.
-  void Project(const Eigen::Ref<const VectorX<T>>& y,
-               const Eigen::Ref<const VectorX<T>>&, EigenPtr<VectorX<T>> gamma,
-               MatrixX<T>* dPdy) const final {
-    (*gamma) = y.cwiseMax(0.);
-    if (dPdy != nullptr) {
-      dPdy->resize(this->num_constraint_equations(),
-                   this->num_constraint_equations());
-      dPdy->setZero();
-      dPdy->diagonal() =
-          y.unaryExpr([](const T& x) { return x >= 0. ? 1.0 : 0.0; });
-    }
-  };
-
-  std::unique_ptr<SapConstraint<T>> Clone() const final {
-    return std::make_unique<DummyConstraint<T>>(*this);
+  void DoCalcData(const Eigen::Ref<const VectorX<T>>& vc,
+                  AbstractValue* data) const final {
+    data->get_mutable_value<VectorX<T>>() = vc;
+  }
+  T DoCalcCost(const AbstractValue& data) const final {
+    const VectorX<T>& vc = data.get_value<VectorX<T>>();
+    VectorX<T> gamma(vc.size());
+    this->CalcImpulse(data, &gamma);
+    const T cost = 0.5 * gamma.dot(R_.asDiagonal() * gamma);
+    return cost;
+  }
+  void DoCalcImpulse(const AbstractValue& data,
+                     EigenPtr<VectorX<T>> gamma) const final {
+    const VectorX<T>& vc = data.get_value<VectorX<T>>();
+    *gamma = -(R_.cwiseInverse().asDiagonal() * (vc - v_hat_));
+  }
+  void DoCalcCostHessian(const AbstractValue&, MatrixX<T>* G) const final {
+    *G = R_.cwiseInverse().asDiagonal();
   }
 
  private:
+  std::unique_ptr<SapConstraint<T>> DoClone() const final {
+    return std::unique_ptr<DummyConstraint<T>>(new DummyConstraint<T>(*this));
+  }
+
   VectorX<T> R_;
   VectorX<T> v_hat_;
 };
@@ -436,7 +462,7 @@ class DummyModel {
 // allows us to test the case of partial DOFs permutations in the model.
 // In this new DummyModelTest fixture, we introduce non-trivial numeric values
 // of the Jacobian matrices, bias terms and regularization. This allows us to
-// perform tests on operatations such as cost and gradients using non-trivial
+// perform tests on operations such as cost and gradients using non-trivial
 // numerical values.
 class DummyModelTest : public ::testing::Test {
  public:
@@ -495,7 +521,6 @@ class DummyModelTest : public ::testing::Test {
     // The constraint bundle is tested elsewhere. Therefore we use it here to
     // obtain the data we need for this test.
     J_ = sap_model_->constraints_bundle().J().MakeDenseMatrix();
-    R_ = sap_model_->constraints_bundle().R();
 
     // For testing, we make the Jacobian matrix with indexes as specified in the
     // original model.
@@ -559,39 +584,58 @@ class DummyModelTest : public ::testing::Test {
       {
         const int c = constraint.first_clique();
         const MatrixXd& A = sap_problem_->dynamics_matrix()[c];
-        const MatrixXd& J = constraint.first_clique_jacobian();
-        W_approximation[i] += J * A.ldlt().solve(J.transpose());
+        const VectorXd& A_diag_inv = A.diagonal().cwiseInverse();
+        const MatrixXd& J =
+            constraint.first_clique_jacobian().MakeDenseMatrix();
+        W_approximation[i] += J * A_diag_inv.asDiagonal() * J.transpose();
       }
       if (constraint.num_cliques() == 2) {
         const int c = constraint.second_clique();
         const MatrixXd& A = sap_problem_->dynamics_matrix()[c];
-        const MatrixXd& J = constraint.second_clique_jacobian();
-        W_approximation[i] += J * A.ldlt().solve(J.transpose());
+        const VectorXd& A_diag_inv = A.diagonal().cwiseInverse();
+        const MatrixXd& J =
+            constraint.second_clique_jacobian().MakeDenseMatrix();
+        W_approximation[i] += J * A_diag_inv.asDiagonal() * J.transpose();
       }
     }
 
     // Now we compute a diagonal scaling for each constraints by taking the RMS
     // norm of the diagonal block for that constraint.
+    // The i-th entry in W_diagonal_approximation must contain the approximation
+    // corresponding to the i-th constraint.
     VectorXd W_diagonal_approximation =
-        VectorXd::Zero(sap_problem_->num_constraints());
+        VectorXd::Zero(sap_problem_->num_constraint_equations());
+    int offset = 0;
     for (int i = 0; i < sap_problem_->num_constraints(); ++i) {
-      W_diagonal_approximation[i] =
-          W_approximation[i].norm() / W_approximation[i].rows();
+      const SapConstraint<double>& constraint = sap_problem_->get_constraint(i);
+      const int ni = constraint.num_constraint_equations();
+      W_diagonal_approximation.segment(offset, ni)
+          .setConstant(W_approximation[i].norm() / W_approximation[i].rows());
+      offset += ni;
     }
 
-    // Since SapModel permutes the constraints, we must ensure the result is in
-    // the same ordering.
+    // We make cluster_indexes store constraint indexes in the order specified
+    // by the SapModel (by clusters).
+    std::vector<int> cluster_indexes(sap_problem_->num_constraints());
     const ContactProblemGraph& graph = sap_problem_->graph();
-    VectorXd W_diag_expected(sap_problem_->num_constraints());
     int i_permuted = 0;
     for (const auto& cluster : graph.clusters()) {
       for (int i : cluster.constraint_index()) {
-        W_diag_expected[i_permuted] = W_diagonal_approximation[i];
-        ++i_permuted;
+        cluster_indexes[i_permuted++] = i;
       }
     }
 
-    return W_diag_expected;
+    // According to the documentation of
+    // SapModel::CalcDelassusDiagonalApproximation(), entries in the Delassus
+    // operator diagonal approximation should be ordered by constraints, not by
+    // constraint clusters. Here we make sure that, for this problem, clusters
+    // are not ordered. This way we ensure the test wouldn't accidentally pass
+    // because W_diagonal_approximation happens to be ordered by constraints
+    // because constraint clusters are ordered.
+    EXPECT_FALSE(
+        std::is_sorted(cluster_indexes.begin(), cluster_indexes.end()));
+
+    return W_diagonal_approximation;
   }
 
  protected:
@@ -605,7 +649,6 @@ class DummyModelTest : public ::testing::Test {
   std::vector<MatrixXd> dynamics_matrix_;
   MatrixXd A_;
   MatrixXd J_;
-  VectorXd R_;
   MatrixXd J_not_permuted_;
 };
 
@@ -713,10 +756,12 @@ TEST_F(DummyModelTest, Impulses) {
   sap_model_->SetVelocities(v, context_.get());
   const auto& bundle = sap_model_->constraints_bundle();
   const VectorXd& vc = sap_model_->EvalConstraintVelocities(*context_);
-  VectorXd y(sap_model_->num_constraint_equations());
-  bundle.CalcUnprojectedImpulses(vc, &y);
+  const VectorXd not_used(vc.size());
+  SapConstraintBundleData data =
+      bundle.MakeData(sap_model_->time_step(), not_used);
+  bundle.CalcData(vc, &data);
   VectorXd gamma_expected(sap_model_->num_constraint_equations());
-  bundle.ProjectImpulses(y, &gamma_expected);
+  bundle.CalcImpulses(data, &gamma_expected);
 
   // Impulses.
   const VectorXd& gamma = sap_model_->EvalImpulses(*context_);
@@ -731,13 +776,22 @@ TEST_F(DummyModelTest, Impulses) {
 }
 
 TEST_F(DummyModelTest, PrimalCost) {
+  // Since the bundle is separately unit tested, we
+  // use it to obtain the expected values of constraints cost.
   const VectorXd v = arbitrary_v();
   sap_model_->SetVelocities(v, context_.get());
-  const VectorXd& gamma = sap_model_->EvalImpulses(*context_);
-  const double cost = sap_model_->EvalCost(*context_);
+  const auto& bundle = sap_model_->constraints_bundle();
+  const VectorXd& vc = sap_model_->EvalConstraintVelocities(*context_);
+  const VectorXd not_used(vc.size());
+  SapConstraintBundleData data =
+      bundle.MakeData(sap_model_->time_step(), not_used);
+  bundle.CalcData(vc, &data);
+  const double constraints_cost = bundle.CalcCost(data);
   const double expected_cost =
-      0.5 * (v - v_star_).transpose() * A_ * (v - v_star_) +
-      0.5 * gamma.dot(R_.cwiseProduct(gamma));
+      0.5 * (v - v_star_).transpose() * A_ * (v - v_star_) + constraints_cost;
+
+  // Verify the value of the cost returned by the model.
+  const double cost = sap_model_->EvalCost(*context_);
   EXPECT_NEAR(cost, expected_cost, kEpsilon * expected_cost);
 }
 

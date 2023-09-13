@@ -1,9 +1,6 @@
-# -*- python -*-
-
 load("@drake//tools/install:install.bzl", "install")
 load(
     "@drake//tools/skylark:pybind.bzl",
-    "add_pybind_coverage_data",
     "drake_pybind_library",
     "get_drake_py_installs",
     "get_pybind_package_info",
@@ -110,6 +107,7 @@ drake_pybind_library(
         "//bindings/pydrake/common:deprecation_pybind",
         "//bindings/pydrake/common:serialize_pybind",
         "//bindings/pydrake/common:wrap_pybind",
+        "//systems/analysis:simulator_python_internal_header",
     ],
     cc_srcs = ["analysis_py.cc"],
     package_info = PACKAGE_INFO,
@@ -124,6 +122,7 @@ drake_pybind_library(
     cc_deps = [
         "//bindings/pydrake:documentation_pybind",
         "//bindings/pydrake:symbolic_types_pybind",
+        "//bindings/pydrake/common:deprecation_pybind",
         "//bindings/pydrake/common:wrap_pybind",
     ],
     cc_srcs = ["controllers_py.cc"],
@@ -175,24 +174,7 @@ drake_pybind_library(
         "//bindings/pydrake/common:cpp_template_py",
         "//bindings/pydrake/common:eigen_geometry_py",
         "//bindings/pydrake/common:schema_py",
-        "//bindings/pydrake:geometry_py",
-    ],
-)
-
-drake_pybind_library(
-    name = "trajectory_optimization_py",
-    cc_deps = [
-        "//bindings/pydrake:documentation_pybind",
-        "//bindings/pydrake:symbolic_types_pybind",
-        "//bindings/pydrake/common:deprecation_pybind",
-    ],
-    cc_srcs = ["trajectory_optimization_py.cc"],
-    package_info = PACKAGE_INFO,
-    py_deps = [
-        ":framework_py",
-        ":module_py",
-        "//bindings/pydrake/solvers",
-        "//bindings/pydrake:trajectories_py",
+        "//bindings/pydrake/geometry",
     ],
 )
 
@@ -221,7 +203,6 @@ drake_pybind_library(
     cc_deps = [
         ":lcm_pybind",
         "//bindings/pydrake:documentation_pybind",
-        "//bindings/pydrake/common:deprecation_pybind",
     ],
     cc_srcs = [
         "lcm_py.cc",
@@ -240,11 +221,12 @@ drake_pybind_library(
 
 drake_py_unittest(
     name = "lcm_test",
+    # See #19394, this test fails frequently on Mac ARM CI
+    flaky = True,
     deps = [
         ":analysis_py",
         ":lcm_py",
         ":primitives_py",
-        "//bindings/pydrake/common/test_utilities:deprecation_py",
     ],
 )
 
@@ -282,6 +264,7 @@ drake_py_library(
         ":pyplot_visualizer_py",
         ":rendering_py",
         "//bindings/pydrake:lcm_py",
+        "@bazel_tools//tools/python/runfiles",
     ],
 )
 
@@ -312,7 +295,6 @@ PY_LIBRARIES_WITH_INSTALL = [
     ":primitives_py",
     ":rendering_py",
     ":sensors_py",
-    ":trajectory_optimization_py",
 ]
 
 PY_LIBRARIES = [
@@ -386,7 +368,7 @@ drake_jupyter_py_binary(
         ":analysis_py",
         ":framework_py",
         ":jupyter_widgets_py",
-        "//bindings/pydrake:geometry_py",
+        "//bindings/pydrake/geometry",
         "//bindings/pydrake/multibody:parsing_py",
         "//bindings/pydrake/multibody:plant_py",
     ],
@@ -468,6 +450,7 @@ drake_py_unittest(
     ],
     deps = [
         ":controllers_py",
+        "//bindings/pydrake/common/test_utilities:deprecation_py",
         "//bindings/pydrake/examples",
         "//bindings/pydrake/multibody:parsing_py",
         "//bindings/pydrake/multibody:plant_py",
@@ -494,7 +477,6 @@ drake_py_unittest(
         ":primitives_py",
         ":test_util_py",
         "//bindings/pydrake:trajectories_py",
-        "//bindings/pydrake/common/test_utilities:deprecation_py",
         "//bindings/pydrake/common/test_utilities:numpy_compare_py",
     ],
 )
@@ -509,8 +491,8 @@ drake_py_unittest(
         ":analysis_py",
         ":framework_py",
         ":planar_scenegraph_visualizer_py",
-        "//bindings/pydrake:geometry_py",
         "//bindings/pydrake/common/test_utilities",
+        "//bindings/pydrake/geometry",
         "//bindings/pydrake/multibody",
     ],
 )
@@ -561,17 +543,9 @@ drake_py_unittest(
     tags = vtk_test_tags(),
     deps = [
         ":sensors_py",
-        "//bindings/pydrake:geometry_py",
         "//bindings/pydrake/common/test_utilities",
+        "//bindings/pydrake/geometry",
         "//bindings/pydrake/multibody:plant_py",
-    ],
-)
-
-drake_py_unittest(
-    name = "trajectory_optimization_test",
-    deps = [
-        ":trajectory_optimization_py",
-        "//bindings/pydrake/examples",
     ],
 )
 
@@ -583,7 +557,5 @@ drake_py_unittest(
         "//bindings/pydrake/common/test_utilities",
     ],
 )
-
-add_pybind_coverage_data()
 
 add_lint_tests_pydrake()

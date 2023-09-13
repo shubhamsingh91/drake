@@ -51,8 +51,7 @@ Run the "upgrades needed" report.  Copy its output into a temporary text file
 so that you can easily refer back to it as you proceed.
 
 ```
-  bazel build //tools/workspace:new_release
-  bazel-bin/tools/workspace/new_release
+  bazel run //tools/workspace:new_release
 ```
 
 For each external in the report, add a commit that upgrades it, as follows:
@@ -60,56 +59,56 @@ For each external in the report, add a commit that upgrades it, as follows:
 Run the script to perform one upgrade (for some external "foo"):
 
 ```
-  bazel-bin/tools/workspace/new_release --upgrade=foo
+  bazel run //tools/workspace:new_release -- --lint --commit foo
 ```
 
 If the automated update doesn't succeed, then you'll need to make the edits
 manually.  Ask for help in drake developers slack channel for ``#build``.
 
-If the automated update succeeded, then inspect the diffs in your editor.
-Some diffs will have an instructive comment nearby, e.g., "If you change
-this commit, then you need to do X, Y, Z afterward."  Follow any advice
-that you find.
+If the automated update succeeded, check the output of ``new_release`` for any
+additional steps that need to be manually performed to complete the upgrade.
+Follow any advice that is given.
 
-Run ``bazel test --config lint //...`` as a sanity check of the edits.
+If you didn't use ``--lint`` earlier, or need to re-test, run
+``bazel test --config lint //...`` as a sanity check of the changes.
 
-Once all edits are complete, add the commit using the instructions that
-were printed by ``new_release``, e.g.:
-
-```
-  git add tools/workspace/rules_python/repository.bzl
-  git commit -m'[workspace] Upgrade rules_python to latest release A.B.C'
-```
-
-Be sure to add any extra files that you edited, too.
+If any edits are needed, stage the changes and amend the commit using
+``git commit --amend``.
 
 Repeat this process for all upgrades.  You can re-run the ``new_release``
-report anytime, to get the remaining items that need attention.
+report anytime, to get the remaining items that need attention.  You can also
+list several externals to try to update at once, although this will complicate
+making changes to those commits if needed.
 
 Each external being upgraded should have exactly one commit that does the
-upgrade, and each commit should only impact exactly one external.  If we
+upgrade, and each commit should either a) only impact exactly one external, or
+b) impact exactly those externals of a cohort which need to be upgraded.  If we
 find any problem with an upgrade, we need to be able to revert the commit
 for just that one external upgrade, leaving the other upgrades intact.
+The ``new_release`` will automatically upgrade all externals of a cohort in a
+single operation.
 
 Once all upgrades are ready, open a Drake pull request and label it
 ``status: commits are properly curated``.  Open the Reviewable page and
 change the drop-down that says "Combine commits for review" to choose
 "Review each commit separately" instead.
 
-Once the all Jenkins builds of the pull request have passed,
-additionally launch a macOS build, per
-
-https://drake.mit.edu/jenkins.html#scheduling-an-on-demand-build
-
-Once the macOS build passes, assign the pull request for review.
+Once all of the Jenkins builds of the pull request have passed, assign the
+pull request for review. If the pull request contains no especially complicated
+changes, it may be assigned to the on-call platform reviewer and labelled
+``status: single reviewer ok``.
 
 For any non-trivial changes (i.e., changes that go beyond changing version
 numbers, checksums, or trivial fixups to patch files or code spelling), do not
 attempt to fix the problems just because you are accountable for the routine
 upgrade procedure every month. As a rule of thumb, if you need to spend more
-than 5-10 minutes on an upgrade, you should defer the work to a separate issue:
+than 5-10 minutes on an upgrade, you should defer the work to a separate pull
+request:
 
-* open an issue about the need for an upgrade of that one specific external;
+* open a pull request with the WIP patch for that one specific external;
+
+* ensure that the Jenkins output shows the problem (e.g., trigger any extra
+  non-default builds that failed);
 
 * assign it to the feature owner associated with that external (to find out who
   that is, ask for help in the drake developers ``#build`` slack channel); and
@@ -120,6 +119,10 @@ The main objective of the monthly upgrade is to ensure that we stay on top of
 problematic changes from upstream. If we discover such problems, we want to
 bring them to the attention of the feature owner; their steering should provide
 the most efficient path to resolve the problem.
+
+If an external required non-trivial changes, even if you were able to make the
+changes yourself, consider separating that external into its own pull request
+and assigning it to the associated feature owner.
 
 # Changing the version of third-party software manually
 

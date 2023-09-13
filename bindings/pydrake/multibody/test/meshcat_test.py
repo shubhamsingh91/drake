@@ -7,8 +7,9 @@ from pydrake.multibody.meshcat import (
 )
 
 import copy
-import os
 import unittest
+
+import numpy as np
 
 from pydrake.common import (
     FindResourceOrThrow,
@@ -25,7 +26,6 @@ from pydrake.multibody.parsing import (
 )
 from pydrake.multibody.plant import (
     AddMultibodyPlantSceneGraph,
-    MultibodyPlant,
 )
 from pydrake.systems.framework import (
     DiagramBuilder,
@@ -79,7 +79,7 @@ class TestMeshcat(unittest.TestCase):
         builder = DiagramBuilder()
         plant, scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
         parser = Parser(plant)
-        parser.AddModelFromFile(acrobot_file)
+        parser.AddModels(acrobot_file)
         plant.Finalize()
 
         # Construct a sliders system, using every available option.
@@ -128,13 +128,16 @@ class TestMeshcat(unittest.TestCase):
         # The Run function doesn't crash.
         builder.AddSystem(dut)
         diagram = builder.Build()
-        dut.Run(diagram=diagram, timeout=1.0, stop_button_keycode="ArrowLeft")
+        q = dut.Run(diagram=diagram,
+                    timeout=1.0,
+                    stop_button_keycode="ArrowLeft")
+        np.testing.assert_equal(q, [0, 0])
 
         # The SetPositions function doesn't crash (Acrobot has two positions).
         dut.SetPositions(q=[1, 2])
 
     def test_internal_point_contact_visualizer(self):
-        """A very basic existance test, since this class is internal use only.
+        """A very basic existence test, since this class is internal use only.
         The pydrake-internal user (meldis) has additional acceptance tests.
         """
         meshcat = Meshcat()
@@ -142,7 +145,7 @@ class TestMeshcat(unittest.TestCase):
         dut = _PointContactVisualizer(meshcat=meshcat, params=params)
 
     def test_internal_hydroelastic_contact_visualizer(self):
-        """A very basic existance test, since this class is internal use only.
+        """A very basic existence test, since this class is internal use only.
         The pydrake-internal user (meldis) has additional acceptance tests.
         """
         meshcat = Meshcat()

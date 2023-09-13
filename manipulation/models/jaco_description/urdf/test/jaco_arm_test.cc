@@ -23,8 +23,7 @@ std::ostream& operator<<(std::ostream& os, const TestCase& self) {
   return os;
 }
 
-class JacoArmParamsTest
-    : public ::testing::TestWithParam<TestCase> {};
+class JacoArmParamsTest : public ::testing::TestWithParam<TestCase> {};
 
 // Tests that a model can be loaded into a MultibodyPlant. This unit
 // test also verifies that the URDF can be parsed by the URDF parser.
@@ -36,12 +35,13 @@ TEST_P(JacoArmParamsTest, HasExpected) {
 
   multibody::MultibodyPlant<double> plant(0.0);
   multibody::Parser parser(&plant);
-  parser.AddModelFromFile(urdf);
+  parser.AddModels(urdf);
 
   EXPECT_EQ(plant.num_actuators(), param.num_actuators);
   EXPECT_EQ(plant.num_bodies(), param.num_bodies);
 }
 
+// clang-format off
 std::vector<TestCase> GenerateTestCases() {
   return std::vector<TestCase>{
     {"j2n6s300.urdf", 9,
@@ -75,6 +75,7 @@ std::vector<TestCase> GenerateTestCases() {
           2 /* world, base */ },
         };
 }
+// clang-format on
 
 INSTANTIATE_TEST_SUITE_P(JacoArmTest, JacoArmParamsTest,
                          testing::ValuesIn(GenerateTestCases()));

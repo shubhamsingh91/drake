@@ -12,6 +12,7 @@ talents to help make Drake successful.  Here's an alphabetical list: (note to co
 this is modeled directly, and shamelessly, on: http://eigen.tuxfamily.org/index.php?title=Main_Page#Credits
 {% endcomment %}
 
+* Alexandre Amice
 * Andy Barry
 * Alejandro Castro
 * John Carter
@@ -61,5 +62,6 @@ this is modeled directly, and shamelessly, on: http://eigen.tuxfamily.org/index.
 * [Russ Tedrake](http://people.csail.mit.edu/russt/)
 * Belinda Teh
 * Andres Valenzuela
+* [David von Wrangel](https://www.davidvonwrangel.com/)
 * Matthew Woehlke
 * Huihua Zhao

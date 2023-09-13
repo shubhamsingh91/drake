@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "drake/common/drake_throw.h"
+#include "drake/common/fmt_eigen.h"
 #include "drake/manipulation/util/robot_plan_utils.h"
 #include "drake/multibody/parsing/parser.h"
 
@@ -10,18 +11,17 @@ namespace drake {
 namespace manipulation {
 namespace util {
 
-using planner::ConstraintRelaxingIk;
+using multibody::ConstraintRelaxingIk;
 
 MoveIkDemoBase::MoveIkDemoBase(std::string robot_description,
-                               std::string base_link,
-                               std::string ik_link,
+                               std::string base_link, std::string ik_link,
                                int print_interval)
     : robot_description_(std::move(robot_description)),
       ik_link_(std::move(ik_link)),
       print_interval_(print_interval),
       plant_(0.0),
       constraint_relaxing_ik_(robot_description_, ik_link_) {
-  multibody::Parser(&plant_).AddModelFromFile(robot_description_);
+  multibody::Parser(&plant_).AddModels(robot_description_);
   plant_.WeldFrames(plant_.world_frame(),
                     plant_.GetBodyByName(base_link).body_frame());
   plant_.Finalize();
@@ -34,31 +34,26 @@ MoveIkDemoBase::~MoveIkDemoBase() {}
 
 void MoveIkDemoBase::set_joint_velocity_limits(
     const Eigen::Ref<const Eigen::VectorXd>& velocity_limits) {
-  DRAKE_THROW_UNLESS(velocity_limits.size() ==
-                     joint_velocity_limits_.size());
+  DRAKE_THROW_UNLESS(velocity_limits.size() == joint_velocity_limits_.size());
   joint_velocity_limits_ = velocity_limits;
 }
 
-void MoveIkDemoBase::HandleStatus(
-    const Eigen::Ref<const Eigen::VectorXd>& q) {
+void MoveIkDemoBase::HandleStatus(const Eigen::Ref<const Eigen::VectorXd>& q) {
   status_count_++;
   plant_.SetPositions(context_.get(), q);
 
   if (status_count_ % print_interval_ == 1) {
     const math::RigidTransform<double> current_link_pose =
-        plant_.EvalBodyPoseInWorld(
-            *context_, plant_.GetBodyByName(ik_link_));
+        plant_.EvalBodyPoseInWorld(*context_, plant_.GetBodyByName(ik_link_));
     const math::RollPitchYaw<double> rpy(current_link_pose.rotation());
-    drake::log()->info("{} at: {} {}",
-                       ik_link_,
-                       current_link_pose.translation().transpose(),
-                       rpy.vector().transpose());
+    drake::log()->info("{} at: {} {}", ik_link_,
+                       fmt_eigen(current_link_pose.translation().transpose()),
+                       fmt_eigen(rpy.vector().transpose()));
   }
 }
 
 std::optional<lcmt_robot_plan> MoveIkDemoBase::Plan(
     const math::RigidTransformd& goal_pose) {
-
   DRAKE_THROW_UNLESS(status_count_ > 0);
 
   // Create a single waypoint for our plan (the destination).
@@ -72,9 +67,8 @@ std::optional<lcmt_robot_plan> MoveIkDemoBase::Plan(
   std::vector<ConstraintRelaxingIk::IkCartesianWaypoint> waypoints;
   waypoints.push_back(wp);
   std::vector<Eigen::VectorXd> q_sol;
-  const bool result =
-      constraint_relaxing_ik_.PlanSequentialTrajectory(
-          waypoints, plant_.GetPositions(*context_), &q_sol);
+  const bool result = constraint_relaxing_ik_.PlanSequentialTrajectory(
+      waypoints, plant_.GetPositions(*context_), &q_sol);
   drake::log()->info("IK result: {}", result);
 
   if (result) {
@@ -87,10 +81,8 @@ std::optional<lcmt_robot_plan> MoveIkDemoBase::Plan(
     std::vector<double> times{0, 2};
     DRAKE_DEMAND(q_sol.size() == times.size());
 
-    ApplyJointVelocityLimits(
-        q_sol, joint_velocity_limits_, &times);
-    lcmt_robot_plan plan = EncodeKeyFrames(
-        joint_names_, times, q_sol);
+    ApplyJointVelocityLimits(q_sol, joint_velocity_limits_, &times);
+    lcmt_robot_plan plan = EncodeKeyFrames(joint_names_, times, q_sol);
     return plan;
   }
 

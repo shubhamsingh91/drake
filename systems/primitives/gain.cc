@@ -1,7 +1,6 @@
 #include "drake/systems/primitives/gain.h"
 
-#include <fmt/format.h>
-
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/unused.h"
 
 namespace drake {
@@ -14,13 +13,11 @@ Gain<T>::Gain(double k, int size) : Gain(Eigen::VectorXd::Ones(size) * k) {}
 
 template <typename T>
 Gain<T>::Gain(const Eigen::VectorXd& k)
-    : VectorSystem<T>(SystemTypeTag<Gain>{}, k.size(), k.size()),
-      k_(k) {}
+    : VectorSystem<T>(SystemTypeTag<Gain>{}, k.size(), k.size()), k_(k) {}
 
 template <typename T>
 template <typename U>
-Gain<T>::Gain(const Gain<U>& other)
-    : Gain<T>(other.get_gain_vector()) {}
+Gain<T>::Gain(const Gain<U>& other) : Gain<T>(other.get_gain_vector()) {}
 
 template <typename T>
 double Gain<T>::get_gain() const {
@@ -28,7 +25,7 @@ double Gain<T>::get_gain() const {
     throw std::runtime_error(fmt::format(
         "The gain vector [{}] cannot be represented as a scalar value. "
         "Please use drake::systems::Gain::get_gain_vector() instead.",
-        k_.transpose()));
+        fmt_eigen(k_.transpose())));
   }
   return k_[0];
 }
@@ -40,8 +37,7 @@ const Eigen::VectorXd& Gain<T>::get_gain_vector() const {
 
 template <typename T>
 void Gain<T>::DoCalcVectorOutput(
-    const Context<T>&,
-    const Eigen::VectorBlock<const VectorX<T>>& input,
+    const Context<T>&, const Eigen::VectorBlock<const VectorX<T>>& input,
     const Eigen::VectorBlock<const VectorX<T>>& state,
     Eigen::VectorBlock<VectorX<T>>* output) const {
   unused(state);

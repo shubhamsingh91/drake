@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load("@drake//tools/workspace:github.bzl", "github_archive")
 
 def mypy_internal_repository(
@@ -7,9 +5,16 @@ def mypy_internal_repository(
         mirrors = None):
     github_archive(
         name = name,
+        # This dependency is part of a "cohort" defined in
+        # drake/tools/workspace/new_release.py.  When practical, all members
+        # of this cohort should be updated at the same time.
         repository = "python/mypy",
-        commit = "v0.982",
-        sha256 = "22d642f7d2e0cf073585e61209d9775f6fa1bf57a2de0a9f992a73a59486d6e1",  # noqa
+        commit = "v1.5.1",
+        sha256 = "22894445313d989109498ea7a6b124034ab10cbb2b50f3878b81883eaa3290d2",  # noqa
         build_file = ":package.BUILD.bazel",
+        patches = [
+            ":patches/reject_double_colon.patch",
+            ":patches/timeout.patch",
+        ],
         mirrors = mirrors,
     )

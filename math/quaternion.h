@@ -26,14 +26,14 @@ namespace drake {
 namespace math {
 
 /**
- * Returns a unit quaternion that represents the same orientation as `q1`,
- * and has the "shortest" geodesic distance on the unit sphere to `q0`.
+ * Returns a unit quaternion that represents the same orientation as `quat2`,
+ * and has the "shortest" geodesic distance on the unit sphere to `quat1`.
  */
 template <typename Scalar> Eigen::Quaternion<Scalar> ClosestQuaternion(
-    const Eigen::Quaternion<Scalar>& q0,
-    const Eigen::Quaternion<Scalar>& q1) {
-  Eigen::Quaternion<Scalar> q = q1;
-  if (q0.dot(q) < 0)
+    const Eigen::Quaternion<Scalar>& quat1,
+    const Eigen::Quaternion<Scalar>& quat2) {
+  Eigen::Quaternion<Scalar> q = quat2;
+  if (quat1.dot(q) < 0)
     q.coeffs() *= -1;
   q.normalize();
   return q;
@@ -121,7 +121,7 @@ typename Derived1::Scalar quatDiffAxisInvar(
  * @return `true` if quat.w() is nonnegative (in canonical form), else `false`.
  */
 template<typename T>
-bool is_quaternion_in_canonical_form(const Eigen::Quaternion<T>& quat) {
+boolean<T> is_quaternion_in_canonical_form(const Eigen::Quaternion<T>& quat) {
   return quat.w() >= 0.0;
 }
 
@@ -161,13 +161,14 @@ Eigen::Quaternion<T> QuaternionToCanonicalForm(
  * tolerance), otherwise `false`.
  */
 template<typename T>
-bool AreQuaternionsEqualForOrientation(
+boolean<T> AreQuaternionsEqualForOrientation(
     const Eigen::Quaternion<T>& quat1,
     const Eigen::Quaternion<T>& quat2,
     const T tolerance) {
   const Eigen::Quaternion<T> quat1_canonical = QuaternionToCanonicalForm(quat1);
   const Eigen::Quaternion<T> quat2_canonical = QuaternionToCanonicalForm(quat2);
-  return quat1_canonical.isApprox(quat2_canonical, tolerance);
+  return (quat1_canonical.coeffs() - quat2_canonical.coeffs())
+             .template lpNorm<Eigen::Infinity>() <= tolerance;
 }
 
 // Note: To avoid dependence on Eigen's internal ordering of elements in its
@@ -277,7 +278,7 @@ T CalculateQuaternionDtConstraintViolation(const Eigen::Quaternion<T>& quat,
  * @return `true` if the quaternion constraint is satisfied within tolerance.
  */
 template <typename T>
-bool IsQuaternionValid(const Eigen::Quaternion<T>& quat,
+boolean<T> IsQuaternionValid(const Eigen::Quaternion<T>& quat,
                        const double tolerance) {
   using std::abs;
   const T quat_norm_error = abs(1.0 - quat.norm());
@@ -304,20 +305,22 @@ bool IsQuaternionValid(const Eigen::Quaternion<T>& quat,
  * @return `true` if both of the two previous constraints are within tolerance.
  */
 template <typename T>
-bool IsBothQuaternionAndQuaternionDtOK(const Eigen::Quaternion<T>& quat,
+boolean<T> IsBothQuaternionAndQuaternionDtOK(const Eigen::Quaternion<T>& quat,
                                        const Vector4<T>& quatDt,
                                        const double tolerance) {
   using std::abs;
 
-  // For an accurate test, the quaternion should be reasonably accurate.
-  if ( !IsQuaternionValid(quat, tolerance) ) return false;
+  if constexpr (scalar_predicate<T>::is_bool) {
+    // For an accurate test, the quaternion should be reasonably accurate.
+    if ( !IsQuaternionValid(quat, tolerance) ) return false;
+  }
 
   const T quatDt_test = CalculateQuaternionDtConstraintViolation(quat, quatDt);
   return abs(quatDt_test) <= tolerance;
 }
 
 
-/** This function tests if a quaternion and a quaternions time-derivative
+/** This function tests if a quaternion and a quaternion's time derivative
  * can calculate and match an angular velocity to within a tolerance.
  * Note: This function first tests if the quaternion [w, x, y, z] satisfies
  * w^2 + x^2 + y^2 + z^2 = 1 (to within tolerance) and if its time-derivative
@@ -372,14 +375,14 @@ Eigen::AngleAxis<T> QuaternionToAngleAxisLikeEigen(
     }
   }
   using std::abs;
-  result.angle() = T(2.) * atan2(sin_half_angle_abs, abs(quaternion.w()));
-  const Vector3<T> unit_axis(T(1.), T(0.), T(0.));
+  result.angle() = 2.0 * atan2(sin_half_angle_abs, abs(quaternion.w()));
+  const Vector3<T> unit_axis(1.0, 0.0, 0.0);
   // We use if_then_else here (instead of if statement) because using "if"
   // with symbolic expression causes runtime error in this case (The symbolic
   // formula needs to evaluate with an empty symbolic Environment).
-  const boolean<T> is_sin_angle_zero = sin_half_angle_abs == T(0.);
-  const boolean<T> is_w_negative = quaternion.w() < T(0.);
-  const T axis_sign = if_then_else(is_w_negative, T(-1), T(1));
+  const boolean<T> is_sin_angle_zero = sin_half_angle_abs == 0.0;
+  const boolean<T> is_w_negative = quaternion.w() < 0.0;
+  const T axis_sign = if_then_else(is_w_negative, -1.0, 1.0);
   result.axis() = if_then_else(
       is_sin_angle_zero, unit_axis,
       (axis_sign * quaternion.vec() / sin_half_angle_abs).eval());

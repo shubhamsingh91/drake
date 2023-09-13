@@ -2,17 +2,19 @@
 #include "drake/common/symbolic/expression/all.h"
 /* clang-format on */
 
-#include <sstream>
 #include <string>
 
 #include <gtest/gtest.h>
+
+#include "drake/common/fmt_eigen.h"
+#include "drake/common/test_utilities/limit_malloc.h"
 
 namespace drake {
 namespace symbolic {
 namespace {
 
-using std::ostringstream;
 using std::string;
+using test::LimitMalloc;
 
 class SymbolicMixingScalarTypesTest : public ::testing::Test {
   template <typename Scalar>
@@ -82,9 +84,7 @@ class SymbolicMixingScalarTypesTest : public ::testing::Test {
 
   template <typename Scalar>
   string to_string(const Eigen::MatrixBase<Scalar>& m) {
-    ostringstream oss;
-    oss << m;
-    return oss.str();
+    return fmt::to_string(fmt_eigen(m));
   }
 };
 
@@ -94,7 +94,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixAdditionExprVar) {
   const MatrixX<Expression> M3{M_expr_dyn_ + M_var_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ + M_var_dyn_};
   const string expected{
-      "      (2 * x)       (2 * y)\n      (2 * z)       (2 * w)"};
+      "(2 * x) (2 * y)\n"
+      "(2 * z) (2 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -107,7 +108,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixAdditionExprDouble) {
   const MatrixX<Expression> M3{M_expr_dyn_ + M_double_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ + M_double_dyn_};
   const string expected{
-      "      (1 + x)       (2 + y)\n      (3 + z)       (4 + w)"};
+      "(1 + x) (2 + y)\n"
+      "(3 + z) (4 + w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -120,7 +122,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixAdditionVarExpr) {
   const MatrixX<Expression> M3{M_var_dyn_ + M_expr_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ + M_expr_dyn_};
   const string expected{
-      "      (2 * x)       (2 * y)\n      (2 * z)       (2 * w)"};
+      "(2 * x) (2 * y)\n"
+      "(2 * z) (2 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -133,7 +136,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixAdditionVarDouble) {
   const MatrixX<Expression> M3{M_var_dyn_ + M_double_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ + M_double_dyn_};
   const string expected{
-      "      (1 + x)       (2 + y)\n      (3 + z)       (4 + w)"};
+      "(1 + x) (2 + y)\n"
+      "(3 + z) (4 + w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -146,7 +150,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixAdditionDoubleExpr) {
   const MatrixX<Expression> M3{M_double_dyn_ + M_expr_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ + M_expr_dyn_};
   const string expected{
-      "      (1 + x)       (2 + y)\n      (3 + z)       (4 + w)"};
+      "(1 + x) (2 + y)\n"
+      "(3 + z) (4 + w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -159,7 +164,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixAdditionDoubleVar) {
   const MatrixX<Expression> M3{M_double_dyn_ + M_var_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ + M_var_dyn_};
   const string expected{
-      "      (1 + x)       (2 + y)\n      (3 + z)       (4 + w)"};
+      "(1 + x) (2 + y)\n"
+      "(3 + z) (4 + w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -184,7 +190,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixSubtractionExprDouble) {
   const MatrixX<Expression> M3{M_expr_dyn_ - M_double_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ - M_double_dyn_};
   const string expected{
-      "       (-1 + x)        (-2 + y)\n       (-3 + z)        (-4 + w)"};
+      "(-1 + x) (-2 + y)\n"
+      "(-3 + z) (-4 + w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -209,7 +216,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixSubtractionVarDouble) {
   const MatrixX<Expression> M3{M_var_dyn_ - M_double_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ - M_double_dyn_};
   const string expected{
-      "       (-1 + x)        (-2 + y)\n       (-3 + z)        (-4 + w)"};
+      "(-1 + x) (-2 + y)\n"
+      "(-3 + z) (-4 + w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -222,7 +230,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixSubtractionDoubleExpr) {
   const MatrixX<Expression> M3{M_double_dyn_ - M_expr_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ - M_expr_dyn_};
   const string expected{
-      "      (1 - x)       (2 - y)\n      (3 - z)       (4 - w)"};
+      "(1 - x) (2 - y)\n"
+      "(3 - z) (4 - w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -235,7 +244,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixSubtractionDoubleVar) {
   const MatrixX<Expression> M3{M_double_dyn_ - M_var_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ - M_var_dyn_};
   const string expected{
-      "      (1 - x)       (2 - y)\n      (3 - z)       (4 - w)"};
+      "(1 - x) (2 - y)\n"
+      "(3 - z) (4 - w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -248,10 +258,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationExprVar) {
   const MatrixX<Expression> M3{M_expr_dyn_ * M_var_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ * M_var_dyn_};
   const string expected{
-      "                    ((y * z) + pow(x, 2))"
-      "                     ((x * y) + (y * w))\n"
-      "                    ((x * z) + (z * w))"
-      "                     ((y * z) + pow(w, 2))"};
+      "((y * z) + pow(x, 2))   ((x * y) + (y * w))\n"
+      "  ((x * z) + (z * w)) ((y * z) + pow(w, 2))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -264,8 +272,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationExprVar) {
   const MatrixX<Expression> M3{M_expr_dyn_ * V_var_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ * V_var_dyn_};
   const string expected{
-      "                      (pow(x, 2) + pow(y, 2))\n"
-      "                      ((x * z) + (y * w))"};
+      "(pow(x, 2) + pow(y, 2))\n"
+      "    ((x * z) + (y * w))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -277,9 +285,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorMatrixMultiplicationExprVar) {
   const MatrixX<Expression> M2{V_expr_fixed_.transpose() * M_var_dyn_};
   const MatrixX<Expression> M3{V_expr_dyn_.transpose() * M_var_fixed_};
   const MatrixX<Expression> M4{V_expr_dyn_.transpose() * M_var_dyn_};
-  const string expected{
-      "                    ((y * z) + pow(x, 2))"
-      "                     ((x * y) + (y * w))"};
+  const string expected{"((y * z) + pow(x, 2))   ((x * y) + (y * w))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -291,7 +297,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorVectorMultiplicationExprVar) {
   const MatrixX<Expression> M2{V_expr_fixed_.transpose() * V_var_dyn_};
   const MatrixX<Expression> M3{V_expr_dyn_.transpose() * V_var_fixed_};
   const MatrixX<Expression> M4{V_expr_dyn_.transpose() * V_var_dyn_};
-  const string expected{"                      (pow(x, 2) + pow(y, 2))"};
+  const string expected{"(pow(x, 2) + pow(y, 2))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -304,10 +310,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationVarExpr) {
   const MatrixX<Expression> M3{M_var_dyn_ * M_expr_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ * M_expr_dyn_};
   const string expected{
-      "                    ((y * z) + pow(x, 2))"
-      "                     ((x * y) + (y * w))\n"
-      "                    ((x * z) + (z * w))"
-      "                     ((y * z) + pow(w, 2))"};
+      "((y * z) + pow(x, 2))   ((x * y) + (y * w))\n"
+      "  ((x * z) + (z * w)) ((y * z) + pow(w, 2))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -320,8 +324,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationVarExpr) {
   const MatrixX<Expression> M3{M_var_dyn_ * V_expr_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ * V_expr_dyn_};
   const string expected{
-      "                      (pow(x, 2) + pow(y, 2))\n"
-      "                      ((x * z) + (y * w))"};
+      "(pow(x, 2) + pow(y, 2))\n"
+      "    ((x * z) + (y * w))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -333,9 +337,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorMatrixMultiplicationVarExpr) {
   const MatrixX<Expression> M2{V_var_fixed_.transpose() * M_expr_dyn_};
   const MatrixX<Expression> M3{V_var_dyn_.transpose() * M_expr_fixed_};
   const MatrixX<Expression> M4{V_var_dyn_.transpose() * M_expr_dyn_};
-  const string expected{
-      "                    ((y * z) + pow(x, 2))"
-      "                     ((x * y) + (y * w))"};
+  const string expected{"((y * z) + pow(x, 2))   ((x * y) + (y * w))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -347,7 +349,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorVectorMultiplicationVarExpr) {
   const MatrixX<Expression> M2{V_var_fixed_.transpose() * V_expr_dyn_};
   const MatrixX<Expression> M3{V_var_dyn_.transpose() * V_expr_fixed_};
   const MatrixX<Expression> M4{V_var_dyn_.transpose() * V_expr_dyn_};
-  const string expected{"                      (pow(x, 2) + pow(y, 2))"};
+  const string expected{"(pow(x, 2) + pow(y, 2))"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -360,10 +362,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationExprDouble) {
   const MatrixX<Expression> M3{M_expr_dyn_ * M_double_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ * M_double_dyn_};
   const string expected{
-      "              (x + 3 * y)"
-      "               (2 * x + 4 * y)\n"
-      "              (z + 3 * w)"
-      "               (2 * z + 4 * w)"};
+      "(x + 3 * y) (2 * x + 4 * y)\n"
+      "(z + 3 * w) (2 * z + 4 * w)"};
 }
 
 TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationExprDouble) {
@@ -371,7 +371,9 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationExprDouble) {
   const MatrixX<Expression> M2{M_expr_fixed_ * V_double_dyn_};
   const MatrixX<Expression> M3{M_expr_dyn_ * V_double_fixed_};
   const MatrixX<Expression> M4{M_expr_dyn_ * V_double_dyn_};
-  const string expected{"          (x + 2 * y)\n          (z + 2 * w)"};
+  const string expected{
+      "(x + 2 * y)\n"
+      "(z + 2 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -383,8 +385,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorMatrixMultiplicationExprDouble) {
   const MatrixX<Expression> M2{V_expr_fixed_.transpose() * M_double_dyn_};
   const MatrixX<Expression> M3{V_expr_dyn_.transpose() * M_double_fixed_};
   const MatrixX<Expression> M4{V_expr_dyn_.transpose() * M_double_dyn_};
-  const string expected{
-      "              (x + 3 * y)               (2 * x + 4 * y)"};
+  const string expected{"    (x + 3 * y) (2 * x + 4 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -396,7 +397,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorVectorMultiplicationExprDouble) {
   const MatrixX<Expression> M2{V_expr_fixed_.transpose() * V_double_dyn_};
   const MatrixX<Expression> M3{V_expr_dyn_.transpose() * V_double_fixed_};
   const MatrixX<Expression> M4{V_expr_dyn_.transpose() * V_double_dyn_};
-  const string expected{"          (x + 2 * y)"};
+  const string expected{"(x + 2 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -409,10 +410,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationDoubleExpr) {
   const MatrixX<Expression> M3{M_double_dyn_ * M_expr_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ * M_expr_dyn_};
   const string expected{
-      "              (x + 2 * z)"
-      "               (y + 2 * w)\n"
-      "              (3 * x + 4 * z)"
-      "               (3 * y + 4 * w)"};
+      "    (x + 2 * z)     (y + 2 * w)\n"
+      "(3 * x + 4 * z) (3 * y + 4 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -425,7 +424,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationDoubleExpr) {
   const MatrixX<Expression> M3{M_double_dyn_ * V_expr_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ * V_expr_dyn_};
   const string expected{
-      "              (x + 2 * y)\n              (3 * x + 4 * y)"};
+      "    (x + 2 * y)\n"
+      "(3 * x + 4 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -437,7 +437,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorMatrixMultiplicationDoubleExpr) {
   const MatrixX<Expression> M2{V_double_fixed_.transpose() * M_expr_dyn_};
   const MatrixX<Expression> M3{V_double_dyn_.transpose() * M_expr_fixed_};
   const MatrixX<Expression> M4{V_double_dyn_.transpose() * M_expr_dyn_};
-  const string expected{"          (x + 2 * z)           (y + 2 * w)"};
+  const string expected{"(x + 2 * z) (y + 2 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -449,7 +449,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorVectorMultiplicationDoubleExpr) {
   const MatrixX<Expression> M2{V_double_fixed_.transpose() * V_expr_dyn_};
   const MatrixX<Expression> M3{V_double_dyn_.transpose() * V_expr_fixed_};
   const MatrixX<Expression> M4{V_double_dyn_.transpose() * V_expr_dyn_};
-  const string expected{"          (x + 2 * y)"};
+  const string expected{"(x + 2 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -462,10 +462,19 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationVarDouble) {
   const MatrixX<Expression> M3{M_var_dyn_ * M_double_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ * M_double_dyn_};
   const string expected{
-      "              (x + 3 * y)"
-      "               (2 * x + 4 * y)\n"
-      "              (z + 3 * w)"
-      "               (2 * z + 4 * w)"};
+      "    (x + 3 * y) (2 * x + 4 * y)\n"
+      "    (z + 3 * w) (2 * z + 4 * w)"};
+}
+
+TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationVarDoubleHeap) {
+  M_double_fixed_ = Eigen::Matrix2d::Identity();
+  const int expected_alloc =
+      // The temporary flat_hash_set.
+      1
+      // One expression cell for each variable.
+      + 4;
+  LimitMalloc guard({.max_num_allocations = expected_alloc});
+  auto result = (M_var_fixed_ * M_double_fixed_).eval();
 }
 
 TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationVarDouble) {
@@ -473,7 +482,9 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationVarDouble) {
   const MatrixX<Expression> M2{M_var_fixed_ * V_double_dyn_};
   const MatrixX<Expression> M3{M_var_dyn_ * V_double_fixed_};
   const MatrixX<Expression> M4{M_var_dyn_ * V_double_dyn_};
-  const string expected{"          (x + 2 * y)\n          (z + 2 * w)"};
+  const string expected{
+      "(x + 2 * y)\n"
+      "(z + 2 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -485,8 +496,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorMatrixMultiplicationVarDouble) {
   const MatrixX<Expression> M2{V_var_fixed_.transpose() * M_double_dyn_};
   const MatrixX<Expression> M3{V_var_dyn_.transpose() * M_double_fixed_};
   const MatrixX<Expression> M4{V_var_dyn_.transpose() * M_double_dyn_};
-  const string expected{
-      "              (x + 3 * y)               (2 * x + 4 * y)"};
+  const string expected{"    (x + 3 * y) (2 * x + 4 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -498,7 +508,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorVectorMultiplicationVarDouble) {
   const MatrixX<Expression> M2{V_var_fixed_.transpose() * V_double_dyn_};
   const MatrixX<Expression> M3{V_var_dyn_.transpose() * V_double_fixed_};
   const MatrixX<Expression> M4{V_var_dyn_.transpose() * V_double_dyn_};
-  const string expected{"          (x + 2 * y)"};
+  const string expected{"(x + 2 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -511,14 +521,23 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationDoubleVar) {
   const MatrixX<Expression> M3{M_double_dyn_ * M_var_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ * M_var_dyn_};
   const string expected{
-      "              (x + 2 * z)"
-      "               (y + 2 * w)\n"
-      "              (3 * x + 4 * z)"
-      "               (3 * y + 4 * w)"};
+      "    (x + 2 * z)     (y + 2 * w)\n"
+      "(3 * x + 4 * z) (3 * y + 4 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
   EXPECT_EQ(to_string(M4), expected);
+}
+
+TEST_F(SymbolicMixingScalarTypesTest, MatrixMatrixMultiplicationDoubleVarHeap) {
+  M_double_fixed_ = Eigen::Matrix2d::Identity();
+  const int expected_alloc =
+      // The temporary flat_hash_set.
+      1
+      // One expression cell for each variable.
+      + 4;
+  LimitMalloc guard({.max_num_allocations = expected_alloc});
+  auto result = (M_double_fixed_ * M_var_fixed_).eval();
 }
 
 TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationDoubleVar) {
@@ -527,7 +546,8 @@ TEST_F(SymbolicMixingScalarTypesTest, MatrixVectorMultiplicationDoubleVar) {
   const MatrixX<Expression> M3{M_double_dyn_ * V_var_fixed_};
   const MatrixX<Expression> M4{M_double_dyn_ * V_var_dyn_};
   const string expected{
-      "              (x + 2 * y)\n              (3 * x + 4 * y)"};
+      "    (x + 2 * y)\n"
+      "(3 * x + 4 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -539,7 +559,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorMatrixMultiplicationDoubleVar) {
   const MatrixX<Expression> M2{V_double_fixed_.transpose() * M_var_dyn_};
   const MatrixX<Expression> M3{V_double_dyn_.transpose() * M_var_fixed_};
   const MatrixX<Expression> M4{V_double_dyn_.transpose() * M_var_dyn_};
-  const string expected{"          (x + 2 * z)           (y + 2 * w)"};
+  const string expected{"(x + 2 * z) (y + 2 * w)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);
@@ -551,7 +571,7 @@ TEST_F(SymbolicMixingScalarTypesTest, VectorVectorMultiplicationDoubleVar) {
   const MatrixX<Expression> M2{V_double_fixed_.transpose() * V_var_dyn_};
   const MatrixX<Expression> M3{V_double_dyn_.transpose() * V_var_fixed_};
   const MatrixX<Expression> M4{V_double_dyn_.transpose() * V_var_dyn_};
-  const string expected{"          (x + 2 * y)"};
+  const string expected{"(x + 2 * y)"};
   EXPECT_EQ(to_string(M1), expected);
   EXPECT_EQ(to_string(M2), expected);
   EXPECT_EQ(to_string(M3), expected);

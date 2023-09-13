@@ -10,14 +10,10 @@
 namespace drake {
 namespace visualization {
 
-// TODO(jwnimmer-tri) Add an option run a Meshcat server within the builder,
-// and/or disable LCM entirely.
+// TODO(jwnimmer-tri or trowell-tri) Add an option to disable LCM entirely.
 
-/** Settings for what MultibodyPlant and SceneGraph should send to meldis
-and/or drake_visualizer.
-
-@experimental The exact configuration details (names and types) are subject to
-change as we polish this new feature.
+/** Settings for what MultibodyPlant and SceneGraph should send to Meshcat,
+Meldis, and/or the legacy ``drake_visualizer`` application of days past.
 
 See ApplyVisualizationConfig() for how to enact this configuration. */
 struct VisualizationConfig {
@@ -30,6 +26,10 @@ struct VisualizationConfig {
     a->Visit(DRAKE_NVP(publish_proximity));
     a->Visit(DRAKE_NVP(default_proximity_color));
     a->Visit(DRAKE_NVP(publish_contacts));
+    a->Visit(DRAKE_NVP(publish_inertia));
+    a->Visit(DRAKE_NVP(enable_meshcat_creation));
+    a->Visit(DRAKE_NVP(delete_on_initialization_event));
+    a->Visit(DRAKE_NVP(enable_alpha_sliders));
   }
 
   /** Which LCM URL to use.
@@ -37,7 +37,7 @@ struct VisualizationConfig {
   std::string lcm_bus{"default"};
 
   /** The duration (in seconds) between published LCM messages that update
-  visualization. (To help avoid small simulation timesteps, we use a default
+  visualization. (To help avoid small simulation time steps, we use a default
   period that has an exact representation in binary floating point;
   see drake#15021 for details.) */
   double publish_period{1 / 64.0};
@@ -47,7 +47,7 @@ struct VisualizationConfig {
 
   /** The color to apply to any illustration geometry that hasn't defined one.
   The vector must be of size three (rgb) or four (rgba). */
-  geometry::Rgba default_illustration_color{0.9, 0.9, 0.9};
+  geometry::Rgba default_illustration_color{0.9, 0.9, 0.9, 1.0};
 
   /** Whether to show proximity geometry. */
   bool publish_proximity{true};
@@ -56,8 +56,22 @@ struct VisualizationConfig {
   The vector must be of size three (rgb) or four (rgba). */
   geometry::Rgba default_proximity_color{1, 0, 0, 0.5};
 
+  /** Whether to show body inertia. */
+  bool publish_inertia{true};
+
   /** Whether to show contact forces. */
   bool publish_contacts{true};
+
+  /** Whether to create a Meshcat object if needed. */
+  bool enable_meshcat_creation{true};
+
+  /** Determines whether to send a Meshcat::Delete() messages to the Meshcat
+   object (if any) on an initialization event to remove any visualizations,
+   e.g., from a previous simulation. */
+  bool delete_on_initialization_event{true};
+
+  /** Determines whether to enable alpha sliders for geometry display. */
+  bool enable_alpha_sliders{false};
 };
 
 }  // namespace visualization

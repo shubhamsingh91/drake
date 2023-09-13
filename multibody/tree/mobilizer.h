@@ -209,7 +209,7 @@ template<typename T> class BodyNode;
 //
 // @tparam_default_scalar
 template <typename T>
-class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
+class Mobilizer : public MultibodyElement<T> {
  public:
   DRAKE_NO_COPY_NO_MOVE_NO_ASSIGN(Mobilizer)
 
@@ -227,6 +227,11 @@ class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
       throw std::runtime_error(
           "The provided inboard and outboard frames reference the same object");
     }
+  }
+
+  /// Returns this element's unique index.
+  MobilizerIndex index() const {
+    return this->template index_impl<MobilizerIndex>();
   }
 
   // Returns the number of generalized coordinates granted by this mobilizer.
@@ -376,7 +381,7 @@ class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
   // evaluating any random distributions that were declared (via e.g.
   // MobilizerImpl::set_random_position_distribution() and/or
   // MobilizerImpl::set_random_velocity_distribution(), or calling
-  // set_zero_state() if none have been declared. Note that the intended
+  // set_default_state() if none have been declared. Note that the intended
   // caller of this method is `MultibodyTree::SetRandomState()` which treats
   // the independent samples returned from this sample as an initial guess,
   // but may change the value in order to "project" it onto a constraint
@@ -522,6 +527,8 @@ class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
     DoCalcNplusMatrix(context, Nplus);
   }
 
+  virtual bool is_velocity_equal_to_qdot() const = 0;
+
   // Computes the kinematic mapping `q̇ = N(q)⋅v` between generalized
   // velocities v and time derivatives of the generalized positions `qdot`.
   // The generalized positions vector is stored in `context`.
@@ -633,6 +640,31 @@ class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
       const internal::BodyNode<T>* parent_node,
       const Body<T>* body, const Mobilizer<T>* mobilizer) const = 0;
 
+  // Lock the mobilizer. Its generalized velocities will be 0 until it is
+  // unlocked.
+  void Lock(systems::Context<T>* context) const {
+    // Joint locking is only supported for discrete mode.
+    context->get_mutable_abstract_parameter(is_locked_parameter_index_)
+        .set_value(true);
+    this->get_parent_tree()
+        .GetMutableVelocities(context)
+        .segment(this->velocity_start_in_v(), this->num_velocities())
+        .setZero();
+  }
+
+  // Unlock the mobilizer. Unlocking is not yet supported for continuous-mode
+  // systems.
+  void Unlock(systems::Context<T>* context) const {
+    context->get_mutable_abstract_parameter(is_locked_parameter_index_)
+        .set_value(false);
+  }
+
+  // @return true if the mobilizer is locked, false otherwise.
+  bool is_locked(const systems::Context<T>& context) const {
+    return context.get_parameters().template get_abstract_parameter<bool>(
+        is_locked_parameter_index_);
+  }
+
  protected:
   // NVI to CalcNMatrix(). Implementations can safely assume that N is not the
   // nullptr and that N has the proper size.
@@ -670,6 +702,16 @@ class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
       const MultibodyTree<symbolic::Expression>& tree_clone) const = 0;
   // @}
 
+  // Implementation for MultibodyElement::DoDeclareParameters().
+  void DoDeclareParameters(
+      internal::MultibodyTreeSystem<T>* tree_system) override {
+    // Declare parent class's parameters
+    MultibodyElement<T>::DoDeclareParameters(tree_system);
+
+    is_locked_parameter_index_ =
+        this->DeclareAbstractParameter(tree_system, Value<bool>(false));
+  }
+
  private:
   // Implementation for MultibodyElement::DoSetTopology().
   // At MultibodyTree::Finalize() time, each mobilizer retrieves its topology
@@ -681,6 +723,10 @@ class Mobilizer : public MultibodyElement<Mobilizer, T, MobilizerIndex> {
   const Frame<T>& inboard_frame_;
   const Frame<T>& outboard_frame_;
   MobilizerTopology topology_;
+
+  // System parameter index for `this` mobilizer's lock state stored in a
+  // context.
+  systems::AbstractParameterIndex is_locked_parameter_index_;
 };
 
 }  // namespace internal

@@ -3,9 +3,14 @@
 #include <algorithm>
 #include <utility>
 
+#include <fmt/format.h>
+
 #include "drake/common/default_scalars.h"
 #include "drake/common/find_resource.h"
+#include "drake/geometry/geometry_roles.h"
+#include "drake/geometry/proximity_properties.h"
 #include "drake/multibody/parsing/parser.h"
+#include "drake/multibody/plant/coulomb_friction.h"
 #include "drake/systems/framework/diagram_builder.h"
 
 using drake::geometry::SceneGraph;
@@ -27,7 +32,7 @@ IiwaKinematicConstraintTest::IiwaKinematicConstraintTest() {
   plant_->RegisterAsSourceForSceneGraph(
       builder.AddSystem<SceneGraph<double>>());
   multibody::Parser parser{plant_};
-  parser.AddModelFromFile(iiwa_path, "iiwa");
+  parser.AddModels(iiwa_path);
   plant_->WeldFrames(plant_->world_frame(),
                      plant_->GetFrameByName("iiwa_link_0"));
   plant_->Finalize();
@@ -79,10 +84,10 @@ std::unique_ptr<MultibodyPlant<T>> ConstructTwoFreeBodiesPlant() {
 std::unique_ptr<MultibodyPlant<double>> ConstructIiwaPlant(
     const std::string& file_path, double time_step, int num_iiwa) {
   auto plant = std::make_unique<MultibodyPlant<double>>(time_step);
+  Parser parser(plant.get());
+  parser.SetAutoRenaming(true);
   for (int i = 0; i < num_iiwa; ++i) {
-    const auto iiwa_instance =
-        Parser(plant.get())
-            .AddModelFromFile(file_path, "iiwa" + std::to_string(i));
+    const auto iiwa_instance = parser.AddModels(file_path).at(0);
     plant->WeldFrames(plant->world_frame(),
                       plant->GetFrameByName("iiwa_link_0", iiwa_instance));
   }
@@ -139,6 +144,48 @@ TwoFreeSpheresTest::TwoFreeSpheresTest() {
       *plant_autodiff_, diagram_context_autodiff_.get()));
 }
 
+SpheresAndWallsTest::SpheresAndWallsTest() : builder_{} {
+  builder_.plant().set_name("spheres_and_walls");
+  geometry::ProximityProperties proximity_properties{};
+  // Kinematics doesn't care about robot dynamics. Use arbitrary material
+  // properties.
+  AddContactMaterial(0.1, 250, multibody::CoulombFriction<double>{0.9, 0.5},
+                     &proximity_properties);
+  left_wall_ = builder_.plant().RegisterCollisionGeometry(
+      builder_.plant().world_body(),
+      math::RigidTransformd(Eigen::Vector3d(-(wall_length_ / 2 + 0.05), 0, 0)),
+      geometry::Box(0.1, wall_length_, 1), "left_wall", proximity_properties);
+  right_wall_ = builder_.plant().RegisterCollisionGeometry(
+      builder_.plant().world_body(),
+      math::RigidTransformd(Eigen::Vector3d(wall_length_ / 2 + 0.05, 0, 0)),
+      geometry::Box(0.1, wall_length_, 1), "right_wall", proximity_properties);
+  top_wall_ = builder_.plant().RegisterCollisionGeometry(
+      builder_.plant().world_body(),
+      math::RigidTransformd(Eigen::Vector3d(0, wall_length_ / 2 + 0.05, 0)),
+      geometry::Box(wall_length_, 0.1, 1), "top_wall", proximity_properties);
+  bottom_wall_ = builder_.plant().RegisterCollisionGeometry(
+      builder_.plant().world_body(),
+      math::RigidTransformd(Eigen::Vector3d(0, -(wall_length_ / 2 + 0.05), 0)),
+      geometry::Box(wall_length_, 0.1, 1), "bottom_wall", proximity_properties);
+  // Use arbitrary inertia.
+  const multibody::SpatialInertia<double> spatial_inertia(
+      1, Eigen::Vector3d::Zero(),
+      multibody::UnitInertia<double>(0.001, 0.001, 0.001));
+
+  for (int i = 0; i < static_cast<int>(body_indices_.size()); ++i) {
+    body_indices_[i] =
+        builder_.plant()
+            .AddRigidBody(fmt::format("body{}", i), spatial_inertia)
+            .index();
+    spheres_[i] = builder_.plant().RegisterCollisionGeometry(
+        builder_.plant().get_body(body_indices_[i]),
+        math::RigidTransformd(Eigen::Vector3d::Zero()),
+        geometry::Sphere(radius_), fmt::format("sphere{}", i),
+        proximity_properties);
+  }
+  builder_.plant().Finalize();
+}
+
 template <typename T>
 std::unique_ptr<systems::Diagram<T>> ConstructBoxSphereDiagram(
     const Eigen::Vector3d& box_size, double radius,
@@ -157,9 +204,9 @@ std::unique_ptr<systems::Diagram<T>> ConstructBoxSphereDiagram(
   const auto& sphere = (*plant)->AddRigidBody(
       "sphere", SpatialInertia<double>(1, Eigen::Vector3d::Zero(),
                                        UnitInertia<double>(1, 1, 1)));
-  (*plant)->RegisterCollisionGeometry(
-      sphere, RigidTransformd::Identity(), geometry::Sphere(radius), "sphere",
-      CoulombFriction<double>(0.9, 0.8));
+  (*plant)->RegisterCollisionGeometry(sphere, RigidTransformd::Identity(),
+                                      geometry::Sphere(radius), "sphere",
+                                      CoulombFriction<double>(0.9, 0.8));
 
   *box_frame_index = box.body_frame().index();
   *sphere_frame_index = sphere.body_frame().index();
@@ -212,8 +259,8 @@ T BoxSphereSignedDistance(const Eigen::Ref<const Eigen::Vector3d>& box_size,
     return -(half_size - p_BS.array().abs()).minCoeff() - radius;
   } else {
     T signed_distance = 0;
-    using std::pow;
     using std::abs;
+    using std::pow;
     for (int i = 0; i < 3; ++i) {
       // Compute the distance from the sphere center box face along the i'th
       // dimension.
@@ -226,10 +273,8 @@ T BoxSphereSignedDistance(const Eigen::Ref<const Eigen::Vector3d>& box_size,
   }
 }
 
-DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS((
-    &ConstructTwoFreeBodiesPlant<T>,
-    &BoxSphereSignedDistance<T>
-))
+DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_NONSYMBOLIC_SCALARS(
+    (&ConstructTwoFreeBodiesPlant<T>, &BoxSphereSignedDistance<T>))
 
 }  // namespace multibody
 }  // namespace drake

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "drake/common/drake_copyable.h"
 #include "drake/common/eigen_types.h"
@@ -13,6 +15,63 @@ namespace internal {
 
 // TODO(amcastro-tri): update reference [Castro et al., 2022] to the follow up
 // paper on arbitrary constraints.
+
+/* Structure to store data needed for SapHolonomicConstraint computations.
+ @tparam_nonsymbolic_scalar */
+template <typename T>
+class SapHolonomicConstraintData {
+ public:
+  DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(SapHolonomicConstraintData);
+
+  /* Constructs data for a SapHolonomicConstraintData.
+     Refer to SapHolonomicConstraint's documentation for further details.
+     @param R Regularization parameters.
+     @param v_hat Bias term. */
+  SapHolonomicConstraintData(VectorX<T> R, VectorX<T> v_hat) {
+    const int nk = R.size();
+    parameters_.R_inv = R.cwiseInverse();
+    parameters_.R = std::move(R);
+    parameters_.v_hat = std::move(v_hat);
+    vc_.resize(nk);
+    y_.resize(nk);
+    gamma_.resize(nk);
+    dPdy_.resize(nk, nk);
+  }
+
+  /* Regularization R. */
+  const VectorX<T>& R() const { return parameters_.R; }
+
+  /* Inverse of the regularization, R⁻¹. */
+  const VectorX<T>& R_inv() const { return parameters_.R_inv; }
+
+  /* Constraint bias. */
+  const VectorX<T>& v_hat() const { return parameters_.v_hat; }
+
+  /* Const access. */
+  const VectorX<T>& vc() const { return vc_; }
+  const VectorX<T>& y() const { return y_; }
+  const VectorX<T>& gamma() const { return gamma_; }
+  const MatrixX<T>& dPdy() const { return dPdy_; }
+
+  /* Mutable access. */
+  VectorX<T>& mutable_vc() { return vc_; }
+  VectorX<T>& mutable_y() { return y_; }
+  VectorX<T>& mutable_gamma() { return gamma_; }
+  MatrixX<T>& mutable_dPdy() { return dPdy_; }
+
+ private:
+  struct ConstParameters {
+    VectorX<T> R;      // Regularization R.
+    VectorX<T> R_inv;  // Inverse of the regularization, R⁻¹.
+    VectorX<T> v_hat;  // Constraint velocity bias.
+  };
+  ConstParameters parameters_;
+
+  VectorX<T> vc_;     // Constraint velocity.
+  VectorX<T> y_;      // Un-projected impulse y = −R⁻¹⋅(vc−v̂)
+  VectorX<T> gamma_;  // Projected impulse γ = P(y).
+  MatrixX<T> dPdy_;   // Gradient of the projection γ = P(y) w.r.t. y.
+};
 
 /* Implements an arbitrary holonomic constraint for the SAP formulation [Castro
  et al., 2022].
@@ -43,17 +102,35 @@ namespace internal {
     P(y) = max(γₗ, min(γᵤ, y))
   independent of the compliant regularization.
 
+  On SAP regularization and bias:
+   Here we provide details on the computation of the regularization terms R
+   performed by CalcDiagonalRegularization() and the velocity bias v̂ performed
+   by CalcBiasTerm(). SAP approximates the constraint fuction as:
+     g(v) ≈ g₀ + δt⋅ġ(v) = g₀ + δt⋅(J⋅v + b)
+   With this approximation the unprojected impulses y(v) = −δt⋅k⋅(g + τ⋅ġ) can
+   be written as:
+     y(v) = −R⁻¹⋅(J⋅v − v̂)
+   with the regularization R defined as:
+     R⁻¹ = δt⋅(δt + τ)⋅k
+   and the velocity bias v̂ as:
+     v̂ = −g₀/(δt + τ) − b
+
  [Castro et al., 2022] Castro A., Permenter F. and Han X., 2021. An
    Unconstrained Convex Formulation of Compliant Contact. Available at
    https://arxiv.org/abs/2110.10107
 
  @tparam_nonsymbolic_scalar */
-// TODO(amcastro-tri): allow to instantiate holonomic constraints with a nonzero
-// bias term b = ∂g/∂t.
 template <typename T>
-class SapHolonomicConstraint final : public SapConstraint<T> {
+class SapHolonomicConstraint : public SapConstraint<T> {
  public:
-  DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(SapHolonomicConstraint);
+  /* We do not allow copy, move, or assignment generally to avoid slicing.
+    Protected copy construction is enabled for sub-classes to use in their
+    implementation of DoClone(). */
+  //@{
+  SapHolonomicConstraint& operator=(const SapHolonomicConstraint&) = delete;
+  SapHolonomicConstraint(SapHolonomicConstraint&&) = delete;
+  SapHolonomicConstraint& operator=(SapHolonomicConstraint&&) = delete;
+  //@}
 
   /* Numerical parameters that define the constraint. Refer to this class's
    documentation for details. */
@@ -105,54 +182,85 @@ class SapHolonomicConstraint final : public SapConstraint<T> {
     double beta_{0.1};
   };
 
-  /* Constructs a holonomic constraint involving a single clique.
-   @param[in] clique The clique involved in the constraint.
+  /* Struct to store the kinematic values for the constraint function g, its
+   Jacobian J and bias b. See this class's documentation for details. */
+  struct Kinematics {
+    DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN(Kinematics);
+
+    /* Constraint kinematics values of the constraint function g, Jacobian J and
+     bias b. Refer to SapHolonomicConstraint for details.
+     @throws std::exception if sizes g_in.size(), b_in.size() and J_in.rows()
+     are not all equal. */
+    Kinematics(VectorX<T> g_in, SapConstraintJacobian<T> J_in, VectorX<T> b_in)
+        : g(std::move(g_in)), J(std::move(J_in)), b(std::move(b_in)) {
+      DRAKE_THROW_UNLESS(g.size() == J.rows());
+      DRAKE_THROW_UNLESS(b.size() == g.size());
+    }
+
+    VectorX<T> g;                // Constraint function g.
+    SapConstraintJacobian<T> J;  // Constraint Jacobian J.
+    VectorX<T> b;                // Bias term.
+  };
+
+  /* Constructor for a holonomic constraint given its kinematics and
+   parameters. */
+  SapHolonomicConstraint(Kinematics kinematics, Parameters parameters,
+                         std::vector<int> objects);
+
+  /* Constructs a holonomic constraint with zero bias term.
    @param[in] g The value of the constraint function.
    @param[in] J The Jacobian w.r.t. to the clique's generalized velocities.
    @param[in] parameters Constraint parameters. See Parameters for details.
 
    @pre clique is non-negative.
    @pre g.size() == J.rows() == parameters.num_constraint_equations(). */
-  SapHolonomicConstraint(int clique, VectorX<T> g, MatrixX<T> J,
+  SapHolonomicConstraint(VectorX<T> g, SapConstraintJacobian<T> J,
                          Parameters parameters);
 
-  /* Constructs a holonomic constraint involving two cliques.
-   @param[in] first_clique First clique involved in the constraint.
-   @param[in] second_clique Second clique involved in the constraint.
+  /* Constructs a holonomic constraint with a non-zero bias b.
    @param[in] g The value of the constraint function.
-   @param[in] J_first_clique The Jacobian w.r.t. to the first clique's
-   generalized velocities.
-   @param[in] J_second_clique The Jacobian w.r.t. to the second clique's
-   generalized velocities.
+   @param[in] J The Jacobian w.r.t. to the clique's generalized velocities.
+   @param[in] b The bias term, such that ġ = J⋅v + b.
    @param[in] parameters Constraint parameters. See Parameters for details.
 
-   @pre first_clique and second_clique are non-negative.
-   @pre g.size() == J_first_clique.rows() == J_second_clique.rows() ==
+   @pre clique is non-negative.
+   @pre g.size() == J.rows() == b.size() ==
    parameters.num_constraint_equations(). */
-  SapHolonomicConstraint(int first_clique, int second_clique, VectorX<T> g,
-                         MatrixX<T> J_first_clique, MatrixX<T> J_second_clique,
+  SapHolonomicConstraint(VectorX<T> g, SapConstraintJacobian<T> J, VectorX<T> b,
                          Parameters parameters);
 
   const Parameters& parameters() const { return parameters_; }
 
-  /* Implements the projection operation P(y) = max(γₗ, min(γᵤ, y)). For this
-   specific constraint, the result is independent of the regularization R. Refer
-   to SapConstraint::Project() for details. */
-  void Project(const Eigen::Ref<const VectorX<T>>& y,
-               const Eigen::Ref<const VectorX<T>>& R,
-               EigenPtr<VectorX<T>> gamma,
-               MatrixX<T>* dPdy = nullptr) const final;
+  /* Returns the value of the constraint function provided at construction. */
+  const VectorX<T>& constraint_function() const { return g_; }
 
-  // TODO(amcastro-tri): Extend SapConstraint so that wi can be a vector with an
-  // entry for each constraint equation.
-  VectorX<T> CalcBiasTerm(const T& time_step, const T& wi) const final;
+  /* Returns the holonomic constraint bias b. */
+  const VectorX<T>& bias() const { return bias_; }
 
-  VectorX<T> CalcDiagonalRegularization(const T& time_step,
-                                        const T& wi) const final;
-
-  std::unique_ptr<SapConstraint<T>> Clone() const final;
+ protected:
+  /* Protected copy construction is enabled to use in the implementation of
+      DoClone() here and for specific derived holonomic constraints. */
+  SapHolonomicConstraint(const SapHolonomicConstraint&) = default;
 
  private:
+  /* Implementations of SapConstraint NVI functions. */
+  std::unique_ptr<AbstractValue> DoMakeData(
+      const T& time_step,
+      const Eigen::Ref<const VectorX<T>>& delassus_estimation) const final;
+  void DoCalcData(const Eigen::Ref<const VectorX<T>>& vc,
+                  AbstractValue* abstract_data) const final;
+  T DoCalcCost(const AbstractValue& abstract_data) const final;
+  void DoCalcImpulse(const AbstractValue& abstract_data,
+                     EigenPtr<VectorX<T>> gamma) const final;
+  void DoCalcCostHessian(const AbstractValue& abstract_data,
+                         MatrixX<T>* G) const final;
+  std::unique_ptr<SapConstraint<T>> DoClone() const override {
+    return std::unique_ptr<SapHolonomicConstraint<T>>(
+        new SapHolonomicConstraint<T>(*this));
+  }
+
+  VectorX<T> g_;
+  VectorX<T> bias_;
   Parameters parameters_;
 };
 

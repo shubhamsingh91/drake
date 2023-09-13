@@ -175,8 +175,7 @@ void ComputeNarrowPhaseDistance(const fcl::CollisionObjectd& a,
       break;
     }
     case fcl::GEOM_CAPSULE: {
-      const auto& capsule_O =
-          *static_cast<const fcl::Capsuled*>(o_geometry);
+      const auto& capsule_O = *static_cast<const fcl::Capsuled*>(o_geometry);
       distance_pair(sphere_S, capsule_O);
       break;
     }
@@ -236,8 +235,9 @@ bool Callback(fcl::CollisionObjectd* object_A_ptr,
   const EncodedData encoding_a(*object_A_ptr);
   const EncodedData encoding_b(*object_B_ptr);
 
-  const bool can_collide = data.collision_filter.CanCollideWith(
-      encoding_a.id(), encoding_b.id());
+  const bool can_collide =
+      data.collision_filter == nullptr ||
+      data.collision_filter->CanCollideWith(encoding_a.id(), encoding_b.id());
 
   if (can_collide) {
     // Throw if the geometry-pair isn't supported.
@@ -272,11 +272,13 @@ bool Callback(fcl::CollisionObjectd* object_A_ptr,
         data.nearest_pairs.emplace_back(std::move(signed_pair));
       }
     } else {
-      throw std::logic_error(
-          fmt::format("Signed distance queries between shapes '{}' and '{}' "
-                      "are not supported for scalar type {}",
-                      GetGeometryName(*object_A_ptr),
-                      GetGeometryName(*object_B_ptr), NiceTypeName::Get<T>()));
+      throw std::logic_error(fmt::format(
+          "Signed distance queries between shapes '{}' and '{}' "
+          "are not supported for scalar type {}. See the documentation for "
+          "QueryObject::ComputeSignedDistancePairwiseClosestPoints() for the "
+          "full status of supported geometries.",
+          GetGeometryName(*object_A_ptr), GetGeometryName(*object_B_ptr),
+          NiceTypeName::Get<T>()));
     }
   }
   // Returning true would tell the broadphase manager to terminate early. Since
@@ -285,10 +287,8 @@ bool Callback(fcl::CollisionObjectd* object_A_ptr,
   return false;
 }
 
-DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS((
-    &ComputeNarrowPhaseDistance<T>,
-    &Callback<T>
-))
+DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(
+    (&ComputeNarrowPhaseDistance<T>, &Callback<T>))
 
 }  // namespace shape_distance
 }  // namespace internal

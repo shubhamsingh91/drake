@@ -75,6 +75,13 @@ TEST_F(UnboundedLinearProgramTest0, TestIpopt) {
   }
 }
 
+TEST_F(DuplicatedVariableLinearProgramTest1, Test) {
+  IpoptSolver solver;
+  if (solver.available()) {
+    CheckSolution(solver);
+  }
+}
+
 TEST_P(QuadraticProgramTest, TestQP) {
   IpoptSolver solver;
   prob()->RunProblem(&solver);
@@ -95,8 +102,7 @@ GTEST_TEST(QPtest, TestUnitBallExample) {
 
 class NoisyQuadraticCost {
  public:
-  explicit NoisyQuadraticCost(const double max_noise)
-      : max_noise_(max_noise) {}
+  explicit NoisyQuadraticCost(const double max_noise) : max_noise_(max_noise) {}
   int numInputs() const { return 1; }
   int numOutputs() const { return 1; }
   template <typename T>
@@ -212,6 +218,11 @@ GTEST_TEST(IpoptSolverTest, TestNonconvexQP) {
   if (solver.available()) {
     TestNonconvexQP(solver, false);
   }
+}
+
+GTEST_TEST(IpoptSolverTest, TestL2NormCost) {
+  IpoptSolver solver;
+  TestL2NormCost(solver, 1e-6);
 }
 
 /* Tests the solver's processing of the verbosity options. With multiple ways
@@ -343,6 +354,14 @@ GTEST_TEST(TestLP, PoorScaling) {
   TestLPPoorScaling1(solver, true, 1E-6);
   TestLPPoorScaling2(solver, true, 1E-4);
 }
+
+TEST_F(QuadraticEqualityConstrainedProgram1, test) {
+  IpoptSolver solver;
+  if (solver.available()) {
+    CheckSolution(solver, Eigen::Vector2d(0.5, 0.8), std::nullopt, 1E-6);
+  }
+}
+
 }  // namespace test
 }  // namespace solvers
 }  // namespace drake

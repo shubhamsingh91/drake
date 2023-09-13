@@ -1,3 +1,6 @@
+# This file is licensed under the MIT-0 License.
+# See LICENSE-MIT-0.txt in the current directory.
+
 """
 This program serves as an example of a simulator for hardware, i.e., a
 simulator for robots that one might have in their lab. There is no controller
@@ -7,23 +10,28 @@ listens for command messages.
 It is intended to operate in the "no ground truth" regime, i.e, the only LCM
 messages it knows about are the ones used by the actual hardware. The one
 messaging difference from real life is that we emit visualization messages (for
-meldis or drake-visualizer) so that you can watch a simulation on your screen
-while some (separate) controller operates the robot, without extra hassle.
+Meldis, or the legacy ``drake-visualizer`` application of days past) so that
+you can watch a simulation on your screen while some (separate) controller
+operates the robot, without extra hassle.
 
 Drake maintainers should keep this file in sync with both hardware_sim.cc and
 scenario.h.
 """
 
+import argparse
 import dataclasses as dc
 import math
 import typing
 
 from pydrake.common import RandomGenerator
+from pydrake.common.yaml import yaml_load_typed
 from pydrake.lcm import DrakeLcmParams
-from pydrake.manipulation import ApplyDriverConfigs
-from pydrake.manipulation.kuka_iiwa import IiwaDriver
-from pydrake.manipulation.schunk_wsg import SchunkWsgDriver
-from pydrake.manipulation.util import ZeroForceDriver
+from pydrake.manipulation import (
+    ApplyDriverConfigs,
+    IiwaDriver,
+    SchunkWsgDriver,
+    ZeroForceDriver,
+)
 from pydrake.multibody.plant import (
     AddMultibodyPlant,
     MultibodyPlantConfig,
@@ -71,7 +79,7 @@ class Scenario:
         accuracy=1.0e-2,
         target_realtime_rate=1.0)
 
-    # Plant configuration (timestep and contact parameters).
+    # Plant configuration (time step and contact parameters).
     plant_config: MultibodyPlantConfig = MultibodyPlantConfig()
 
     # All of the fully deterministic elements of the simulation.
@@ -97,6 +105,22 @@ class Scenario:
     cameras: typing.Mapping[str, CameraConfig] = dc.field(default_factory=dict)
 
     visualization: VisualizationConfig = VisualizationConfig()
+
+
+def _load_scenario(*, filename, scenario_name, scenario_text):
+    """Implements the command-line handling logic for scenario data.
+    Returns a `Scenario` object loaded from the given input arguments.
+    """
+    result = yaml_load_typed(
+        schema=Scenario,
+        filename=filename,
+        child_name=scenario_name,
+        defaults=Scenario())
+    result = yaml_load_typed(
+        schema=Scenario,
+        data=scenario_text,
+        defaults=result)
+    return result
 
 
 def run(*, scenario):
@@ -154,4 +178,28 @@ def run(*, scenario):
     simulator.AdvanceTo(scenario.simulation_duration)
 
 
-# TODO(jwnimmer-tri) Add __main__ program here as well.
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--scenario_file", required=True,
+        help="Scenario filename, e.g., "
+             "drake/examples/hardware_sim/example_scenarios.yaml")
+    parser.add_argument(
+        "--scenario_name", required=True,
+        help="Scenario name within the scenario_file, e.g., Demo in the "
+             "example_scenarios.yaml; scenario names appears as the keys of "
+             "the YAML document's top-level mapping item")
+    parser.add_argument(
+        "--scenario_text", default="{}",
+        help="Additional YAML scenario text to load, in order to override "
+             "values in the scenario_file, e.g., timeouts")
+    args = parser.parse_args()
+    scenario = _load_scenario(
+        filename=args.scenario_file,
+        scenario_name=args.scenario_name,
+        scenario_text=args.scenario_text)
+    run(scenario=scenario)
+
+
+if __name__ == "__main__":
+    main()

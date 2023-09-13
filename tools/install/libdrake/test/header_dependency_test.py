@@ -6,7 +6,7 @@ import unittest
 class HeaderDependencyTest(unittest.TestCase):
 
     def setUp(self):
-        # Matches C/C++ #include statment.
+        # Matches C/C++ #include statement.
         self._include = re.compile(r'^\s*#\s*include\s*["<](.*?)[>"].*$')
 
         # C system headers; copied from drake/.clang-format.
@@ -24,6 +24,9 @@ class HeaderDependencyTest(unittest.TestCase):
         re_thirds = [
             re.compile(r'^(Eigen|unsupported/Eigen)/.*$'),
             re.compile(r'^(fmt|spdlog)/.*$'),
+
+            # TODO(jwnimmer-tri) On 2023-11-01 upon completion of deprecation
+            # removal, also remove this item from this list.
             re.compile(r'^optitrack/.*$'),
         ]
 

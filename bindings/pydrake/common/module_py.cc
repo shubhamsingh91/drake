@@ -1,8 +1,5 @@
-#include "pybind11/eigen.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
-
 #include "drake/bindings/pydrake/autodiff_types_pybind.h"
+#include "drake/bindings/pydrake/common/cpp_template_pybind.h"
 #include "drake/bindings/pydrake/common/text_logging_pybind.h"
 #include "drake/bindings/pydrake/documentation_pybind.h"
 #include "drake/bindings/pydrake/pydrake_pybind.h"
@@ -13,6 +10,7 @@
 #include "drake/common/find_resource.h"
 #include "drake/common/nice_type_name.h"
 #include "drake/common/nice_type_name_override.h"
+#include "drake/common/parallelism.h"
 #include "drake/common/random.h"
 #include "drake/common/temp_directory.h"
 #include "drake/common/text_logging.h"
@@ -38,14 +36,6 @@ py::handle ResolvePyObject(const type_erased_ptr& ptr) {
   return py::detail::get_object_handle(ptr.raw, py_type_info);
 }
 
-// Gets a class's fully-qualified name.
-std::string GetPyClassName(py::handle obj) {
-  DRAKE_DEMAND(bool{obj});
-  py::handle cls = obj.get_type();
-  return py::str("{}.{}").format(
-      cls.attr("__module__"), cls.attr("__qualname__"));
-}
-
 // Override for SetNiceTypeNamePtrOverride, to ensure that instances that are
 // registered (along with their types) can use their Python class's name.
 std::string PyNiceTypeNamePtrOverride(const type_erased_ptr& ptr) {
@@ -54,7 +44,10 @@ std::string PyNiceTypeNamePtrOverride(const type_erased_ptr& ptr) {
   if (cc_name.find("pydrake::") != std::string::npos) {
     py::handle obj = ResolvePyObject(ptr);
     if (obj) {
-      return GetPyClassName(obj);
+      py::handle cls = obj.get_type();
+      const bool use_qualname = true;
+      return py::str("{}.{}").format(
+          cls.attr("__module__"), internal::PrettyClassName(cls, use_qualname));
     }
   }
   return cc_name;
@@ -109,6 +102,25 @@ PYBIND11_MODULE(_module_py, m) {
       doc.logging.set_log_level.doc);
 
   internal::MaybeRedirectPythonLogging();
+  m.def("_use_native_cpp_logging", &internal::UseNativeCppLogging);
+
+  {
+    using Class = Parallelism;
+    constexpr auto& cls_doc = doc.Parallelism;
+    py::class_<Class> cls(m, "Parallelism", cls_doc.doc);
+    py::implicitly_convertible<bool, Class>();
+    cls  // BR
+        .def(py::init<>(), cls_doc.ctor.doc_0args)
+        .def(py::init<bool>(), py::arg("parallelize").noconvert(),
+            cls_doc.ctor.doc_1args_parallelize)
+        .def(py::init<int>(), py::arg("num_threads").noconvert(),
+            cls_doc.ctor.doc_1args_num_threads)
+        // Note that we can't bind Parallelism::None(), because `None`
+        // is a reserved word in Python.
+        .def_static("Max", &Class::Max, cls_doc.Max.doc)
+        .def("num_threads", &Class::num_threads, cls_doc.num_threads.doc);
+    DefCopyAndDeepCopy(&cls);
+  }
 
   py::enum_<drake::ToleranceType>(m, "ToleranceType", doc.ToleranceType.doc)
       .value("kAbsolute", drake::ToleranceType::kAbsolute,

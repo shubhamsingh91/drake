@@ -90,7 +90,7 @@ class KukaIiwaArmTests : public ::testing::Test {
     plant_.set_discrete_contact_solver(DiscreteContactSolver::kSap);
 
     // Load robot model from files.
-    const std::vector<ModelInstanceIndex> models = SetUpArmModel(1, &plant_);
+    const std::vector<ModelInstanceIndex> models = SetUpArmModel(&plant_);
     plant_.Finalize();
 
     // The model has a single coupler constraint.
@@ -112,9 +112,8 @@ class KukaIiwaArmTests : public ::testing::Test {
   // Sets up model of the Kuka iiwa arm with Schunk gripper. The model includes
   // reflected inertias. The gripper is modeled with a coupler constraint.
   std::vector<ModelInstanceIndex> SetUpArmModel(
-      int robot_number, MultibodyPlant<double>* plant) const {
-    std::vector<ModelInstanceIndex> models =
-        LoadIiwaWithGripper(robot_number, plant);
+      MultibodyPlant<double>* plant) const {
+    std::vector<ModelInstanceIndex> models = LoadIiwaWithGripper(plant);
     AddInReflectedInertia(plant, models, kRotorInertias, kGearRatios);
 
     // Constrain the gripper fingers to be coupled.
@@ -127,11 +126,9 @@ class KukaIiwaArmTests : public ::testing::Test {
     // offset is zero, here we use an arbitrary set of values to verify later on
     // in the test that the manager created a constraint consistent with these
     // numbers.
-    const ConstraintIndex next_constraint_index(plant->num_constraints());
-    ConstraintIndex constraint_index =
-        plant->AddCouplerConstraint(left_finger_slider, right_finger_slider,
-                                    kCouplerGearRatio, kCouplerOffset);
-    EXPECT_EQ(constraint_index, next_constraint_index);
+    plant->AddCouplerConstraint(left_finger_slider, right_finger_slider,
+                                kCouplerGearRatio, kCouplerOffset);
+
     return models;
   }
 
@@ -252,7 +249,7 @@ class KukaIiwaArmTests : public ::testing::Test {
 
  private:
   std::vector<ModelInstanceIndex> LoadIiwaWithGripper(
-      int robot_number, MultibodyPlant<double>* plant) const {
+      MultibodyPlant<double>* plant) const {
     DRAKE_DEMAND(plant != nullptr);
     const char kArmFilePath[] =
         "drake/manipulation/models/iiwa_description/urdf/"
@@ -262,14 +259,13 @@ class KukaIiwaArmTests : public ::testing::Test {
         "drake/manipulation/models/wsg_50_description/sdf/schunk_wsg_50.sdf";
 
     Parser parser(plant);
+    parser.SetAutoRenaming(true);
     ModelInstanceIndex arm_model =
-        parser.AddModelFromFile(FindResourceOrThrow(kArmFilePath),
-                                "robot_" + std::to_string(robot_number));
+        parser.AddModels(FindResourceOrThrow(kArmFilePath)).at(0);
 
     // Add the gripper.
     ModelInstanceIndex gripper_model =
-        parser.AddModelFromFile(FindResourceOrThrow(kWsg50FilePath),
-                                "gripper_" + std::to_string(robot_number));
+        parser.AddModels(FindResourceOrThrow(kWsg50FilePath)).at(0);
 
     const auto& base_body = plant->GetBodyByName("base", arm_model);
     const auto& end_effector = plant->GetBodyByName("iiwa_link_7", arm_model);
@@ -374,7 +370,7 @@ TEST_F(KukaIiwaArmTests, CalcFreeMotionVelocities) {
 
   MultibodyForces<double> forces(plant_);
   CompliantContactManagerTester::CalcNonContactForces(*manager_, *context_,
-                                                      &forces);
+                                                      false, &forces);
   const VectorXd zero_vdot = VectorXd::Zero(plant_.num_velocities());
   const VectorXd k0 = -plant_.CalcInverseDynamics(*context_, zero_vdot, forces);
 
@@ -461,7 +457,7 @@ TEST_F(KukaIiwaArmTests, LimitConstraints) {
 
   int num_constraints = 0;  // count number of constraints visited.
   // The manager adds limit constraints in the order joints are specified.
-  // Therefore we verify the limit constrant for each joint.
+  // Therefore we verify the limit constraint for each joint.
   for (JointIndex joint_index(0); joint_index < plant_.num_joints();
        ++joint_index) {
     const Joint<double>& joint = plant_.get_joint(joint_index);
@@ -540,8 +536,8 @@ TEST_F(KukaIiwaArmTests, CouplerConstraints) {
   plant_.set_discrete_contact_solver(DiscreteContactSolver::kSap);
 
   // Load two robot models.
-  std::vector<ModelInstanceIndex> arm_gripper1 = SetUpArmModel(1, &plant_);
-  std::vector<ModelInstanceIndex> arm_gripper2 = SetUpArmModel(2, &plant_);
+  std::vector<ModelInstanceIndex> arm_gripper1 = SetUpArmModel(&plant_);
+  std::vector<ModelInstanceIndex> arm_gripper2 = SetUpArmModel(&plant_);
 
   // For testing purposes, we'll add a coupler constraint between joints in two
   // different arms.
@@ -549,9 +545,8 @@ TEST_F(KukaIiwaArmTests, CouplerConstraints) {
       plant_.GetJointByName("iiwa_joint_3", arm_gripper1[0]);
   const Joint<double>& arm2_joint6 =
       plant_.GetJointByName("iiwa_joint_6", arm_gripper2[0]);
-  ConstraintIndex constraint_index = plant_.AddCouplerConstraint(
-      arm1_joint3, arm2_joint6, kCouplerGearRatio, kCouplerOffset);
-  EXPECT_EQ(constraint_index, ConstraintIndex(2));
+  plant_.AddCouplerConstraint(arm1_joint3, arm2_joint6, kCouplerGearRatio,
+                              kCouplerOffset);
 
   plant_.Finalize();
 
@@ -655,7 +650,8 @@ TEST_F(KukaIiwaArmTests, CouplerConstraints) {
           (VectorXd::Unit(kNumJoints, left_index) -
            kCouplerGearRatio * VectorXd::Unit(kNumJoints, right_index))
               .transpose();
-      EXPECT_EQ(constraint->first_clique_jacobian(), J_expected);
+      EXPECT_EQ(constraint->first_clique_jacobian().MakeDenseMatrix(),
+                J_expected);
     } else {
       // The third constraint couples the two robot arms.
       const MatrixXd J0_expected =
@@ -663,8 +659,10 @@ TEST_F(KukaIiwaArmTests, CouplerConstraints) {
       const MatrixXd J1_expected =
           -kCouplerGearRatio *
           VectorXd::Unit(kNumJoints, 5 /* sixth joint. */).transpose();
-      EXPECT_EQ(constraint->first_clique_jacobian(), J0_expected);
-      EXPECT_EQ(constraint->second_clique_jacobian(), J1_expected);
+      EXPECT_EQ(constraint->first_clique_jacobian().MakeDenseMatrix(),
+                J0_expected);
+      EXPECT_EQ(constraint->second_clique_jacobian().MakeDenseMatrix(),
+                J1_expected);
     }
 
     // N.B. Default values implemented in
@@ -676,8 +674,7 @@ TEST_F(KukaIiwaArmTests, CouplerConstraints) {
     EXPECT_EQ(params.impulse_lower_limits(), -kInfinity);
     EXPECT_EQ(params.impulse_upper_limits(), kInfinity);
     EXPECT_EQ(params.stiffnesses(), kInfinity);
-    EXPECT_EQ(params.relaxation_times(),
-              Vector1d::Constant(plant_.time_step()));
+    EXPECT_EQ(params.relaxation_times(), Vector1d::Zero());
     EXPECT_EQ(params.beta(), 0.1);
   }
 }

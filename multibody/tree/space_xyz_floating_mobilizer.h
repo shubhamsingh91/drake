@@ -80,7 +80,7 @@ class SpaceXYZFloatingMobilizer final : public MobilizerImpl<T, 6, 6> {
   bool can_rotate() const final    { return true; }
   bool can_translate() const final { return true; }
 
-  // Returns the generalized postions for this mobilizer stored in `context`.
+  // Returns the generalized positions for this mobilizer stored in `context`.
   // Generalized positions q for this mobilizer are packed in exactly the
   // following order: `q = [θ₁, θ₂, θ₃, px_FM, py_FM, pz_FM]` that is, rpy
   // angles are stored in the first three entries of the configuration vector,
@@ -231,6 +231,8 @@ class SpaceXYZFloatingMobilizer final : public MobilizerImpl<T, 6, 6> {
   void ProjectSpatialForce(const systems::Context<T>& context,
                            const SpatialForce<T>& F_Mo_F,
                            Eigen::Ref<VectorX<T>> tau) const override;
+
+  bool is_velocity_equal_to_qdot() const override { return false; }
 
   // Maps the generalized velocity v to time derivatives of configuration
   // `qdot`.

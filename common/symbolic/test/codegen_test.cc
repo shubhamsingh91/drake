@@ -1,6 +1,5 @@
 #include "drake/common/symbolic/codegen.h"
 
-#include <iostream>
 #include <sstream>
 #include <vector>
 
@@ -375,7 +374,9 @@ typedef struct {
     int inner_indices;
   } m;
 } f_meta_t;
-f_meta_t f_meta() { return {{3}, {3, 6, 5, 7, 5}}; }
+f_meta_t f_meta() {
+  return {{3}, {3, 6, 5, 7, 5}};
+}
 
 TEST_F(SymbolicCodeGenTest, SparseMatrixColMajorExampleUsingEigenMap) {
   f_meta_t meta = f_meta();

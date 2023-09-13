@@ -399,7 +399,7 @@ TEST_F(SymbolicVectorSystemTest, DiscreteStateOnly) {
   const double xval = 0.45;
   context->get_mutable_discrete_state_vector()[0] = xval;
   auto discrete_variables = system.AllocateDiscreteVariables();
-  system.CalcDiscreteVariableUpdates(*context, discrete_variables.get());
+  system.CalcForcedDiscreteVariableUpdate(*context, discrete_variables.get());
   EXPECT_TRUE(CompareMatrices(discrete_variables->get_vector().get_value(),
                               Vector1d{-xval + xval * xval * xval}));
 }
@@ -600,7 +600,7 @@ TEST_F(SymbolicVectorSystemTest, DiscreteTimeSymbolic) {
   context->get_mutable_numeric_parameter(0).SetFromVector(pc_);
 
   auto discrete_variables = system->AllocateDiscreteVariables();
-  system->CalcDiscreteVariableUpdates(*context, discrete_variables.get());
+  system->CalcForcedDiscreteVariableUpdate(*context, discrete_variables.get());
   const auto& xnext = discrete_variables->get_vector().get_value();
   EXPECT_TRUE(xnext[0].EqualTo(tc_));
   EXPECT_TRUE(xnext[1].EqualTo(xc_[1] + uc_[1] + pc_[1]));
@@ -689,8 +689,8 @@ TEST_F(SymbolicVectorSystemAutoDiffXdTest, AutodiffXdFullGradient) {
   EXPECT_TRUE(
       CompareMatrices(math::ExtractValue(xdotval),
                       Vector1d{-xval_ * pval_[0] + xval_ * xval_ * xval_}));
-  EXPECT_TRUE(
-      CompareMatrices(xdotval[0].derivatives(), expected_xdotval0_deriv_));
+  EXPECT_TRUE(CompareMatrices(xdotval[0].derivatives(),
+                              expected_xdotval0_deriv_, 1.0e-15));
 
   const auto& yval = autodiff_system_->get_output_port(0)
                          .template Eval<BasicVector<AutoDiffXd>>(*context_)
@@ -731,13 +731,13 @@ TEST_F(SymbolicVectorSystemAutoDiffXdTest, AutodiffXdGradientRelativeToState) {
   const auto xdotval =
       autodiff_system_->EvalTimeDerivatives(*context_).CopyToVector();
   EXPECT_TRUE(CompareMatrices(xdotval[0].derivatives(),
-                              expected_xdotval0_deriv_.head<2>()));
+                              expected_xdotval0_deriv_.head<2>(), 1.0e-15));
 
   const auto& yval = autodiff_system_->get_output_port(0)
                          .template Eval<BasicVector<AutoDiffXd>>(*context_)
                          .get_value();
-  EXPECT_TRUE(CompareMatrices(yval[0].derivatives(),
-                              expected_yval0_deriv_.head<2>()));
+  EXPECT_TRUE(
+      CompareMatrices(yval[0].derivatives(), expected_yval0_deriv_.head<2>()));
 }
 
 TEST_F(SymbolicVectorSystemAutoDiffXdTest,

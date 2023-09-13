@@ -34,6 +34,9 @@ namespace systems {
  *   @f[ y(t) = C(t) x(t) + D(t) u(t) + y_0(t), @f]
  * where `y` denotes the output vector.
  *
+ * When configured as a discrete system, the discrete update can be triggered
+ * either by the defined periodic trigger or via a manual forced update.
+ *
  * @tparam_default_scalar
  * @ingroup primitive_systems
  * *
@@ -100,9 +103,8 @@ class TimeVaryingAffineSystem : public LeafSystem<T> {
   /// @param num_inputs size of the system's input vector
   /// @param num_outputs size of the system's output vector
   /// @param time_period discrete update period, or 0.0 to use continuous time
-  TimeVaryingAffineSystem(SystemScalarConverter converter,
-                          int num_states, int num_inputs, int num_outputs,
-                          double time_period);
+  TimeVaryingAffineSystem(SystemScalarConverter converter, int num_states,
+                          int num_inputs, int num_outputs, double time_period);
 
   /// Helper method.  Derived classes should call this from the
   /// scalar-converting copy constructor.
@@ -123,12 +125,11 @@ class TimeVaryingAffineSystem : public LeafSystem<T> {
                              ContinuousState<T>* derivatives) const override;
 
   /// Computes @f[ x(t+h) = A(t) x(t) + B(t) u(t) + f_0(t), @f] with by calling
-  /// `A(t)`, `B(t)`, and `f0(t)` with runtime size checks.  Derived classes
-  /// may override this for performance reasons.
-  void DoCalcDiscreteVariableUpdates(
-      const drake::systems::Context<T>& context,
-      const std::vector<const drake::systems::DiscreteUpdateEvent<T>*>& events,
-      drake::systems::DiscreteValues<T>* updates) const override;
+  /// `A(t)`, `B(t)`, and `f0(t)` with runtime size checks. This is the event
+  /// handler for the periodic and forced discrete update events. Derived
+  /// classes may override this for performance reasons.
+  virtual EventStatus CalcDiscreteUpdate(const Context<T>& context,
+                                         DiscreteValues<T>* updates) const;
 
   /// Sets the initial conditions.
   void SetDefaultState(const Context<T>& context,
@@ -136,12 +137,12 @@ class TimeVaryingAffineSystem : public LeafSystem<T> {
 
   /// Sets the random initial conditions.
   void SetRandomState(const Context<T>& context, State<T>* state,
-      RandomGenerator* generator) const override;
+                      RandomGenerator* generator) const override;
 
  private:
   // For use by DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS... because the
   // function it needs to instantiate is protected.
-  template<typename, typename>
+  template <typename, typename>
   friend constexpr auto Make_Function_Pointers();
 
   const int num_states_{0};
@@ -149,7 +150,7 @@ class TimeVaryingAffineSystem : public LeafSystem<T> {
   const int num_outputs_{0};
   const double time_period_{0.0};
 
-  VectorX<T> x0_;     // Default state.
+  VectorX<T> x0_;                  // Default state.
   Eigen::MatrixXd Sqrt_Sigma_x0_;  // Square root of state covariance matrix.
 };
 
@@ -196,20 +197,26 @@ class AffineSystem : public TimeVaryingAffineSystem<T> {
   /// |:-------:|:-----------:|:-----------:|
   /// | A       | num states  | num states  |
   /// | B       | num states  | num inputs  |
+  /// | f0      | num_states  | 1           |
   /// | C       | num outputs | num states  |
   /// | D       | num outputs | num inputs  |
+  /// | y0      | num_outputs | 1           |
+  ///
+  /// Empty matrices are treated as zero matrices with the appropriate number
+  /// of rows and columns.
   ///
   /// @param time_period Defines the period of the discrete time system; use
-  ///  time_period=0.0 to denote a continuous time system.  @default 0.0
+  /// time_period=0.0 to denote a continuous time system.  @default 0.0
   ///
   /// Subclasses must use the protected constructor, not this one.
-  AffineSystem(const Eigen::Ref<const Eigen::MatrixXd>& A,
-               const Eigen::Ref<const Eigen::MatrixXd>& B,
-               const Eigen::Ref<const Eigen::VectorXd>& f0,
-               const Eigen::Ref<const Eigen::MatrixXd>& C,
-               const Eigen::Ref<const Eigen::MatrixXd>& D,
-               const Eigen::Ref<const Eigen::VectorXd>& y0,
-               double time_period = 0.0);
+  explicit AffineSystem(
+      const Eigen::Ref<const Eigen::MatrixXd>& A = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::MatrixXd>& B = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::VectorXd>& f0 = Eigen::VectorXd(),
+      const Eigen::Ref<const Eigen::MatrixXd>& C = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::MatrixXd>& D = Eigen::MatrixXd(),
+      const Eigen::Ref<const Eigen::VectorXd>& y0 = Eigen::VectorXd(),
+      double time_period = 0.0);
 
   /// Scalar-converting copy constructor.  See @ref system_scalar_conversion.
   template <typename U>
@@ -248,6 +255,15 @@ class AffineSystem : public TimeVaryingAffineSystem<T> {
   VectorX<T> y0(const T&) const final { return VectorX<T>(y0_); }
   /// @}
 
+  /// Updates the coefficients of the affine system. The new coefficients must
+  /// have the same size as existing coefficients.
+  void UpdateCoefficients(const Eigen::Ref<const Eigen::MatrixXd>& A,
+                          const Eigen::Ref<const Eigen::MatrixXd>& B,
+                          const Eigen::Ref<const Eigen::VectorXd>& f0,
+                          const Eigen::Ref<const Eigen::MatrixXd>& C,
+                          const Eigen::Ref<const Eigen::MatrixXd>& D,
+                          const Eigen::Ref<const Eigen::VectorXd>& y0);
+
  protected:
   /// Constructor that specifies scalar-type conversion support.
   /// @param converter scalar-type conversion support helper (i.e., AutoDiff,
@@ -260,8 +276,7 @@ class AffineSystem : public TimeVaryingAffineSystem<T> {
                const Eigen::Ref<const Eigen::VectorXd>& f0,
                const Eigen::Ref<const Eigen::MatrixXd>& C,
                const Eigen::Ref<const Eigen::MatrixXd>& D,
-               const Eigen::Ref<const Eigen::VectorXd>& y0,
-               double time_period);
+               const Eigen::Ref<const Eigen::VectorXd>& y0, double time_period);
 
  private:
   void CalcOutputY(const Context<T>& context,
@@ -270,19 +285,18 @@ class AffineSystem : public TimeVaryingAffineSystem<T> {
   void DoCalcTimeDerivatives(const Context<T>& context,
                              ContinuousState<T>* derivatives) const final;
 
-  void DoCalcDiscreteVariableUpdates(
-      const drake::systems::Context<T>& context,
-      const std::vector<const drake::systems::DiscreteUpdateEvent<T>*>& events,
-      drake::systems::DiscreteValues<T>* updates) const final;
+  // We can simplify the discrete update event handler here.
+  EventStatus CalcDiscreteUpdate(const Context<T>& context,
+                                 DiscreteValues<T>* updates) const final;
 
-  const Eigen::MatrixXd A_;
-  const Eigen::MatrixXd B_;
-  const Eigen::VectorXd f0_;
-  const Eigen::MatrixXd C_;
-  const Eigen::MatrixXd D_;
-  const Eigen::VectorXd y0_;
-  const bool has_meaningful_C_{};
-  const bool has_meaningful_D_{};
+  Eigen::MatrixXd A_;
+  Eigen::MatrixXd B_;
+  Eigen::VectorXd f0_;
+  Eigen::MatrixXd C_;
+  Eigen::MatrixXd D_;
+  Eigen::VectorXd y0_;
+  bool has_meaningful_C_{};
+  bool has_meaningful_D_{};
 };
 
 }  // namespace systems

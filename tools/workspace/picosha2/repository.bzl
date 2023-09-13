@@ -1,10 +1,11 @@
-# -*- python -*-
-
 load("@drake//tools/workspace:github.bzl", "github_archive")
 
 def picosha2_repository(
         name,
         mirrors = None):
+    """The @picosha2 external is deprecated in Drake's WORKSPACE and will be
+    removed on or after 2023-11-01.
+    """
     github_archive(
         name = name,
         repository = "okdshin/PicoSHA2",

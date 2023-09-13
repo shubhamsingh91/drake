@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load("@drake//tools/lint:lint.bzl", "add_lint_tests")
 load("@drake//tools/install:install_data.bzl", "install_data")
 load(
@@ -12,17 +10,15 @@ load(
     "realsense2_description_files",
 )
 
-# This package is public so that other packages can refer to
-# individual files in models from their bazel rules.
-package(
-    default_visibility = ["//visibility:public"],
-)
+package(default_visibility = ["//visibility:public"])
 
+# TODO(jwnimmer-tri) Convert this into drake_models somehow or another.
 _REALSENSE2_DESCRIPTION_FILES = forward_files(
     srcs = ["@intel_realsense_ros_internal//:" +
             x for x in realsense2_description_files()],
     dest_prefix = "",
     strip_prefix = "@intel_realsense_ros_internal//:realsense2_description/",
+    tags = ["manual"],
     visibility = ["//visibility:private"],
 )
 
@@ -35,28 +31,48 @@ _STLS = [
 _OBJS = [x[:-3] + "obj" for x in _STLS]
 
 [
+    # Recall this about genrules:
+    #
+    # - `srcs` are built for the "target" configuration, which is what all of
+    #   our other programs and tests use; these will have a nice warm cache.
+    #
+    # - `tools` are built for the "exec" configuration, which is only ever used
+    #   for genrules (or `tools` for any other flavor of rule); any large
+    #   programs here will be costly to rebuild completely from scratch just
+    #   for the genrule.
+    #
+    # Therefore, we add `stl2obj` as `srcs` (not `tools`) to avoid building it
+    # in the "exec" configuration all by its lonesome self. We want to use the
+    # same build of its dependencies as all of our regular code, for a smaller
+    # footprint and better caching.
     genrule(
         name = obj + "_genrule",
-        srcs = [stl],
+        srcs = [stl] + ["//manipulation/util:stl2obj"],
         outs = [obj],
         cmd = " ".join([
+            "env TSAN_OPTIONS=report_bugs=0",
             "$(location //manipulation/util:stl2obj)",
-            "--input=$<",
+            "--input=$(location {})".format(stl),
             "--output=$@",
             "--reduction=0.98",
         ]),
-        tools = ["//manipulation/util:stl2obj"],
         visibility = ["//visibility:private"],
     )
     for stl, obj in zip(_STLS, _OBJS)
 ]
 
-install_data(
-    extra_prod_models = [
+filegroup(
+    name = "models",
+    srcs = [
         x
         for x in _REALSENSE2_DESCRIPTION_FILES + _OBJS
         if x not in _STLS
     ],
+)
+
+install_data(
+    name = "install_data",
+    data = [":models"],
 )
 
 drake_cc_googletest(
@@ -64,7 +80,6 @@ drake_cc_googletest(
     data = [":models"],
     deps = [
         "//common:find_resource",
-        "//geometry:drake_visualizer",
         "//geometry:scene_graph",
         "//multibody/parsing",
         "//systems/analysis:simulator",

@@ -36,6 +36,7 @@ namespace {
 // `plant_` contains the default model from parsing. The model contained in
 // `plant_ri_` contains the identical model, but with reflected inertia values
 // added to each joint actuator.
+// These tests expect nominal model to have no reflected rotor inertia.
 class MultibodyPlantReflectedInertiaTests : public ::testing::Test {
  public:
   // @param[in] rotor_inertias Individual rotor inertia values for each joint
@@ -53,6 +54,7 @@ class MultibodyPlantReflectedInertiaTests : public ::testing::Test {
                                          const VectorX<double>& gear_ratios) {
     LoadIiwaWithGripper(&plant_);
     LoadIiwaWithGripper(&plant_ri_);
+    SetReflectedInertiaToZero(&plant_);
     AddInReflectedInertia(&plant_ri_, rotor_inertias, gear_ratios);
 
     plant_.Finalize();
@@ -119,10 +121,10 @@ class MultibodyPlantReflectedInertiaTests : public ::testing::Test {
         "drake/manipulation/models/wsg_50_description/sdf/schunk_wsg_50.sdf";
 
     Parser parser(plant);
-    arm_model = parser.AddModelFromFile(FindResourceOrThrow(kArmSdfPath));
+    arm_model = parser.AddModels(FindResourceOrThrow(kArmSdfPath)).at(0);
 
     // Add the gripper.
-    gripper_model = parser.AddModelFromFile(FindResourceOrThrow(kWsg50SdfPath));
+    gripper_model = parser.AddModels(FindResourceOrThrow(kWsg50SdfPath)).at(0);
 
     const auto& base_body = plant->GetBodyByName("iiwa_link_0", arm_model);
     const auto& end_effector = plant->GetBodyByName("iiwa_link_7", arm_model);
@@ -140,6 +142,16 @@ class MultibodyPlantReflectedInertiaTests : public ::testing::Test {
           plant->get_mutable_joint_actuator(index);
       joint_actuator.set_default_rotor_inertia(rotor_inertias(int{index}));
       joint_actuator.set_default_gear_ratio(gear_ratios(int{index}));
+    }
+  }
+
+  void SetReflectedInertiaToZero(MultibodyPlant<double>* plant) {
+    DRAKE_DEMAND(plant != nullptr);
+    for (JointActuatorIndex index(0); index < plant->num_actuators(); ++index) {
+      JointActuator<double>& joint_actuator =
+          plant->get_mutable_joint_actuator(index);
+      joint_actuator.set_default_rotor_inertia(0.0);
+      joint_actuator.set_default_gear_ratio(1.0);
     }
   }
 
@@ -547,8 +559,8 @@ TEST_F(MultibodyPlantReflectedInertiaTests, CalcForwardDynamics) {
       CompareMatrices(vdot_ABA, vdot, kTolerance, MatrixCompareType::relative));
 }
 
-// This test verfies that reflected inertia values are propagated through system
-// scalar conversion.
+// This test verifies that reflected inertia values are propagated through
+// system scalar conversion.
 TEST_F(MultibodyPlantReflectedInertiaTests, ScalarConversion) {
   // Arbitrary reflected inertia values.
   VectorX<double> rotor_inertias(kNumJoints);

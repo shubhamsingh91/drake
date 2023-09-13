@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load(
     "@drake//tools/skylark:drake_cc.bzl",
     "drake_cc_googletest",
@@ -121,6 +119,13 @@ drake_cc_googletest(
 )
 
 drake_cc_googletest(
+    name = "ostream_test",
+    deps = [
+        ":generic_polynomial",
+    ],
+)
+
+drake_cc_googletest(
     name = "polynomial_basis_element_test",
     deps = [
         ":generic_polynomial",
@@ -156,6 +161,13 @@ drake_cc_library(
     ],
 )
 
+drake_cc_googletest(
+    name = "monomial_util_test",
+    deps = [
+        ":monomial_util",
+    ],
+)
+
 drake_cc_library(
     name = "polynomial",
     srcs = [
@@ -178,6 +190,7 @@ drake_cc_googletest(
     deps = [
         ":polynomial",
         "//common/test_utilities:eigen_matrix_compare",
+        "//common/test_utilities:expect_throws_message",
     ],
 )
 
@@ -196,6 +209,7 @@ drake_cc_googletest(
     deps = [
         ":monomial_util",
         ":polynomial",
+        "//common/test_utilities:eigen_matrix_compare",
         "//common/test_utilities:expect_no_throw",
         "//common/test_utilities:expect_throws_message",
         "//common/test_utilities:symbolic_test_util",

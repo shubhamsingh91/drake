@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "drake/common/symbolic/monomial_util.h"
+#include "drake/common/test_utilities/eigen_matrix_compare.h"
 #include "drake/common/test_utilities/expect_no_throw.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/common/test_utilities/symbolic_test_util.h"
@@ -210,6 +211,18 @@ TEST_F(SymbolicPolynomialTest, ConstructorFromExpressionAndIndeterminates3) {
   EXPECT_TRUE(p1.monomial_to_coefficient_map().empty());
 }
 
+TEST_F(SymbolicPolynomialTest, ConstructFromVariable) {
+  // Variable -------------------> Polynomial
+  //     | Expression()                    | .ToExpression()
+  //    \/                                 \/
+  // Expanded Expression     ==      Expression
+  for (const Variable& v : var_xyz_) {
+    const Expression expr{v};
+    const Expression expr_from_polynomial{Polynomial{v}.ToExpression()};
+    EXPECT_PRED2(ExprEqual, expr, expr_from_polynomial);
+  }
+}
+
 TEST_F(SymbolicPolynomialTest, IndeterminatesAndDecisionVariables) {
   // p = 3ab²*x²y -bc*z³
   const Polynomial p{
@@ -326,6 +339,22 @@ TEST_F(SymbolicPolynomialTest, AdditionMonomialDouble) {
   }
 }
 
+TEST_F(SymbolicPolynomialTest, AdditionPolynomialExpression) {
+  // (Polynomial(e₁) + e₂).Expand() = (e₁ + e₂).Expand() = (Polynomial(e₁) +
+  // Polynomial(e₂).ToExpression()).Expand()
+  for (const Expression& e1 : exprs_) {
+    for (const Expression& e2 : exprs_) {
+      const Polynomial p1{e1};
+      const Polynomial p2{e2};
+      EXPECT_PRED2(ExprEqual, (p1 + e2).Expand(), (e1 + e2).Expand());
+      EXPECT_PRED2(ExprEqual, (e1 + p2).Expand(), (e1 + e2).Expand());
+      // Tests that the return of Polynomial + Expression is the correct
+      // Polynomial
+      EXPECT_PRED2(PolyEqual, Polynomial{p1 + e2}, p1 + p2);
+    }
+  }
+}
+
 TEST_F(SymbolicPolynomialTest, SubtractionPolynomialPolynomial) {
   // (Polynomial(e₁) - Polynomial(e₂)).ToExpression() = (e₁ - e₂).Expand()
   for (const Expression& e1 : exprs_) {
@@ -409,6 +438,22 @@ TEST_F(SymbolicPolynomialTest, SubtractionMonomialDouble) {
     for (const double c : doubles_) {
       EXPECT_PRED2(ExprEqual, (m - c).ToExpression(), m.ToExpression() - c);
       EXPECT_PRED2(ExprEqual, (c - m).ToExpression(), c - m.ToExpression());
+    }
+  }
+}
+
+TEST_F(SymbolicPolynomialTest, SubtractionPolynomialExpression) {
+  // (Polynomial(e₁) - e₂).Expand() = (e₁ - e₂).Expand() = (Polynomial(e₁) -
+  // Polynomial(e₂).ToExpression()).Expand()
+  for (const Expression& e1 : exprs_) {
+    for (const Expression& e2 : exprs_) {
+      const Polynomial p1{e1};
+      const Polynomial p2{e2};
+      EXPECT_PRED2(ExprEqual, (p1 - e2).Expand(), (e1 - e2).Expand());
+      EXPECT_PRED2(ExprEqual, (e1 - p2).Expand(), (e1 - e2).Expand());
+      // Tests that the return of Polynomial - Expression is the correct
+      // Polynomial
+      EXPECT_PRED2(PolyEqual, Polynomial{p1 - e2}, p1 - p2);
     }
   }
 }
@@ -538,6 +583,23 @@ TEST_F(SymbolicPolynomialTest, MultiplicationPolynomialPolynomial2) {
   EXPECT_EQ(product_map_expected, (p1 * p2).monomial_to_coefficient_map());
 }
 
+TEST_F(SymbolicPolynomialTest, MultiplicationPolynomialExpression) {
+  // (Polynomial(e₁) * e₂).Expand() = (e₁ * e₂).Expand() = (Polynomial(e₁) *
+  // Polynomial(e₂).ToExpression()).Expand()
+  for (const Expression& e1 : exprs_) {
+    for (const Expression& e2 : exprs_) {
+      const Polynomial computed_left_product{Polynomial(e1) * e2};
+      const Polynomial computed_right_product{e1 * Polynomial(e2)};
+      const Polynomial expected{e1 * e2};
+      const double tol = 1e-12;
+      // Use PolynomialEqual rather than ExprEqual to be able to use floating
+      // point rather than exact equality.
+      EXPECT_TRUE(test::PolynomialEqual(computed_left_product, expected, tol));
+      EXPECT_TRUE(test::PolynomialEqual(computed_right_product, expected, tol));
+    }
+  }
+}
+
 TEST_F(SymbolicPolynomialTest, BinaryOperationBetweenPolynomialAndVariable) {
   // p = 2a²x² + 3ax + 7.
   const Polynomial p{2 * pow(a_, 2) * pow(x_, 2) + 3 * a_ * x_ + 7, {var_x_}};
@@ -655,6 +717,32 @@ TEST_F(SymbolicPolynomialTest, DivideByConstant) {
   }
 }
 
+TEST_F(SymbolicPolynomialTest, ConstantDividedByPolynomial) {
+  for (double v = -5.5; v <= 5.5; v += 1.0) {
+    for (const Expression& e : exprs_) {
+      if (e.EqualTo(0)) {
+        continue;
+      }
+      EXPECT_PRED2(ExprEqual, (v / Polynomial(e)).Expand(), (v / e).Expand());
+    }
+  }
+}
+
+TEST_F(SymbolicPolynomialTest, DivPolynomialExpression) {
+  // (Polynomial(e₁) / e₂).Expand() = (e₁ / e₂).Expand().
+  for (const Expression& e1 : exprs_) {
+    for (const Expression& e2 : exprs_) {
+      if (e2.EqualTo(0)) {
+        continue;
+      }
+      EXPECT_PRED2(ExprEqual, (Polynomial(e1) / e2).Expand(),
+                   (e1 / e2).Expand());
+      EXPECT_PRED2(ExprEqual, (e1 / Polynomial(e2)).Expand(),
+                   (e1 / e2).Expand());
+    }
+  }
+}
+
 TEST_F(SymbolicPolynomialTest, DifferentiateJacobian) {
   // p = 2a²bx² + 3bc²x + 7ac.
   const Polynomial p{
@@ -705,41 +793,40 @@ TEST_F(SymbolicPolynomialTest, DifferentiateJacobian) {
 
 TEST_F(SymbolicPolynomialTest, Integrate) {
   // p = 2a²x²y + 3axy³.
-  const Polynomial p{2 * pow(a_, 2) * pow(x_, 2) * y_
-    + 3 * a_ * x_ * pow(y_, 3),
-    {var_x_, var_y_}};
+  const Polynomial p{
+      2 * pow(a_, 2) * pow(x_, 2) * y_ + 3 * a_ * x_ * pow(y_, 3),
+      {var_x_, var_y_}};
 
   // ∫ p dx = 2/3 a²x³y + 3/2 ax²y³.
-  const Polynomial int_p_dx{
-    2 * pow(a_, 2) * pow(x_, 3) * y_ / 3 + 3 * a_ * pow(x_, 2) * pow(y_, 3) / 2,
-    {var_x_, var_y_}};
+  const Polynomial int_p_dx{2 * pow(a_, 2) * pow(x_, 3) * y_ / 3 +
+                                3 * a_ * pow(x_, 2) * pow(y_, 3) / 2,
+                            {var_x_, var_y_}};
   EXPECT_PRED2(PolyEqual, p.Integrate(var_x_), int_p_dx);
 
   // ∫ p dx from 1 to 3 = 52/3 a²y + 12 ay³.
-  const Polynomial def_int_p_dx{
-    52 * pow(a_, 2) * y_ / 3 + 12 * a_ * pow(y_, 3),
-    {var_y_}};
+  const Polynomial def_int_p_dx{52 * pow(a_, 2) * y_ / 3 + 12 * a_ * pow(y_, 3),
+                                {var_y_}};
   EXPECT_PRED2(PolyEqual, p.Integrate(var_x_, 1, 3), def_int_p_dx);
   // ∫ from [a,b] = -∫ from [b,a]
   EXPECT_PRED2(PolyEqual, p.Integrate(var_x_, 3, 1), -def_int_p_dx);
 
   // ∫ p dy = a²x²y² + 3/4 axy⁴.
   const Polynomial int_p_dy{
-    pow(a_, 2) * pow(x_, 2) * pow(y_, 2) + 3 * a_ * x_ * pow(y_, 4) / 4,
-    {var_x_, var_y_}};
+      pow(a_, 2) * pow(x_, 2) * pow(y_, 2) + 3 * a_ * x_ * pow(y_, 4) / 4,
+      {var_x_, var_y_}};
   EXPECT_PRED2(PolyEqual, p.Integrate(var_y_), int_p_dy);
 
   // ∫ p dz = 2a²x²yz + 3axy³z.
   const Polynomial int_p_dz{
-    2 * pow(a_, 2) * pow(x_, 2) * y_ * z_ + 3 * a_ * x_ * pow(y_, 3) * z_,
-    {var_x_, var_y_, var_z_}};
+      2 * pow(a_, 2) * pow(x_, 2) * y_ * z_ + 3 * a_ * x_ * pow(y_, 3) * z_,
+      {var_x_, var_y_, var_z_}};
   EXPECT_TRUE(p.Integrate(var_z_).indeterminates().include(var_z_));
   EXPECT_PRED2(PolyEqual, p.Integrate(var_z_), int_p_dz);
 
   // ∫ p dz from -1 to 1 = 4a²x²y + 6axy³.
   const Polynomial def_int_p_dz{
-    4 * pow(a_, 2) * pow(x_, 2) * y_ + 6 * a_ * x_ * pow(y_, 3),
-    {var_x_, var_y_, var_z_}};
+      4 * pow(a_, 2) * pow(x_, 2) * y_ + 6 * a_ * x_ * pow(y_, 3),
+      {var_x_, var_y_, var_z_}};
   EXPECT_TRUE(p.Integrate(var_z_).indeterminates().include(var_z_));
   EXPECT_PRED2(PolyEqual, p.Integrate(var_z_, -1, 1), def_int_p_dz);
 
@@ -1084,6 +1171,84 @@ TEST_F(SymbolicPolynomialTest, EvaluateWithAffineCoefficients) {
   }
 }
 
+TEST_F(SymbolicPolynomialTest, SubstituteAndExpandTest) {
+  Polynomial::SubstituteAndExpandCacheData substitutions_cached_data;
+  std::unordered_map<Variable, Polynomial> indeterminate_substitution;
+
+  // A simple substitution.
+  indeterminate_substitution.emplace(var_x_, Polynomial(2 * var_a_));
+  // A substitution from one variable to a 2 indeterminate polynomial.
+  indeterminate_substitution.emplace(var_y_,
+                                     Polynomial(var_a_ * var_b_ + var_a_));
+  // A substitution with powers of a variable
+  indeterminate_substitution.emplace(
+      var_z_, Polynomial(pow(var_a_, 3) + 2 * var_a_ + 1));
+
+  // A polynomial with only linear monomials.
+  const Polynomial poly0{x_ + y_};
+  const Polynomial sub0 = poly0.SubstituteAndExpand(indeterminate_substitution,
+                                                    &substitutions_cached_data);
+  const Polynomial sub0_expected{3 * a_ + a_ * b_};
+  EXPECT_TRUE(sub0.EqualTo(sub0_expected));
+  // We expect {1: 1, x: 2a, y: ab+a }
+  EXPECT_EQ(substitutions_cached_data.get_data()->size(), 3);
+  EXPECT_TRUE(substitutions_cached_data.get_data()
+                  ->at(Monomial())
+                  .EqualTo(Polynomial(1)));
+
+  const Polynomial poly1{2 * x_ * x_};
+  const Polynomial sub1 = poly1.SubstituteAndExpand(indeterminate_substitution,
+                                                    &substitutions_cached_data);
+  const Polynomial sub1_expected{8 * a_ * a_};
+  EXPECT_TRUE(sub1.EqualTo(sub1_expected));
+  // Expect {1: 1, x: 2a, y: ab+a, x²: 4a²}.
+  EXPECT_EQ(substitutions_cached_data.get_data()->size(), 4);
+  EXPECT_TRUE(substitutions_cached_data.get_data()
+                  ->at(Monomial(x_ * x_))
+                  .EqualTo(Polynomial(4 * a_ * a_)));
+
+  const Polynomial poly2{x_ * x_ * y_};
+  const Polynomial sub2 = poly2.SubstituteAndExpand(indeterminate_substitution,
+                                                    &substitutions_cached_data);
+  const Polynomial sub2_expected{4 * pow(a_, 3) * (b_ + 1)};
+  EXPECT_TRUE(sub2.EqualTo(sub2_expected));
+  // Expect {1: 1, x: 2a, y: ab+a, x²: 4a²,  x²y: 8a³(b+1)}.
+  EXPECT_EQ(substitutions_cached_data.get_data()->size(), 5);
+  // Make sure this hasn't changed
+  EXPECT_TRUE(substitutions_cached_data.get_data()
+                  ->at(Monomial(x_ * x_))
+                  .EqualTo(Polynomial(4 * a_ * a_)));
+  EXPECT_TRUE(substitutions_cached_data.get_data()
+                  ->at(Monomial(x_ * x_ * y_))
+                  .EqualTo(Polynomial(4 * pow(a_, 3) * (b_ + 1))));
+
+  const Polynomial poly3{pow(x_, 3) * z_};
+  const Polynomial sub3 = poly3.SubstituteAndExpand(indeterminate_substitution,
+                                                    &substitutions_cached_data);
+  const Polynomial sub3_expected{pow(2 * a_, 3) *
+                                 (pow(var_a_, 3) + 2 * var_a_ + 1)};
+  EXPECT_TRUE(sub3.EqualTo(sub3_expected));
+  // Expect {1: 1, x: 2a, y: ab+a, x²: 4a²,  x²y: 4a², xz: 2a + 4a² + 2a⁴, x³z:
+  // 2a⁹+4a⁷+2a⁶}
+  EXPECT_EQ(substitutions_cached_data.get_data()->size(), 8);
+  EXPECT_TRUE(substitutions_cached_data.get_data()
+                  ->at(Monomial(pow(x_, 3) * z_))
+                  .EqualTo(sub3_expected));
+
+  indeterminate_substitution.clear();
+  const Polynomial::MapType a_poly_map{{Monomial(a_), pow(cos(z_) + 1, 2)}};
+  const Polynomial a_poly{a_poly_map};
+  indeterminate_substitution.emplace(var_x_, a_poly);
+
+  const Polynomial poly4{x_};
+  const Polynomial sub4 = poly4.SubstituteAndExpand(indeterminate_substitution);
+
+  const Polynomial::MapType sub4_expected_map{
+      {Monomial(a_), pow(cos(z_), 2) + 2 * cos(z_) + 1}};
+  const Polynomial sub4_expected{sub4_expected_map};
+  EXPECT_TRUE(sub4.EqualTo(sub4_expected));
+}
+
 TEST_F(SymbolicPolynomialTest, Hash) {
   const auto h = std::hash<Polynomial>{};
   Polynomial p1{x_ * x_};
@@ -1329,6 +1494,59 @@ TEST_F(SymbolicPolynomialTest, IsEvenOdd) {
   EXPECT_TRUE(p.IsOdd());
 }
 
+TEST_F(SymbolicPolynomialTest, Roots) {
+  symbolic::Polynomial p{0};
+  DRAKE_EXPECT_THROWS_MESSAGE(p.Roots(), ".* is not a univariate polynomial.*");
+
+  p = symbolic::Polynomial{xy_};
+  DRAKE_EXPECT_THROWS_MESSAGE(p.Roots(), ".* is not a univariate polynomial.*");
+
+  p = symbolic::Polynomial{xy_, {var_x_}};
+  DRAKE_EXPECT_THROWS_MESSAGE(
+      p.Roots(), ".* only supports polynomials with constant coefficients.*");
+
+  p = symbolic::Polynomial{x_ - 1.23};
+  Eigen::VectorXcd roots = p.Roots();
+  EXPECT_TRUE(CompareMatrices(roots.real(), Vector1d{1.23}, 1e-14));
+  EXPECT_TRUE(CompareMatrices(roots.imag(), Vector1d::Zero(), 1e-14));
+
+  // Note: the order of the roots is not guaranteed. Sort them here by real,
+  // then imaginary.
+  auto sorted = [](const Eigen::VectorXcd& v) {
+    Eigen::VectorXcd v_sorted = v;
+    std::sort(v_sorted.data(), v_sorted.data() + v_sorted.size(),
+              [](const std::complex<double>& a, const std::complex<double>& b) {
+                if (a.real() == b.real()) {
+                  return a.imag() < b.imag();
+                }
+                return a.real() < b.real();
+              });
+    return v_sorted;
+  };
+
+  // Include a repeated root.
+  p = symbolic::Polynomial{(x_ - 1.23) * (x_ - 4.56) * (x_ - 4.56)};
+  roots = sorted(p.Roots());
+  EXPECT_TRUE(
+      CompareMatrices(roots.real(), Eigen::Vector3d{1.23, 4.56, 4.56}, 1e-7));
+  EXPECT_TRUE(CompareMatrices(roots.imag(), Eigen::Vector3d::Zero(), 1e-7));
+
+  // Complex roots.  x^4 - 1 has roots {-1, -i, i, 1}.
+  p = symbolic::Polynomial{pow(x_, 4) - 1};
+  roots = sorted(p.Roots());
+  EXPECT_TRUE(
+      CompareMatrices(roots.real(), Eigen::Vector4d{-1, 0, 0, 1}, 1e-7));
+  EXPECT_TRUE(
+      CompareMatrices(roots.imag(), Eigen::Vector4d{0, -1, 1, 0}, 1e-7));
+
+  // Leading coefficient is not 1.
+  p = symbolic::Polynomial{(2.1 * x_ - 1.23) * (x_ - 4.56)};
+  roots = sorted(p.Roots());
+  EXPECT_TRUE(
+      CompareMatrices(roots.real(), Eigen::Vector2d{1.23 / 2.1, 4.56}, 1e-7));
+  EXPECT_TRUE(CompareMatrices(roots.imag(), Eigen::Vector2d::Zero(), 1e-7));
+}
+
 TEST_F(SymbolicPolynomialTest, Expand) {
   // p1 is already expanded.
   const symbolic::Polynomial p1{
@@ -1349,6 +1567,51 @@ TEST_F(SymbolicPolynomialTest, Expand) {
   const symbolic::Polynomial p3{
       {{symbolic::Monomial(), (a_ + 1) * (a_ - 1) - pow(a_, 2) + 1}}};
   EXPECT_TRUE(p3.Expand().monomial_to_coefficient_map().empty());
+}
+
+TEST_F(SymbolicPolynomialTest, CalcPolynomialWLowerTriangularPart) {
+  // Q is a matrix of double.
+  const Vector2<symbolic::Monomial> monomial_basis1(
+      symbolic::Monomial({{var_x_, 2}, {var_y_, 1}}),
+      symbolic::Monomial({{var_x_, 1}}));
+  Eigen::Vector3d Q1_lower(1, 2, 3);
+  const auto poly1 =
+      CalcPolynomialWLowerTriangularPart(monomial_basis1, Q1_lower);
+  EXPECT_PRED2(
+      test::PolyEqual, poly1,
+      symbolic::Polynomial(pow(var_x_, 4) * pow(var_y_, 2) +
+                           4 * pow(var_x_, 3) * var_y_ + 3 * var_x_ * var_x_));
+
+  // Q is a matrix of symbolic variable.
+  const Vector3<symbolic::Monomial> monomial_basis2(
+      symbolic::Monomial({{var_x_, 2}}),
+      symbolic::Monomial({{var_x_, 1}, {var_y_, 1}}),
+      symbolic::Monomial({{var_y_, 2}}));
+  Vector6<symbolic::Variable> Q2_lower;
+  for (int i = 0; i < 6; ++i) {
+    Q2_lower(i) = symbolic::Variable("Q2_lower" + std::to_string(i));
+  }
+  const auto poly2 =
+      CalcPolynomialWLowerTriangularPart(monomial_basis2, Q2_lower);
+  const symbolic::Polynomial poly2_expected = symbolic::Polynomial(
+      Q2_lower(0) * pow(var_x_, 4) + 2 * Q2_lower(1) * pow(var_x_, 3) * var_y_ +
+          (2 * Q2_lower(2) + Q2_lower(3)) * pow(var_x_, 2) * pow(var_y_, 2) +
+          2 * Q2_lower(4) * var_x_ * pow(var_y_, 3) +
+          Q2_lower(5) * pow(var_y_, 4),
+      var_xy_);
+  EXPECT_PRED2(test::PolyEqualAfterExpansion, poly2, poly2_expected);
+
+  // Q is a matrix of expression.
+  Vector6<symbolic::Expression> Q3_lower;
+  Q3_lower << var_a_, 1, var_a_ + var_b_, 2, 0, var_a_ * var_b_;
+  const auto poly3 =
+      CalcPolynomialWLowerTriangularPart(monomial_basis2, Q3_lower);
+  const symbolic::Polynomial poly3_expected = symbolic::Polynomial(
+      var_a_ * pow(var_x_, 4) + 2 * pow(var_x_, 3) * var_y_ +
+          (2 * var_a_ + 2 * var_b_ + 2) * pow(var_x_, 2) * pow(var_y_, 2) +
+          var_a_ * var_b_ * pow(var_y_, 4),
+      var_xy_);
+  EXPECT_PRED2(test::PolyEqualAfterExpansion, poly3, poly3_expected);
 }
 
 }  // namespace

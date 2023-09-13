@@ -1,9 +1,8 @@
-#include <iostream>
-
 #include <gflags/gflags.h>
 
 #include "drake/common/eigen_types.h"
 #include "drake/common/find_resource.h"
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/is_approx_equal_abstol.h"
 #include "drake/examples/manipulation_station/manipulation_station.h"
 #include "drake/geometry/drake_visualizer.h"
@@ -19,8 +18,8 @@ namespace examples {
 namespace manipulation_station {
 namespace {
 
-// Simple example which simulates the manipulation station (and visualizes it
-// with drake visualizer).
+// Simple example which simulates the manipulation station (and transmits
+// visualization data for Meldis to display).
 // TODO(russt): Replace this with a slightly more interesting minimal example
 // (e.g. picking up an object) and perhaps a slightly more descriptive name.
 
@@ -124,8 +123,8 @@ int do_main(int argc, char* argv[]) {
   // Check that the arm is (very roughly) in the commanded position.
   VectorXd q = station->GetIiwaPosition(station_context);
   if (!is_approx_equal_abstol(q, q0, 1.e-3)) {
-    std::cout << "q is not sufficiently close to q0.\n";
-    std::cout << "q - q0  = " << (q - q0).transpose() << "\n";
+    fmt::print("q is not sufficiently close to q0.\n");
+    fmt::print("q - q0  = {}\n", fmt_eigen((q - q0).transpose()));
     return EXIT_FAILURE;
   }
 

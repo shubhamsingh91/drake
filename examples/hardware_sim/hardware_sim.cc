@@ -1,3 +1,6 @@
+// This file is licensed under the MIT-0 License.
+// See LICENSE-MIT-0.txt in the current directory.
+
 /* This program serves as an example of a simulator for hardware, i.e., a
 simulator for robots that one might have in their lab. There is no controller
 built-in to this program -- it merely sends status and sensor messages, and
@@ -6,8 +9,9 @@ listens for command messages.
 It is intended to operate in the "no ground truth" regime, i.e, the only LCM
 messages it knows about are the ones used by the actual hardware. The one
 messaging difference from real life is that we emit visualization messages (for
-meldis or drake-visualizer) so that you can watch a simulation on your screen
-while some (separate) controller operates the robot, without extra hassle.
+Meldis, or the legacy `drake_visualizer` application of days past) so that you
+can watch a simulation on your screen while some (separate) controller operates
+the robot, without extra hassle.
 
 Drake maintainers should keep this file in sync with hardware_sim.py. */
 

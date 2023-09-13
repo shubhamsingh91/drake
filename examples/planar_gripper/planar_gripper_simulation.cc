@@ -52,7 +52,6 @@
 #include <gflags/gflags.h>
 
 #include "drake/common/drake_assert.h"
-#include "drake/common/find_resource.h"
 #include "drake/common/trajectories/piecewise_polynomial.h"
 #include "drake/examples/planar_gripper/planar_gripper_common.h"
 #include "drake/examples/planar_gripper/planar_gripper_lcm.h"
@@ -108,7 +107,7 @@ DEFINE_string(orientation, "vertical",
               "The orientation of the planar gripper. Options are {vertical, "
               "horizontal}.");
 DEFINE_bool(visualize_contacts, false,
-            "Visualize contacts in Drake visualizer.");
+            "Visualize contacts in Meldis.");
 DEFINE_bool(
     use_position_control, true,
     "If true (default) we simulate position control via inverse dynamics "
@@ -240,17 +239,16 @@ int DoMain() {
       multibody::AddMultibodyPlantSceneGraph(&builder, FLAGS_time_step);
 
   // Make and add the planar_gripper model.
-  const std::string full_name =
-      FindResourceOrThrow("drake/examples/planar_gripper/planar_gripper.sdf");
+  const std::string gripper_url =
+      "package://drake/examples/planar_gripper/planar_gripper.sdf";
   const ModelInstanceIndex gripper_index =
-      Parser(&plant).AddModelFromFile(full_name);
+      Parser(&plant).AddModelsFromUrl(gripper_url).at(0);
   WeldGripperFrames<double>(&plant);
 
   // Adds the brick to be manipulated.
-  const std::string brick_file_name =
-      FindResourceOrThrow("drake/examples/planar_gripper/planar_brick.sdf");
-  const ModelInstanceIndex brick_index =
-      Parser(&plant).AddModelFromFile(brick_file_name, "brick");
+  const std::string brick_url =
+      "package://drake/examples/planar_gripper/planar_brick.sdf";
+  Parser(&plant).AddModelsFromUrl(brick_url);
 
   // When the planar-gripper is welded via WeldGripperFrames(), motion always
   // lies in the world Y-Z plane (because the planar-gripper frame is aligned
@@ -259,7 +257,7 @@ int DoMain() {
   Vector3d gravity;
   if (FLAGS_orientation == "vertical") {
     const multibody::Frame<double>& brick_base_frame =
-        plant.GetFrameByName("brick_base", brick_index);
+        plant.GetFrameByName("brick_base");
     plant.WeldFrames(plant.world_frame(), brick_base_frame);
     gravity = Vector3d(
         0, 0, -multibody::UniformGravityFieldElement<double>::kDefaultStrength);
@@ -277,7 +275,7 @@ int DoMain() {
 
   // Create the controlled plant. Contains only the fingers (no bricks).
   MultibodyPlant<double> control_plant(FLAGS_time_step);
-  Parser(&control_plant).AddModelFromFile(full_name);
+  Parser(&control_plant).AddModelsFromUrl(gripper_url);
   WeldGripperFrames<double>(&control_plant);
 
   // Adds a thin floor that can provide friction against the brick.
@@ -329,7 +327,8 @@ int DoMain() {
     // GeneralizedForceToActuationOrdering fills this role.
     auto force_to_actuation =
         builder.AddSystem<GeneralizedForceToActuationOrdering>(control_plant);
-    builder.Connect(*id_controller, *force_to_actuation);
+    builder.Connect(id_controller->get_output_port_control(),
+                    force_to_actuation->get_input_port());
     builder.Connect(force_to_actuation->get_output_port(0),
                     plant.get_actuation_input_port(gripper_index));
   } else {  // Use torque control.

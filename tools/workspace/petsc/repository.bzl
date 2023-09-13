@@ -1,15 +1,16 @@
-# -*- python -*-
-
 load("@drake//tools/workspace:github.bzl", "github_archive")
 
 def petsc_repository(
         name,
         mirrors = None):
+    """The @petsc external is deprecated in Drake's WORKSPACE and will be
+    removed on or after 2023-11-01.
+    """
     github_archive(
         name = name,
         repository = "petsc/petsc",
-        commit = "v3.18.0",
-        sha256 = "f7d4e16dd88ccdba955e44b3fd893137a5ff41f248f56470d1abe46b48305c5c",  # noqa
+        commit = "v3.19.3",
+        sha256 = "d9cf7b0c057e12b903cb27007adc98728aabf09c5accb0cc65112c756b8fb68a",  # noqa
         build_file = ":package.BUILD.bazel",
         mirrors = mirrors,
         patches = [

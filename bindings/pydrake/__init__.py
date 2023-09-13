@@ -13,6 +13,7 @@ For examples and tutorials that tie in and use this API, please see
 `here <https://drake.mit.edu/#tutorials-and-examples>`_.
 """
 
+import functools
 import os
 import sys
 import warnings
@@ -40,7 +41,8 @@ except ImportError:
 try:
     from . import common
 except ImportError as e:
-    if '/pydrake/' in e.path and 'cannot open shared object file' in e.msg:
+    if ('cannot open shared object file' in (e.msg or '')
+            and '/pydrake/' in (e.path or '')):
         message = f'''
 Drake failed to load a required library. This could indicate an installation
 problem, or that your system is missing required distro-provided packages.
@@ -128,6 +130,15 @@ def _import_cc_module_vars(
         setattr(py_module, name, value)
         var_list.append(name)
     return var_list
+
+
+@functools.lru_cache
+def _is_building_documentation():
+    """Returns True iff pydrake is being imported by the website documentation
+    build process (i.e., Sphinx). We use this to adjust our code to be more
+    documentation-suitable if so.
+    """
+    return "DRAKE_IS_BUILDING_DOCUMENTATION" in os.environ
 
 
 class _DrakeImportWarning(Warning):

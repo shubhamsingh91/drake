@@ -10,6 +10,7 @@ set -euo pipefail
 
 with_doc_only=0
 with_maintainer_only=0
+with_bazel=1
 with_clang=1
 with_test_only=1
 with_update=1
@@ -23,6 +24,14 @@ while [ "${1:-}" != "" ]; do
     # i.e., those prerequisites that are dependencies of bazel run //doc:build.
     --with-doc-only)
       with_doc_only=1
+      ;;
+    # Install Bazel from a deb package.
+    --with-bazel)
+      with_bazel=1
+      ;;
+    # Do NOT install Bazel.
+    --without-bazel)
+      with_bazel=0
       ;;
     # Install prerequisites that are only needed for --config clang, i.e.,
     # opts-in to the ability to compile Drake's C++ code using Clang.
@@ -103,6 +112,10 @@ if [[ "${with_doc_only}" -eq 1 ]]; then
   apt-get install ${maybe_yes} --no-install-recommends ${packages}
 fi
 
+if [[ "${with_bazel}" -eq 1 ]]; then
+  source "${BASH_SOURCE%/*}/install_bazel.sh"
+fi
+
 if [[ "${with_clang}" -eq 1 ]]; then
   packages=$(cat "${BASH_SOURCE%/*}/packages-${codename}-clang.txt")
   apt-get install ${maybe_yes} --no-install-recommends ${packages}
@@ -110,9 +123,7 @@ fi
 
 if [[ "${with_test_only}" -eq 1 ]]; then
   packages=$(cat "${BASH_SOURCE%/*}/packages-${codename}-test-only.txt")
-  # Suppress Python 3.8 warnings when installing python3-pandas on Focal.
-  PYTHONWARNINGS=ignore::SyntaxWarning \
-    apt-get install ${maybe_yes} --no-install-recommends ${packages}
+  apt-get install ${maybe_yes} --no-install-recommends ${packages}
 fi
 
 if [[ "${with_maintainer_only}" -eq 1 ]]; then
@@ -120,56 +131,18 @@ if [[ "${with_maintainer_only}" -eq 1 ]]; then
   apt-get install ${maybe_yes} --no-install-recommends ${packages}
 fi
 
-dpkg_install_from_wget() {
-  package="$1"
-  version="$2"
-  url="$3"
-  checksum="$4"
-
-  # Skip the install if we're already at the exact version.
-  installed=$(dpkg-query --showformat='${Version}\n' --show "${package}" 2>/dev/null || true)
-  if [[ "${installed}" == "${version}" ]]; then
-    echo "${package} is already at the desired version ${version}"
-    return
-  fi
-
-  # If installing our desired version would be a downgrade, ask the user first.
-  if dpkg --compare-versions "${installed}" gt "${version}"; then
-    echo "This system has ${package} version ${installed} installed."
-    echo "Drake suggests downgrading to version ${version}, our supported version."
-    read -r -p 'Do you want to downgrade? [Y/n] ' reply
-    if [[ ! "${reply}" =~ ^([yY][eE][sS]|[yY])*$ ]]; then
-      echo "Skipping ${package} ${version} installation."
-      return
+# On Jammy, Drake doesn't install anything related to GCC 12, but if the user
+# has chosen to install some GCC 12 libraries but has failed to install all of
+# them correctly as a group, Drake's documentation header file parser will fail
+# with a libclang-related complaint. Therefore, we'll help the user clean up
+# their mess, to avoid apparent Drake build errors.
+if [[ "${codename}" == "jammy" ]]; then
+  status=$(dpkg-query --show --showformat='${db:Status-Abbrev}' libgcc-12-dev 2>/dev/null || true)
+  if [[ "${status}" == "ii " ]]; then
+    status_stdcxx=$(dpkg-query --show --showformat='${db:Status-Abbrev}' libstdc++-12-dev 2>/dev/null || true)
+    status_fortran=$(dpkg-query --show --showformat='${db:Status-Abbrev}' libgfortran-12-dev 2>/dev/null || true)
+    if [[ "${status_stdcxx}" != "ii " || "${status_fortran}" != "ii " ]]; then
+      apt-get install ${maybe_yes} --no-install-recommends libgcc-12-dev libstdc++-12-dev libgfortran-12-dev
     fi
   fi
-
-  # Download and verify.
-  tmpdeb="/tmp/${package}_${version}-amd64.deb"
-  wget -O "${tmpdeb}" "${url}"
-  if echo "${checksum} ${tmpdeb}" | sha256sum -c -; then
-    echo  # Blank line between checkout output and dpkg output.
-  else
-    echo "ERROR: The ${package} deb does NOT have the expected SHA256. Not installing." >&2
-    exit 2
-  fi
-
-  # Install.
-  dpkg -i "${tmpdeb}"
-  rm "${tmpdeb}"
-}
-
-# Install bazel package dependencies (these may duplicate dependencies of
-# drake).
-apt-get install ${maybe_yes} --no-install-recommends $(cat <<EOF
-g++
-unzip
-zlib1g-dev
-EOF
-)
-
-# Keep this version number in sync with the drake/.bazeliskrc version number.
-dpkg_install_from_wget \
-  bazel 5.3.1 \
-  https://releases.bazel.build/5.3.1/release/bazel_5.3.1-linux-x86_64.deb \
-  1e939b50d90f68d30fa4f3c12dfdf31429b83ddd8076c622429854f64253c23d
+fi

@@ -4,8 +4,7 @@
 #include <fstream>
 #include <limits>
 
-#include <fmt/format.h>
-
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/nice_type_name.h"
 #include "drake/common/temp_directory.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
@@ -108,7 +107,7 @@ void ShapeConfigurations<T>::ImplementGeometry(const Box& box, void*) {
       throw std::runtime_error(
           fmt::format("The box (with dimensions {}) isn't large enough for "
                       "penetration depth of {}",
-                      box.size(), -distance_));
+                      fmt_eigen(box.size()), -distance_));
     }
     // If we actually need penetration, we need to make sure that the distance
     // to the edges is *larger* than the requested depth (plus small padding).
@@ -370,7 +369,6 @@ class ProximityEngineTester {
   }
 };
 
-
 ::testing::AssertionResult MeshIsConvex() {
   // Create a small obj in a temp directory.
   const std::string obj_path = temp_directory() + "/tri.obj";
@@ -447,8 +445,7 @@ template <typename T>
 void CharacterizeResultTest<T>::RunCallback(
     const QueryInstance& query, fcl::CollisionObjectd* obj_A,
     fcl::CollisionObjectd* obj_B, const CollisionFilter* collision_filter,
-    const std::unordered_map<GeometryId, RigidTransform<T>>* X_WGs)
-    const {
+    const std::unordered_map<GeometryId, RigidTransform<T>>* X_WGs) const {
   callback_->ClearResults();
   ASSERT_EQ(callback_->GetNumResults(), 0);
   switch (query.outcome) {
@@ -552,7 +549,7 @@ void CharacterizeResultTest<T>::RunCharacterization(
             "\n{}\n",
             GetGeometryName(*obj_A), GetGeometryName(*obj_B), first, second,
             test_config.description, test_config.signed_distance,
-            test_config.X_AB.GetAsMatrix34()));
+            fmt_eigen(test_config.X_AB.GetAsMatrix34())));
         RunCallback(query, obj_A, obj_B, &collision_filter_, &world_poses);
         const std::optional<double> error =
             ComputeErrorMaybe(test_config.signed_distance);
@@ -716,15 +713,14 @@ Sphere CharacterizeResultTest<T>::sphere(bool) {
   return Sphere(kDistance * 100);
 }
 
-DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS((
-    &AlignPlanes<T>
-))
+DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(
+    (&AlignPlanes<T>))
 
 }  // namespace internal
 }  // namespace geometry
 }  // namespace drake
 
 DRAKE_DEFINE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(
-  class ::drake::geometry::internal::CharacterizeResultTest)
+    class ::drake::geometry::internal::CharacterizeResultTest)
 DRAKE_DEFINE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(
-  class ::drake::geometry::internal::ShapeConfigurations)
+    class ::drake::geometry::internal::ShapeConfigurations)

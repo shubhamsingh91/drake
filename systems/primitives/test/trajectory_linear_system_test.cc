@@ -18,7 +18,7 @@ using test::TestSystemMatrixTrajectories;
 enum class ConstructorType { FromContinuous, FromDiscrete };
 
 class TrajectoryLinearSystemTest
-  : public ::testing::TestWithParam<ConstructorType> {
+    : public ::testing::TestWithParam<ConstructorType> {
  public:
   void SetUp() override {
     if (this->GetParam() == ConstructorType::FromContinuous) {
@@ -101,7 +101,7 @@ TEST_P(TrajectoryLinearSystemTest, Derivatives) {
       EXPECT_TRUE(CompareMatrices(
           A * x + B * u, derivatives_->get_vector().CopyToVector(), tol));
     } else {
-      dut_->CalcDiscreteVariableUpdates(*context_, updates_.get());
+      updates_->SetFrom(dut_->EvalUniquePeriodicDiscreteUpdate(*context_));
       EXPECT_TRUE(CompareMatrices(A * x + B * u,
                                   updates_->get_vector(0).CopyToVector(), tol));
     }
@@ -149,8 +149,8 @@ TEST_P(TrajectoryLinearSystemTest, ScalarTypeConversion) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Constructor, TrajectoryLinearSystemTest,
-                        testing::Values(ConstructorType::FromContinuous,
-                                        ConstructorType::FromDiscrete));
+                         testing::Values(ConstructorType::FromContinuous,
+                                         ConstructorType::FromDiscrete));
 
 }  // namespace
 }  // namespace systems

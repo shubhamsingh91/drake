@@ -181,6 +181,11 @@ FrameId SceneGraph<T>::RegisterFrame(SourceId source_id, FrameId parent_id,
 }
 
 template <typename T>
+void SceneGraph<T>::RenameFrame(FrameId frame_id, const std::string& name) {
+  return model_.RenameFrame(frame_id, name);
+}
+
+template <typename T>
 GeometryId SceneGraph<T>::RegisterGeometry(
     SourceId source_id, FrameId frame_id,
     std::unique_ptr<GeometryInstance> geometry) {
@@ -193,23 +198,6 @@ GeometryId SceneGraph<T>::RegisterGeometry(
     std::unique_ptr<GeometryInstance> geometry) const {
   auto& g_state = mutable_geometry_state(context);
   return g_state.RegisterGeometry(source_id, frame_id, std::move(geometry));
-}
-
-template <typename T>
-GeometryId SceneGraph<T>::RegisterGeometry(
-    SourceId source_id, GeometryId geometry_id,
-    std::unique_ptr<GeometryInstance> geometry) {
-  return model_.RegisterGeometryWithParent(source_id, geometry_id,
-                                           std::move(geometry));
-}
-
-template <typename T>
-GeometryId SceneGraph<T>::RegisterGeometry(
-    Context<T>* context, SourceId source_id, GeometryId geometry_id,
-    std::unique_ptr<GeometryInstance> geometry) const {
-  auto& g_state = mutable_geometry_state(context);
-  return g_state.RegisterGeometryWithParent(source_id, geometry_id,
-                                            std::move(geometry));
 }
 
 template <typename T>
@@ -233,6 +221,27 @@ GeometryId SceneGraph<T>::RegisterDeformableGeometry(
   auto& g_state = mutable_geometry_state(context);
   return g_state.RegisterDeformableGeometry(
       source_id, frame_id, std::move(geometry), resolution_hint);
+}
+
+template <typename T>
+void SceneGraph<T>::RenameGeometry(GeometryId geometry_id,
+                                   const std::string& name) {
+  return model_.RenameGeometry(geometry_id, name);
+}
+
+template <typename T>
+void SceneGraph<T>::ChangeShape(
+    SourceId source_id, GeometryId geometry_id, const Shape& shape,
+    std::optional<math::RigidTransform<double>> X_FG) {
+  return model_.ChangeShape(source_id, geometry_id, shape, X_FG);
+}
+
+template <typename T>
+void SceneGraph<T>::ChangeShape(
+    Context<T>* context, SourceId source_id, GeometryId geometry_id,
+    const Shape& shape, std::optional<math::RigidTransform<double>> X_FG) {
+  auto& g_state = mutable_geometry_state(context);
+  return g_state.ChangeShape(source_id, geometry_id, shape, X_FG);
 }
 
 template <typename T>
@@ -325,8 +334,9 @@ void SceneGraph<T>::AssignRole(Context<T>* context, SourceId source_id,
   static const logging::Warn one_time(
       "Due to a bug (see issue #13597), changing the illustration roles or "
       "properties in the context will not have any apparent effect in, at "
-      "least, drake_visualizer. Please change the illustration role in the "
-      "model prior to allocating the Context.");
+      "least, the legacy `drake_visualizer` application of days past. Please "
+      "change the illustration role in the model prior to allocating the "
+      "Context.");
   auto& g_state = mutable_geometry_state(context);
   g_state.AssignRole(source_id, geometry_id, std::move(properties), assign);
 }
@@ -525,6 +535,7 @@ void SceneGraph<T>::ThrowUnlessRegistered(SourceId source_id,
 template <typename T>
 GeometryState<T>& SceneGraph<T>::mutable_geometry_state(
     Context<T>* context) const {
+  this->ValidateContext(context);
   return context->get_mutable_parameters()
       .template get_mutable_abstract_parameter<GeometryState<T>>(
           geometry_state_index_);
@@ -538,13 +549,6 @@ const GeometryState<T>& SceneGraph<T>::geometry_state(
 }
 
 }  // namespace geometry
-
-namespace systems {
-namespace scalar_conversion {
-template <> struct Traits<geometry::SceneGraph> : public FromDoubleTraits {};
-}  // namespace scalar_conversion
-}  // namespace systems
-
 }  // namespace drake
 
 DRAKE_DEFINE_CLASS_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS(

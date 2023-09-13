@@ -1,5 +1,6 @@
 #include "drake/multibody/inverse_kinematics/inverse_kinematics.h"
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "drake/common/find_resource.h"
@@ -7,6 +8,8 @@
 #include "drake/math/rotation_matrix.h"
 #include "drake/math/wrap_to.h"
 #include "drake/multibody/inverse_kinematics/test/inverse_kinematics_test_utilities.h"
+#include "drake/multibody/tree/quaternion_floating_joint.h"
+#include "drake/multibody/tree/revolute_joint.h"
 #include "drake/solvers/create_constraint.h"
 #include "drake/solvers/solve.h"
 
@@ -15,6 +18,11 @@
 
 namespace drake {
 namespace multibody {
+
+namespace {
+constexpr double kInf = std::numeric_limits<double>::infinity();
+}  // namespace
+
 Eigen::Quaterniond Vector4ToQuaternion(
     const Eigen::Ref<const Eigen::Vector4d>& q) {
   return Eigen::Quaterniond(q(0), q(1), q(2), q(3));
@@ -138,6 +146,88 @@ TEST_F(TwoFreeBodiesTest, ConstructorAddsUnitQuaterionConstraints) {
   q = result2.GetSolution(ik2.q());
   EXPECT_NEAR(q.head<4>().squaredNorm(), 1.0, 1e-6);
   EXPECT_NEAR(q.segment<4>(7).squaredNorm(), 1.0, 1e-6);
+}
+
+GTEST_TEST(InverseKinematicsTest, ConstructorLockedJoints) {
+  MultibodyPlant<double> plant(0);
+
+  // Create a plant with four bodies.
+  const auto& world = plant.world_body();
+  const auto M = SpatialInertia<double>::SolidCubeWithMass(1.0, 0.1);
+  const auto& body1 = plant.AddRigidBody("body1", M);
+  const auto& body2 = plant.AddRigidBody("body2", M);
+  const auto& body3 = plant.AddRigidBody("body3", M);
+  const auto& body4 = plant.AddRigidBody("body4", M);
+
+  // Attach a specific joint to each body:
+  // (1) A quaternion floating joint that will not be locked.
+  // (2) A quaternion floating joint that we'll lock to its initial position.
+  // (3) A revolute joint that will not be locked.
+  // (4) A revolute joint that we'll lock to its initial position.
+  math::RigidTransform<double> I;
+  Eigen::Vector3d X = Eigen::Vector3d::UnitX();
+  const auto& joint1 =
+      plant.AddJoint<QuaternionFloatingJoint>("joint1", world, I, body1, I);
+  const auto& joint2 =
+      plant.AddJoint<QuaternionFloatingJoint>("joint2", world, I, body2, I);
+  const auto& joint3 =
+      plant.AddJoint<RevoluteJoint>("joint3", world, I, body3, I, X);
+  const auto& joint4 =
+      plant.AddJoint<RevoluteJoint>("joint4", world, I, body4, I, X);
+  plant.Finalize();
+  auto context = plant.CreateDefaultContext();
+
+  // Leave joint1 unlocked.
+
+  // Lock body2's floating joint to an un-normalized initial value.
+  joint2.set_quaternion(&*context, Eigen::Quaternion<double>(3.0, 0, 0, 0));
+  joint2.Lock(&*context);
+
+  // Set limits on joint3, but do not lock it.
+  dynamic_cast<RevoluteJoint<double>&>(plant.get_mutable_joint(joint3.index()))
+      .set_position_limits(Vector1d{-0.5}, Vector1d{0.5});
+
+  // Lock body4's revolute joint beyond its limit.
+  dynamic_cast<RevoluteJoint<double>&>(plant.get_mutable_joint(joint4.index()))
+      .set_position_limits(Vector1d{-1}, Vector1d{1});
+  joint4.set_angle(&*context, 1.1);
+  joint4.Lock(&*context);
+
+  // Initialize IK.
+  const InverseKinematics ik(plant, &*context);
+  const int nq = ik.q().size();
+  const solvers::MathematicalProgram& prog = ik.prog();
+
+  // The unit quaternion constraint is only added to joint1.
+  ASSERT_EQ(prog.generic_constraints().size(), 1);
+  const solvers::Binding<solvers::Constraint>& unit_quat =
+      prog.generic_constraints().front();
+  ASSERT_EQ(unit_quat.variables().size(), 4);
+  EXPECT_EQ(symbolic::Variables(unit_quat.variables()),
+            symbolic::Variables(ik.q().segment(joint1.position_start(), 4)));
+
+  // Check the default bbox constraint.
+  // Prepare our expected values:
+  Eigen::VectorXd lower = Eigen::VectorXd::Constant(nq, -kInf);
+  Eigen::VectorXd upper = Eigen::VectorXd::Constant(nq, +kInf);
+  // - Locked quaternion floating joints obey a single, normalized position.
+  const int j2_start = joint2.position_start();
+  lower.segment(j2_start, 7) = upper.segment(j2_start, 7) =
+      (Vector<double, 7>() << 1, 0, 0, 0, 0, 0, 0).finished();
+  // - Unlocked revolute joints still obey their position limits.
+  const int j3_start = joint3.position_start();
+  lower[j3_start] = -0.5;
+  upper[j3_start] = +0.5;
+  // - Locked revolute joints obey their initial position, ignoring limits.
+  const int j4_start = joint4.position_start();
+  lower[j4_start] = upper[j4_start] = 1.1;
+  // Now check the expected value against `prog`.
+  ASSERT_EQ(prog.bounding_box_constraints().size(), 1);
+  const solvers::Binding<solvers::BoundingBoxConstraint>& limits =
+      prog.bounding_box_constraints().front();
+  ASSERT_EQ(limits.variables().size(), nq);
+  EXPECT_TRUE(CompareMatrices(limits.evaluator()->lower_bound(), lower));
+  EXPECT_TRUE(CompareMatrices(limits.evaluator()->upper_bound(), upper));
 }
 
 TEST_F(TwoFreeBodiesTest, PositionConstraint) {
@@ -367,6 +457,38 @@ TEST_F(TwoFreeBodiesTest, PointToPointDistanceConstraint) {
   const double distance_sol = (p_WP1 - p_WP2).norm();
   EXPECT_GE(distance_sol, distance_lower - 1e-6);
   EXPECT_LE(distance_sol, distance_upper + 1e-6);
+}
+
+TEST_F(TwoFreeBodiesTest, PointToLineDistanceConstraint) {
+  const Eigen::Vector3d p_B1P(0.2, -0.4, 0.9);
+  const Eigen::Vector3d p_B2Q(1.4, -0.1, 1.8);
+  const Eigen::Vector3d n_B2(0.4, -0.5, 1.2);
+
+  const double distance_lower{0.2};
+  const double distance_upper{0.25};
+
+  ik_.AddPointToLineDistanceConstraint(body1_frame_, p_B1P, body2_frame_, p_B2Q,
+                                       n_B2, distance_lower, distance_upper);
+  ik_.get_mutable_prog()->SetInitialGuess(ik_.q().head<4>(),
+                                          Eigen::Vector4d(1, 0, 0, 0));
+  ik_.get_mutable_prog()->SetInitialGuess(ik_.q().segment<4>(7),
+                                          Eigen::Vector4d(1, 0, 0, 0));
+  const auto result = Solve(ik_.prog());
+  EXPECT_TRUE(result.is_success());
+
+  RetrieveSolution(result);
+
+  const Eigen::Vector3d p_WP =
+      body1_position_sol_ + body1_quaternion_sol_ * p_B1P;
+  const Eigen::Vector3d p_WQ =
+      body2_position_sol_ + body2_quaternion_sol_ * p_B2Q;
+  const Eigen::Vector3d n_W = body2_quaternion_sol_ * n_B2;
+  const Eigen::Vector3d n_W_normalized = n_W.normalized();
+
+  const double distance_sol =
+      (p_WQ + (p_WP - p_WQ).dot(n_W_normalized) * n_W_normalized - p_WP).norm();
+  EXPECT_GE(distance_sol, distance_lower - 2e-6);
+  EXPECT_LE(distance_sol, distance_upper + 2e-6);
 }
 
 TEST_F(TwoFreeBodiesTest, PolyhedronConstraint) {

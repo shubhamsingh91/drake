@@ -27,7 +27,7 @@ using std::make_shared;
 // Geometry C is created like geometry B but translated beyond any of the
 // existing box dimensions such that the pair (A, C) do not collide.
 //
-// Simplifed 2D representation:
+// Simplified 2D representation:
 //
 //          A
 //    ┏━━━┓
@@ -73,7 +73,7 @@ GTEST_TEST(CollisionsExistCallback, Exist) {
 // creating a pair of geometries (A, B) that are in collision, then checking
 // that they no longer collide once filtered out.
 //
-// Simplifed 2D representation:
+// Simplified 2D representation:
 //
 //          A
 //    ┏━━━┓
@@ -106,7 +106,8 @@ GTEST_TEST(CollisionsExistCallback, RespectsCollisionFilter) {
   // Filter the pair (A, B); we'll put the ids in a set and simply return that
   // set for the extract ids function.
   std::unordered_set<GeometryId> ids{data_A.id(), data_B.id()};
-  CollisionFilter::ExtractIds extract = [&ids](const GeometrySet&) {
+  CollisionFilter::ExtractIds extract = [&ids](const GeometrySet&,
+                                               CollisionFilterScope) {
     return ids;
   };
   collision_filter.Apply(CollisionFilterDeclaration().ExcludeWithin(

@@ -7,17 +7,22 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <gtest/gtest.h>
 
 #include "drake/common/find_resource.h"
+#include "drake/common/fmt_eigen.h"
 #include "drake/common/temp_directory.h"
 #include "drake/common/test_utilities/expect_no_throw.h"
 #include "drake/common/test_utilities/expect_throws_message.h"
 #include "drake/geometry/render_gltf_client/internal_http_service.h"
 #include "drake/geometry/render_gltf_client/test/internal_sample_image_data.h"
+#include "drake/systems/sensors/test_utilities/image_compare.h"
 
 namespace drake {
 namespace geometry {
@@ -27,11 +32,11 @@ namespace internal {
 namespace fs = std::filesystem;
 
 using Params = RenderEngineGltfClientParams;
-using geometry::render::ClippingRange;
-using geometry::render::ColorRenderCamera;
-using geometry::render::DepthRange;
-using geometry::render::DepthRenderCamera;
-using geometry::render::RenderCameraCore;
+using render::ClippingRange;
+using render::ColorRenderCamera;
+using render::DepthRange;
+using render::DepthRenderCamera;
+using render::RenderCameraCore;
 using systems::sensors::CameraInfo;
 using systems::sensors::ImageDepth32F;
 using systems::sensors::ImageLabel16I;
@@ -48,10 +53,14 @@ const auto kTestRgbImagePath = FindResourceOrThrow(
     "drake/geometry/render_gltf_client/test/test_rgb_8U.png");
 const auto kTestRgbaImagePath = FindResourceOrThrow(
     "drake/geometry/render_gltf_client/test/test_rgba_8U.png");
-const auto kTestDepthImagePath = FindResourceOrThrow(
+const auto kTestDepthImage32FPath = FindResourceOrThrow(
     "drake/geometry/render_gltf_client/test/test_depth_32F.tiff");
-const auto kTestLabelImagePath = FindResourceOrThrow(
-    "drake/geometry/render_gltf_client/test/test_label_16I.png");
+const auto kTestDepthImage16UTiffPath = FindResourceOrThrow(
+    "drake/geometry/render_gltf_client/test/test_depth_16U.tiff");
+const auto kTestDepthImage16UPngPath = FindResourceOrThrow(
+    "drake/geometry/render_gltf_client/test/test_depth_16U.png");
+const auto kTestColoredLabelImagePath = FindResourceOrThrow(
+    "drake/geometry/render_gltf_client/test/test_colored_label_rgba_8U.png");
 
 class RenderClientTest : public ::testing::Test {
  public:
@@ -65,7 +74,8 @@ class RenderClientTest : public ::testing::Test {
   // Creates the given filename (and returns the filename for convenience).
   std::string Touch(const std::string& filename) {
     std::ofstream stream{filename};
-    stream << "## RenderClientTest sample file." << "\n";
+    stream << "## RenderClientTest sample file."
+           << "\n";
     DRAKE_DEMAND(stream.good());
     return filename;
   }
@@ -77,7 +87,7 @@ class RenderClientTest : public ::testing::Test {
 
  protected:
   // A per-test-case temporary directory.
-  const fs::path scratch_{drake::temp_directory()};
+  const fs::path scratch_{temp_directory()};
   const std::string fake_scene_path_{scratch_ / "fake_scene.gltf"};
 
   /* The params to create the test RenderClient are to help ensure nothing
@@ -98,8 +108,8 @@ class RenderClientTest : public ::testing::Test {
 TEST_F(RenderClientTest, Constructor) {
   // Verify default attributes are set properly given a default `Params`.
   const RenderClient default_client{Params{}};
-  EXPECT_EQ(
-      default_client.get_params().GetUrl(), "http://127.0.0.1:8000/render");
+  EXPECT_EQ(default_client.get_params().GetUrl(),
+            "http://127.0.0.1:8000/render");
   EXPECT_EQ(default_client.get_params().verbose, false);
   EXPECT_EQ(default_client.get_params().cleanup, true);
 
@@ -108,8 +118,10 @@ TEST_F(RenderClientTest, Constructor) {
   const std::string render_endpoint{"testing"};
   const bool verbose = true;
   const bool cleanup = false;
-  const RenderClient client{
-      Params{base_url, render_endpoint, std::nullopt, verbose, cleanup}};
+  const RenderClient client{Params{.base_url = base_url,
+                                   .render_endpoint = render_endpoint,
+                                   .verbose = verbose,
+                                   .cleanup = cleanup}};
   EXPECT_EQ(client.get_params().GetUrl(), base_url + "/" + render_endpoint);
   EXPECT_EQ(client.get_params().verbose, verbose);
   EXPECT_EQ(client.get_params().cleanup, cleanup);
@@ -285,13 +297,13 @@ TEST_F(RenderClientTest, RenderOnServerFieldsCheck) {
   image_type = RenderImageType::kColorRgba8U;
   DRAKE_EXPECT_THROWS_MESSAGE(
       client.RenderOnServer(color_camera_.core(), image_type, fake_scene_path_),
-      "[\\s\\S]*ERROR doing POST:[\\s\\S]*");
+      "[\\s\\S]*POST:[\\s\\S]*");
 
   // Check fields for a label render.
   image_type = RenderImageType::kLabel16I;
   DRAKE_EXPECT_THROWS_MESSAGE(
       client.RenderOnServer(color_camera_.core(), image_type, fake_scene_path_),
-      "[\\s\\S]*ERROR doing POST:[\\s\\S]*");
+      "[\\s\\S]*POST:[\\s\\S]*");
 
   /* Check fields for a depth render.  This test also includes a verification
    that the provided mime_type is propagated correctly.  There is no special
@@ -301,7 +313,7 @@ TEST_F(RenderClientTest, RenderOnServerFieldsCheck) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       client.RenderOnServer(depth_camera_.core(), image_type, fake_scene_path_,
                             mime_type, depth_range),
-      "[\\s\\S]*ERROR doing POST:[\\s\\S]*");
+      "[\\s\\S]*POST:[\\s\\S]*");
 }
 
 /* Tests bad `HttpResponse`s that have a server message provided. Edge cases
@@ -362,7 +374,7 @@ TEST_F(RenderClientTest, RenderOnServerNoFileReturn) {
   DRAKE_EXPECT_THROWS_MESSAGE(
       client.RenderOnServer(color_camera_.core(), RenderImageType::kColorRgba8U,
                             fake_scene_path_),
-      "ERROR doing POST.*supposed to respond with a file but did not.");
+      ".*POST.*supposed to respond with a file but did not.");
 }
 
 TEST_F(RenderClientTest, RenderOnServerInvalidImageReturn) {
@@ -404,7 +416,7 @@ TEST_F(RenderClientTest, RenderOnServerValidImageReturn) {
 
   callback = [&](const DataFieldsMap&, const FileFieldsMap&) {
     const std::string response_path = scratch_ / "valid_tiff.response";
-    fs::copy_file(kTestDepthImagePath, response_path);
+    fs::copy_file(kTestDepthImage32FPath, response_path);
     return HttpResponse{.http_code = 200, .data_path = response_path};
   };
   client.SetHttpService(std::make_unique<ProxyService>(callback));
@@ -419,16 +431,14 @@ TEST_F(RenderClientTest, RenderOnServerValidImageReturn) {
 TEST_F(RenderClientTest, ComputeSha256Good) {
   // To obtain this magic number, use a bash command:
   //   sha256sum geometry/render_gltf_client/test/test_depth_32F.tiff
-  EXPECT_EQ(
-      RenderClient::ComputeSha256(kTestDepthImagePath),
-      "6bb5621f3cdf06bb43c7104eb9a2dc5ab85db79b2c491be69c7704d03c476c1b");
+  EXPECT_EQ(RenderClient::ComputeSha256(kTestDepthImage32FPath),
+            "6bb5621f3cdf06bb43c7104eb9a2dc5ab85db79b2c491be69c7704d03c476c1b");
 }
 
 TEST_F(RenderClientTest, ComputeSha256Bad) {
   // Failure case: provided input file does not exist.
-  DRAKE_EXPECT_THROWS_MESSAGE(
-        RenderClient::ComputeSha256("/no/such/file"),
-        ".*cannot open.*/no/such/file.*");
+  DRAKE_EXPECT_THROWS_MESSAGE(RenderClient::ComputeSha256("/no/such/file"),
+                              ".*cannot open.*/no/such/file.*");
 }
 
 TEST_F(RenderClientTest, RenameHttpServiceResponseGood) {
@@ -446,22 +456,23 @@ TEST_F(RenderClientTest, RenameHttpServiceResponseGood) {
    Additionally, do not test for no extension input_scene + ext="", this is
    already tested for above as an expected exception. */
   const fs::path base = scratch_;
-  const fs::path sub = base/"sub";
+  const fs::path sub = base / "sub";
   fs::create_directory(sub);
   const std::vector<RenameResult> renames{
       // All components have extensions.
-      {base/"path_0.bin",  base/"input_0.gltf", ".png",  base/"input_0.png"},
+      {base / "path_0.bin", base / "input_0.gltf", ".png",
+       base / "input_0.png"},
       // Input scene does not have a file extension.
-      {base/"path_1.curl", base/"input_1",      ".foo",  base/"input_1.foo"},
+      {base / "path_1.curl", base / "input_1", ".foo", base / "input_1.foo"},
       // Input path does not have an extension.
-      {base/"path_2",      base/"input_2.gltf", ".tiff", base/"input_2.tiff"},
+      {base / "path_2", base / "input_2.gltf", ".tiff", base / "input_2.tiff"},
       // Input and path do not have an extension.
-      {base/"path_3",      base/"input_3",      ".zip",  base/"input_3.zip"},
+      {base / "path_3", base / "input_3", ".zip", base / "input_3.zip"},
       // Empty extension is allowed.
-      {base/"path_4.txt",  base/"input_4.txt",  "",      base/"input_4"},
+      {base / "path_4.txt", base / "input_4.txt", "", base / "input_4"},
       // Source is in different directory.
-      {sub/"path_5.bin",   base/"input_5.gltf", ".jpg",  base/"input_5.jpg"}
-  };
+      {sub / "path_5.bin", base / "input_5.gltf", ".jpg",
+       base / "input_5.jpg"}};
 
   for (const auto& r : renames) {
     Touch(r.response_data_path);
@@ -513,14 +524,18 @@ TEST_F(RenderClientTest, LoadColorImageBad) {
 
   // Failure case 2: not a valid image file.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadColorImage(Touch(scratch_/"fake.png"), &ignored),
+      RenderClient::LoadColorImage(Touch(scratch_ / "fake.png"), &ignored),
       ".*cannot load.*fake.*");
 
   // Failure case 3: wrong image dimensions (on each axis).
   for (const bool selector : {true, false}) {
     int width = kTestImageWidth;
     int height = kTestImageHeight;
-    if (selector) { ++width; } else { ++height; }
+    if (selector) {
+      ++width;
+    } else {
+      ++height;
+    }
     ImageRgba8U wrong_size(width, height, 0);
     DRAKE_EXPECT_THROWS_MESSAGE(
         RenderClient::LoadColorImage(kTestRgbaImagePath, &wrong_size),
@@ -529,77 +544,58 @@ TEST_F(RenderClientTest, LoadColorImageBad) {
 
   // Failure case 4: wrong number of channels (== 1) instead of 3 or 4.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadColorImage(kTestLabelImagePath, &ignored),
+      RenderClient::LoadColorImage(kTestDepthImage16UPngPath, &ignored),
       ".*PNG image.*has 1 channel.*");
 }
 
-TEST_F(RenderClientTest, LoadDepthGood) {
-  // Loading a single channel 32 bit TIFF file should work as expected.
+TEST_F(RenderClientTest, LoadDepth32FGood) {
+  // Loading a single channel 32-bit TIFF file should work as expected.
   ImageDepth32F depth(kTestImageWidth, kTestImageHeight, 0);
-  RenderClient::LoadDepthImage(kTestDepthImagePath, &depth);
+  RenderClient::LoadDepthImage(kTestDepthImage32FPath, &depth);
+  EXPECT_EQ(depth, CreateTestDepthImage());
+}
+
+TEST_F(RenderClientTest, LoadDepth16UTiffGood) {
+  // Loading a single channel 16-bit TIFF file should work as expected.
+  ImageDepth32F depth(kTestImageWidth, kTestImageHeight, 0);
+  RenderClient::LoadDepthImage(kTestDepthImage16UTiffPath, &depth);
+  EXPECT_EQ(depth, CreateTestDepthImage());
+}
+
+TEST_F(RenderClientTest, LoadDepth16UPngGood) {
+  // Loading a single channel 16-bit PNG file should work as expected.
+  ImageDepth32F depth(kTestImageWidth, kTestImageHeight, 0);
+  RenderClient::LoadDepthImage(kTestDepthImage16UPngPath, &depth);
   EXPECT_EQ(depth, CreateTestDepthImage());
 }
 
 TEST_F(RenderClientTest, LoadDepthImageBad) {
   ImageDepth32F ignored(kTestImageWidth, kTestImageHeight, 0);
 
-  // Failure case 1: no such file.
+  // Failure case 1: invalid extension.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadDepthImage("/no/such/file", &ignored),
-      ".*cannot load.*/no/such/file.*");
+      RenderClient::LoadDepthImage("/no/such/file_ext.foo", &ignored),
+      ".*unsupported file extension");
 
   // Failure case 2: not a valid image file.
   DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadDepthImage(Touch(scratch_/"fake.tiff"), &ignored),
+      RenderClient::LoadDepthImage(Touch(scratch_ / "fake.tiff"), &ignored),
       ".*cannot load.*fake.*");
 
   // Failure case 3: wrong image dimensions (on each axis).
   for (const bool selector : {true, false}) {
     int width = kTestImageWidth;
     int height = kTestImageHeight;
-    if (selector) { ++width; } else { ++height; }
+    if (selector) {
+      ++width;
+    } else {
+      ++height;
+    }
     ImageDepth32F wrong_size(width, height, 0);
     DRAKE_EXPECT_THROWS_MESSAGE(
-        RenderClient::LoadDepthImage(kTestDepthImagePath, &wrong_size),
+        RenderClient::LoadDepthImage(kTestDepthImage32FPath, &wrong_size),
         ".*expected.*but got.*width=.*height=.*");
   }
-}
-
-TEST_F(RenderClientTest, LoadLabelImageGood) {
-  // Loading a 16 bit label image file should work as expected.
-  ImageLabel16I label(kTestImageWidth, kTestImageHeight, 0);
-  RenderClient::LoadLabelImage(kTestLabelImagePath, &label);
-  EXPECT_EQ(label, CreateTestLabelImage());
-}
-
-TEST_F(RenderClientTest, LoadLabelImageBad) {
-  ImageLabel16I ignored(kTestImageWidth, kTestImageHeight, 0);
-
-  // Failure case 1: no such file.
-  DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadLabelImage("/no/such/file", &ignored),
-      ".*cannot load.*/no/such/file.*");
-
-  // Failure case 2: not a valid image file.
-  DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadLabelImage(Touch(scratch_/"fake.png"), &ignored),
-      ".*cannot load.*fake.*");
-
-  // Failure case 3: wrong image dimensions (on each axis).
-  for (const bool selector : {true, false}) {
-    int width = kTestImageWidth;
-    int height = kTestImageHeight;
-    if (selector) { ++width; } else { ++height; }
-    ImageLabel16I wrong_size(width, height, 0);
-    DRAKE_EXPECT_THROWS_MESSAGE(
-        RenderClient::LoadLabelImage(kTestLabelImagePath, &wrong_size),
-        ".*expected.*but got.*width=.*height=.*");
-  }
-
-  // Failure case 4: wrong number of channels (== 4) instead of 1.
-  DRAKE_EXPECT_THROWS_MESSAGE(
-      RenderClient::LoadLabelImage(kTestRgbImagePath, &ignored),
-      ".*PNG image.*has 3 channel.*");
 }
 
 }  // namespace

@@ -75,7 +75,9 @@ std::shared_ptr<MosekSolver::License> MosekSolver::AcquireLicense() {
   return GetScopedSingleton<MosekSolver::License>();
 }
 
-bool MosekSolver::is_available() { return true; }
+bool MosekSolver::is_available() {
+  return true;
+}
 
 void MosekSolver::DoSolve(const MathematicalProgram& prog,
                           const Eigen::VectorXd& initial_guess,
@@ -184,6 +186,14 @@ void MosekSolver::DoSolve(const MathematicalProgram& prog,
                                 &rotated_lorentz_cone_acc_indices);
   }
 
+  // Add quadratic constraints.
+  std::unordered_map<Binding<QuadraticConstraint>, MSKint64t>
+      quadratic_constraint_dual_indices;
+  if (rescode == MSK_RES_OK) {
+    rescode =
+        impl.AddQuadraticConstraints(prog, &quadratic_constraint_dual_indices);
+  }
+
   // Add linear matrix inequality constraints.
   if (rescode == MSK_RES_OK) {
     rescode = impl.AddLinearMatrixInequalityConstraint(prog);
@@ -202,12 +212,25 @@ void MosekSolver::DoSolve(const MathematicalProgram& prog,
   if (with_integer_or_binary_variable) {
     solution_type = MSK_SOL_ITG;
   } else if (prog.quadratic_costs().empty() &&
+             prog.quadratic_constraints().empty() &&
              prog.lorentz_cone_constraints().empty() &&
              prog.rotated_lorentz_cone_constraints().empty() &&
              prog.positive_semidefinite_constraints().empty() &&
              prog.linear_matrix_inequality_constraints().empty() &&
              prog.exponential_cone_constraints().empty()) {
-    solution_type = MSK_SOL_BAS;
+    // The program is LP.
+    int ipm_basis{};
+    if (rescode == MSK_RES_OK) {
+      rescode = MSK_getintparam(impl.task(), MSK_IPAR_INTPNT_BASIS, &ipm_basis);
+    }
+    // By default ipm_basis > 0 and Mosek will do a basis identification to
+    // clean up the solution after the interior point method (IPM), then we can
+    // query the basis solution. Otherwise we will only query the IPM solution.
+    if (ipm_basis > 0) {
+      solution_type = MSK_SOL_BAS;
+    } else {
+      solution_type = MSK_SOL_ITR;
+    }
   } else {
     solution_type = MSK_SOL_ITR;
   }
@@ -216,9 +239,7 @@ void MosekSolver::DoSolve(const MathematicalProgram& prog,
   // integer/binary variables. See
   // https://docs.mosek.com/latest/rmosek/tutorial-mio-shared.html#specifying-an-initial-solution
   // for more details.
-  const bool has_any_finite_initial_guess =
-      initial_guess.unaryExpr([](double g) { return std::isfinite(g); }).any();
-  if (has_any_finite_initial_guess) {
+  if (initial_guess.array().isFinite().any()) {
     DRAKE_ASSERT(initial_guess.size() == prog.num_vars());
     for (int i = 0; i < prog.num_vars(); ++i) {
       const auto& map_to_mosek =
@@ -235,7 +256,7 @@ void MosekSolver::DoSolve(const MathematicalProgram& prog,
     }
   }
 
-  result->set_solution_result(SolutionResult::kUnknownError);
+  result->set_solution_result(SolutionResult::kSolverSpecificError);
   // Run optimizer.
   if (rescode == MSK_RES_OK) {
     // TODO(hongkai.dai@tri.global): add trmcode to the returned struct.
@@ -276,7 +297,7 @@ void MosekSolver::DoSolve(const MathematicalProgram& prog,
         break;
       }
       default: {
-        result->set_solution_result(SolutionResult::kUnknownError);
+        result->set_solution_result(SolutionResult::kSolverSpecificError);
         break;
       }
     }
@@ -320,9 +341,9 @@ void MosekSolver::DoSolve(const MathematicalProgram& prog,
     }
     rescode = impl.SetDualSolution(
         solution_type, prog, bb_con_dual_indices, linear_con_dual_indices,
-        lin_eq_con_dual_indices, lorentz_cone_acc_indices,
-        rotated_lorentz_cone_acc_indices, exp_cone_acc_indices,
-        psd_barvar_indices, result);
+        lin_eq_con_dual_indices, quadratic_constraint_dual_indices,
+        lorentz_cone_acc_indices, rotated_lorentz_cone_acc_indices,
+        exp_cone_acc_indices, psd_barvar_indices, result);
     DRAKE_ASSERT(rescode == MSK_RES_OK);
   }
 

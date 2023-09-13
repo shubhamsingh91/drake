@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 
 #include "drake/common/drake_assert.h"
+#include "drake/common/fmt_ostream.h"
 #include "drake/common/never_destroyed.h"
 #include "drake/common/text_logging.h"
 #include "drake/common/unused.h"
@@ -83,7 +84,7 @@ std::string CurlInfoTypeAsString(curl_infotype type) {
     return "CURLINFO_SSL_DATA_OUT";
   else if (type == CURLINFO_END)
     return "CURLINFO_END";
-  return fmt::format("UNKNOWN_CURLINFO_TYPE={}", type);
+  return fmt::format("UNKNOWN_CURLINFO_TYPE={}", fmt_streamed(type));
 }
 
 /* Removes leading / trailing whitespace from `message` before logging.  Curl
@@ -201,11 +202,11 @@ HttpServiceCurl::HttpServiceCurl() : HttpService() {
 
 HttpServiceCurl::~HttpServiceCurl() {}
 
-HttpResponse HttpServiceCurl::DoPostForm(
-    const std::string& temp_directory, const std::string& url,
-    const DataFieldsMap& data_fields,
-    const FileFieldsMap& file_fields,
-    bool verbose) {
+HttpResponse HttpServiceCurl::DoPostForm(const std::string& temp_directory,
+                                         const std::string& url,
+                                         const DataFieldsMap& data_fields,
+                                         const FileFieldsMap& file_fields,
+                                         bool verbose) {
   // Create and fill out a <form> to POST.
   CURL* curl{nullptr};
   CURLcode result;
@@ -272,7 +273,7 @@ HttpResponse HttpServiceCurl::DoPostForm(
   if (fs::exists(temp_bin_out)) {
     cleanup_curl(curl, form, headerlist);
     throw std::runtime_error(fmt::format(
-        "HttpServiceCurl: refusing to overwrite temporary file '{}' that "
+        "RenderClient: refusing to overwrite temporary file '{}' that "
         "already exists, please cleanup temporary directory '{}'.",
         bin_out_path, temp_directory));
   }
@@ -282,7 +283,7 @@ HttpResponse HttpServiceCurl::DoPostForm(
   if (!bin_out.good()) {
     cleanup_curl(curl, form, headerlist);
     throw std::runtime_error(fmt::format(
-        "HttpServiceCurl: unable to open temporary file '{}'.", bin_out_path));
+        "RenderClient: unable to open temporary file '{}'.", bin_out_path));
   }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &WriteFileData);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &bin_out);
@@ -292,7 +293,7 @@ HttpResponse HttpServiceCurl::DoPostForm(
   if (!bin_out.good()) {
     cleanup_curl(curl, form, headerlist);
     throw std::runtime_error(fmt::format(
-        "HttpServiceCurl: unable to wtite temporary file '{}'.", bin_out_path));
+        "RenderClient: unable to wtite temporary file '{}'.", bin_out_path));
   }
   if (verbose) {
     LogCurlDebugData(debug_data);

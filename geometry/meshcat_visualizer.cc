@@ -1,5 +1,6 @@
 #include "drake/geometry/meshcat_visualizer.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -8,10 +9,16 @@
 #include <fmt/format.h>
 
 #include "drake/common/extract_double.h"
+#include "drake/geometry/proximity/volume_to_surface_mesh.h"
 #include "drake/geometry/utilities.h"
 
 namespace drake {
 namespace geometry {
+namespace {
+// Boilerplate for std::visit.
+template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
+}  // namespace
 
 template <typename T>
 MeshcatVisualizer<T>::MeshcatVisualizer(std::shared_ptr<Meshcat> meshcat,
@@ -19,8 +26,7 @@ MeshcatVisualizer<T>::MeshcatVisualizer(std::shared_ptr<Meshcat> meshcat,
     : systems::LeafSystem<T>(systems::SystemTypeTag<MeshcatVisualizer>{}),
       meshcat_(std::move(meshcat)),
       params_(std::move(params)),
-      animation_(
-          std::make_unique<MeshcatAnimation>(1.0 / params_.publish_period)) {
+      alpha_slider_name_(std::string(params_.prefix + " α")) {
   DRAKE_DEMAND(meshcat_ != nullptr);
   DRAKE_DEMAND(params_.publish_period >= 0.0);
   if (params_.role == Role::kUnassigned) {
@@ -42,6 +48,11 @@ MeshcatVisualizer<T>::MeshcatVisualizer(std::shared_ptr<Meshcat> meshcat,
   query_object_input_port_ =
       this->DeclareAbstractInputPort("query_object", Value<QueryObject<T>>())
           .get_index();
+
+  if (params_.enable_alpha_slider) {
+    meshcat_->AddSlider(
+      alpha_slider_name_, 0.02, 1.0, 0.02, alpha_value_);
+  }
 }
 
 template <typename T>
@@ -52,17 +63,35 @@ MeshcatVisualizer<T>::MeshcatVisualizer(const MeshcatVisualizer<U>& other)
 template <typename T>
 void MeshcatVisualizer<T>::Delete() const {
   meshcat_->Delete(params_.prefix);
-  version_ = GeometryVersion();
+  version_ = std::nullopt;
+}
+
+template <typename T>
+MeshcatAnimation* MeshcatVisualizer<T>::StartRecording(
+    bool set_transforms_while_recording) {
+  meshcat_->StartRecording(1.0 / params_.publish_period,
+                            set_transforms_while_recording);
+  return &meshcat_->get_mutable_recording();
+}
+
+template <typename T>
+void MeshcatVisualizer<T>::StopRecording() {
+  meshcat_->StopRecording();
 }
 
 template <typename T>
 void MeshcatVisualizer<T>::PublishRecording() const {
-  meshcat_->SetAnimation(*animation_);
+    meshcat_->PublishRecording();
 }
 
 template <typename T>
 void MeshcatVisualizer<T>::DeleteRecording() {
-  animation_ = std::make_unique<MeshcatAnimation>(1.0 / params_.publish_period);
+  meshcat_->DeleteRecording();
+}
+
+template <typename T>
+MeshcatAnimation* MeshcatVisualizer<T>::get_mutable_recording() {
+  return &meshcat_->get_mutable_recording();
 }
 
 template <typename T>
@@ -78,8 +107,13 @@ MeshcatVisualizer<T>& MeshcatVisualizer<T>::AddToBuilder(
     systems::DiagramBuilder<T>* builder,
     const systems::OutputPort<T>& query_object_port,
     std::shared_ptr<Meshcat> meshcat, MeshcatVisualizerParams params) {
+  const std::string aspirational_name =
+      fmt::format("meshcat_visualizer({})", params.prefix);
   auto& visualizer = *builder->template AddSystem<MeshcatVisualizer<T>>(
       std::move(meshcat), std::move(params));
+  if (!builder->HasSubsystemNamed(aspirational_name)) {
+    visualizer.set_name(aspirational_name);
+  }
   builder->Connect(query_object_port, visualizer.query_object_input_port());
   return visualizer;
 }
@@ -91,12 +125,27 @@ systems::EventStatus MeshcatVisualizer<T>::UpdateMeshcat(
       query_object_input_port().template Eval<QueryObject<T>>(context);
   const GeometryVersion& current_version =
       query_object.inspector().geometry_version();
-
-  if (!version_.IsSameAs(current_version, params_.role)) {
+  if (!version_.has_value()) {
+    // When our current version is null, that means we haven't added any
+    // geometry to Meshcat yet, which means we also need to establish our
+    // default visibility just prior to sending the geometry.
+    meshcat_->SetProperty(params_.prefix, "visible",
+                          params_.visible_by_default);
+  }
+  if (!version_.has_value() ||
+      !version_->IsSameAs(current_version, params_.role)) {
     SetObjects(query_object.inspector());
+    SetAlphas(/* initializing = */ true);
     version_ = current_version;
   }
   SetTransforms(context, query_object);
+  if (params_.enable_alpha_slider) {
+    double new_alpha_value = meshcat_->GetSliderValue(alpha_slider_name_);
+    if (new_alpha_value != alpha_value_) {
+      alpha_value_ = new_alpha_value;
+      SetAlphas(/* initializing = */ false);
+    }
+  }
   std::optional<double> rate = realtime_rate_calculator_.UpdateAndRecalculate(
       ExtractDoubleOrThrow(context.get_time()));
   if (rate) {
@@ -133,26 +182,60 @@ void MeshcatVisualizer<T>::SetObjects(
     while ((pos = frame_path.find("::", pos)) != std::string::npos) {
       frame_path.replace(pos++, 2, "/");
     }
-    if (frame_id != inspector.world_frame_id() &&
-        inspector.NumGeometriesForFrameWithRole(frame_id, params_.role) > 0) {
-      dynamic_frames_[frame_id] = frame_path;
-      frames_to_delete.erase(frame_id);  // Don't delete this one.
-    }
 
+    bool frame_has_any_geometry = false;
     for (GeometryId geom_id : inspector.GetGeometries(frame_id, params_.role)) {
+      const GeometryProperties& properties =
+          *inspector.GetProperties(geom_id, params_.role);
+      if (properties.HasProperty("meshcat", "accepting")) {
+        if (properties.GetProperty<std::string>("meshcat", "accepting") !=
+            params_.prefix) {
+          continue;
+        }
+      } else if (!params_.include_unspecified_accepting) {
+        continue;
+      }
+
       // Note: We use the frame_path/id instead of instance.GetName(geom_id),
       // which is a garbled mess of :: and _ and a memory address by default
       // when coming from MultibodyPlant.
       // TODO(russt): Use the geometry names if/when they are cleaned up.
       const std::string path =
           fmt::format("{}/{}", frame_path, geom_id.get_value());
-      const Rgba rgba = inspector.GetProperties(geom_id, params_.role)
-          ->GetPropertyOrDefault("phong", "diffuse", params_.default_color);
-
-      meshcat_->SetObject(path, inspector.GetShape(geom_id), rgba);
+      const Rgba rgba = properties.GetPropertyOrDefault("phong", "diffuse",
+                                                        params_.default_color);
+      bool used_hydroelastic = false;
+      if constexpr (std::is_same_v<T, double>) {
+        if (params_.show_hydroelastic) {
+          auto maybe_mesh = inspector.maybe_get_hydroelastic_mesh(geom_id);
+          std::visit(
+              overloaded{[](std::monostate) -> void {},
+                         [&](const TriangleSurfaceMesh<double>* mesh) -> void {
+                           DRAKE_DEMAND(mesh != nullptr);
+                           meshcat_->SetObject(path, *mesh, rgba);
+                           used_hydroelastic = true;
+                         },
+                         [&](const VolumeMesh<double>* mesh) -> void {
+                           DRAKE_DEMAND(mesh != nullptr);
+                           meshcat_->SetObject(
+                               path, ConvertVolumeToSurfaceMesh(*mesh), rgba);
+                           used_hydroelastic = true;
+                         }},
+              maybe_mesh);
+        }
+      }
+      if (!used_hydroelastic) {
+        meshcat_->SetObject(path, inspector.GetShape(geom_id), rgba);
+      }
       meshcat_->SetTransform(path, inspector.GetPoseInFrame(geom_id));
       geometries_[geom_id] = path;
       geometries_to_delete.erase(geom_id);  // Don't delete this one.
+      frame_has_any_geometry = true;
+    }
+
+    if (frame_has_any_geometry && (frame_id != inspector.world_frame_id())) {
+      dynamic_frames_[frame_id] = frame_path;
+      frames_to_delete.erase(frame_id);  // Don't delete this one.
     }
   }
 
@@ -173,14 +256,25 @@ void MeshcatVisualizer<T>::SetTransforms(
   for (const auto& [frame_id, path] : dynamic_frames_) {
     const math::RigidTransformd X_WF =
         internal::convert_to_double(query_object.GetPoseInWorld(frame_id));
-    if (!recording_ || set_transforms_while_recording_) {
-      meshcat_->SetTransform(path, X_WF);
+    meshcat_->SetTransform(path, X_WF,
+                           ExtractDoubleOrThrow(context.get_time()));
+  }
+}
+
+template <typename T>
+void MeshcatVisualizer<T>::SetAlphas(bool initializing) const {
+  if (initializing) {
+    for (const auto& [_, geo_path] : geometries_) {
+      meshcat_->SetProperty(geo_path, "modulated_opacity", alpha_value_);
     }
-    if (recording_) {
-      animation_->SetTransform(
-          animation_->frame(ExtractDoubleOrThrow(context.get_time())), path,
-          X_WF);
-    }
+  } else {
+    // The geometries visualized by this visualizer (stored in geometries_) all
+    // have a common prefix and for a well-configured visualizer, it is a
+    // *unique* prefix. So, we can rely on meshcat's behavior to update all
+    // materials in a tree with a single invocation on the root path. This
+    // requires that all object instantiations are complete in the visualizer
+    // instance.
+    meshcat_->SetProperty(params_.prefix, "modulated_opacity", alpha_value_);
   }
 }
 

@@ -3,13 +3,14 @@
 
 #include <gflags/gflags.h>
 
-#include "drake/geometry/drake_visualizer.h"
 #include "drake/geometry/scene_graph.h"
 #include "drake/lcm/drake_lcm.h"
 #include "drake/multibody/benchmarks/inclined_plane/inclined_plane_plant.h"
 #include "drake/multibody/plant/contact_results_to_lcm.h"
+#include "drake/multibody/plant/multibody_plant_config_functions.h"
 #include "drake/systems/analysis/simulator.h"
 #include "drake/systems/framework/diagram_builder.h"
+#include "drake/visualization/visualization_config_functions.h"
 
 namespace drake {
 namespace multibody {
@@ -58,14 +59,21 @@ DEFINE_bool(is_inclined_plane_half_space, true,
             "Is inclined plane a half-space (true) or box (false).");
 DEFINE_string(bodyB_type, "sphere", "Valid body types are "
               "'sphere', 'block', or 'block_with_4Spheres'");
+DEFINE_string(contact_solver, "tamsi", "Options are: "
+              "'tamsi', 'sap'");
 
 using drake::multibody::MultibodyPlant;
 
 int do_main() {
   // Build a generic multibody plant.
   systems::DiagramBuilder<double> builder;
-  auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(
-      &builder, std::make_unique<MultibodyPlant<double>>(FLAGS_time_step));
+
+  MultibodyPlantConfig plant_config;
+  plant_config.time_step = FLAGS_time_step;
+  plant_config.stiction_tolerance = FLAGS_stiction_tolerance;
+  plant_config.discrete_contact_solver = FLAGS_contact_solver;
+  auto [plant, scene_graph] =
+      multibody::AddMultibodyPlant(plant_config, &builder);
 
   // Set constants that are relevant whether body B is a sphere or block.
   const double massB = 0.1;       // Body B's mass (kg).
@@ -134,12 +142,9 @@ int do_main() {
   DRAKE_DEMAND(plant.num_velocities() == 6);
   DRAKE_DEMAND(plant.num_positions() == 7);
 
-  // Publish contact results for visualization.
-  // TODO(Mitiguy) Ensure contact forces can be displayed when time_step = 0.
-  if (FLAGS_time_step > 0)
-    ConnectContactResultsToDrakeVisualizer(&builder, plant, scene_graph);
+  // Provide visualization.
+  visualization::AddDefaultVisualization(&builder);
 
-  geometry::DrakeVisualizerd::AddToBuilder(&builder, scene_graph);
   auto diagram = builder.Build();
 
   // Create a context for this system:

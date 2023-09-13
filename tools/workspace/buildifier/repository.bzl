@@ -1,6 +1,3 @@
-# -*- mode: python -*-
-# vi: set ft=python :
-
 """
 Downloads a precompiled version of buildifier and makes it available to the
 WORKSPACE.
@@ -32,17 +29,21 @@ def _impl(repository_ctx):
     # Enumerate the possible binaries.  Note that the buildifier binaries are
     # fully statically linked, so the particular distribution doesn't matter,
     # only the kernel.
-    version = "5.1.0"
+    #
+    # To update this, each artifact needs to be downloaded and its checksum
+    # computed manually.  See tools/workspace/mirrors.bzl for the canonical
+    # URL.
+    version = "v6.3.3"
     darwin_urls = [
         x.format(version = version, filename = "buildifier-darwin-amd64")
         for x in repository_ctx.attr.mirrors.get("buildifier")
     ]
-    darwin_sha256 = "c9378d9f4293fc38ec54a08fbc74e7a9d28914dae6891334401e59f38f6e65dc"  # noqa
+    darwin_sha256 = "3c36a3217bd793815a907a8e5bf81c291e2d35d73c6073914640a5f42e65f73f"  # noqa
     linux_urls = [
         x.format(version = version, filename = "buildifier-linux-amd64")
         for x in repository_ctx.attr.mirrors.get("buildifier")
     ]
-    linux_sha256 = "52bf6b102cb4f88464e197caac06d69793fa2b05f5ad50a7e7bf6fbd656648a3"  # noqa
+    linux_sha256 = "42f798ec532c58e34401985043e660cb19d5ae994e108d19298c7d229547ffca"  # noqa
 
     # Choose which binary to use.
     os_result = determine_os(repository_ctx)

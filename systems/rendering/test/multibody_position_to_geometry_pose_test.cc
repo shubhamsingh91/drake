@@ -18,7 +18,6 @@ using multibody::BodyIndex;
 using multibody::MultibodyPlant;
 using multibody::Parser;
 using std::make_unique;
-using std::move;
 
 GTEST_TEST(MultibodyPositionToGeometryPoseTest, BadConstruction) {
   {
@@ -35,7 +34,7 @@ GTEST_TEST(MultibodyPositionToGeometryPoseTest, BadConstruction) {
     MultibodyPlant<double> mbp(0.0);
     SceneGraph<double> scene_graph;
     mbp.RegisterAsSourceForSceneGraph(&scene_graph);
-    Parser(&mbp).AddModelFromFile(
+    Parser(&mbp).AddModels(
         FindResourceOrThrow("drake/manipulation/models/iiwa_description/iiwa7"
                             "/iiwa7_no_collision.sdf"));
     DRAKE_EXPECT_THROWS_MESSAGE(MultibodyPositionToGeometryPose<double>{mbp},
@@ -49,12 +48,12 @@ GTEST_TEST(MultibodyPositionToGeometryPoseTest, Ownership) {
   auto raw_ptr = mbp.get();
   SceneGraph<double> scene_graph;
   mbp->RegisterAsSourceForSceneGraph(&scene_graph);
-  Parser(mbp.get()).AddModelFromFile(
+  Parser(mbp.get()).AddModels(
       FindResourceOrThrow("drake/manipulation/models/iiwa_description/iiwa7"
                           "/iiwa7_no_collision.sdf"));
   mbp->Finalize();
 
-  const MultibodyPositionToGeometryPose<double> dut(move(mbp));
+  const MultibodyPositionToGeometryPose<double> dut(std::move(mbp));
   EXPECT_EQ(dut.get_input_port().size(),
             dut.multibody_plant().num_positions());
 
@@ -86,7 +85,7 @@ GTEST_TEST(MultibodyPositionToGeometryPoseTest, InputOutput) {
   MultibodyPlant<double> mbp(0.0);
   SceneGraph<double> scene_graph;
   mbp.RegisterAsSourceForSceneGraph(&scene_graph);
-  Parser(&mbp).AddModelFromFile(
+  Parser(&mbp).AddModels(
       FindResourceOrThrow("drake/manipulation/models/iiwa_description/iiwa7"
                           "/iiwa7_no_collision.sdf"));
   mbp.Finalize();
@@ -125,7 +124,7 @@ GTEST_TEST(MultibodyPositionToGeometryPoseTest, FullStateInput) {
   auto mbp = make_unique<MultibodyPlant<double>>(0.0);
   SceneGraph<double> scene_graph;
   mbp->RegisterAsSourceForSceneGraph(&scene_graph);
-  Parser(mbp.get()).AddModelFromFile(
+  Parser(mbp.get()).AddModels(
       FindResourceOrThrow("drake/manipulation/models/iiwa_description/iiwa7"
                           "/iiwa7_no_collision.sdf"));
   mbp->Finalize();
@@ -157,7 +156,7 @@ GTEST_TEST(MultibodyPositionToGeometryPoseTest, FullStateInput) {
   }
 
   // Test the ownership constructor also has the right size.
-  const MultibodyPositionToGeometryPose<double> owned_sys(move(mbp), true);
+  const MultibodyPositionToGeometryPose<double> owned_sys(std::move(mbp), true);
   EXPECT_EQ(owned_sys.get_input_port().size(),
             owned_sys.multibody_plant().num_multibody_states());
 }

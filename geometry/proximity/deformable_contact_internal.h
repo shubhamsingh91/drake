@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "drake/geometry/geometry_ids.h"
+#include "drake/geometry/proximity/collision_filter.h"
 #include "drake/geometry/proximity/deformable_contact_geometries.h"
 #include "drake/geometry/proximity/volume_mesh.h"
 #include "drake/geometry/query_results/deformable_contact.h"
@@ -103,7 +104,8 @@ class Geometries final : public ShapeReifier {
    with respect to all registered rigid geometries. Assumes the vertex positions
    and poses of all registered deformable and rigid geometries are up to date.
   */
-  DeformableContact<double> ComputeDeformableContact() const;
+  DeformableContact<double> ComputeDeformableContact(
+      const CollisionFilter& collision_filter) const;
 
  private:
   friend class GeometriesTester;
@@ -115,15 +117,15 @@ class Geometries final : public ShapeReifier {
     const ProximityProperties& properties;
   };
 
-  void ImplementGeometry(const Sphere& sphere, void* user_data) override;
-  void ImplementGeometry(const Cylinder& cylinder, void* user_data) override;
   void ImplementGeometry(const Box& box, void* user_data) override;
   void ImplementGeometry(const Capsule& capsule, void* user_data) override;
-  void ImplementGeometry(const Ellipsoid& ellipsoid, void* user_data) override;
-  void ImplementGeometry(const Mesh& mesh, void* user_data) override;
   void ImplementGeometry(const Convex& convex, void* user_data) override;
+  void ImplementGeometry(const Cylinder& cylinder, void* user_data) override;
+  void ImplementGeometry(const Ellipsoid& ellipsoid, void* user_data) override;
   void ImplementGeometry(const HalfSpace& half_space, void* user_data) override;
+  void ImplementGeometry(const Mesh& mesh, void* user_data) override;
   void ImplementGeometry(const MeshcatCone& cone, void* user_data) override;
+  void ImplementGeometry(const Sphere& sphere, void* user_data) override;
 
   /* Makes a rigid (non-deformable) geometry from a supported shape type using
    the given `data`. */

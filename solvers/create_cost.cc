@@ -26,7 +26,6 @@ using symbolic::Expression;
 using symbolic::Formula;
 using symbolic::Variable;
 
-
 namespace {
 
 Binding<QuadraticCost> DoParseQuadraticCost(
@@ -45,8 +44,7 @@ Binding<QuadraticCost> DoParseQuadraticCost(
 }
 
 Binding<LinearCost> DoParseLinearCost(
-    const Expression &e,
-    const VectorXDecisionVariable& vars_vec,
+    const Expression& e, const VectorXDecisionVariable& vars_vec,
     const unordered_map<Variable::Id, int>& map_var_to_index) {
   Eigen::RowVectorXd c(vars_vec.size());
   double constant_term{};
@@ -55,7 +53,7 @@ Binding<LinearCost> DoParseLinearCost(
                        vars_vec);
 }
 
-}  // anonymous namespace
+}  // namespace
 
 Binding<LinearCost> ParseLinearCost(const Expression& e) {
   auto p = symbolic::ExtractVariablesFromExpression(e);
@@ -99,10 +97,8 @@ Binding<PolynomialCost> ParsePolynomialCost(const symbolic::Expression& e) {
 
 Binding<Cost> ParseCost(const symbolic::Expression& e) {
   if (!e.is_polynomial()) {
-    ostringstream oss;
-    oss << "Expression " << e << " is not a polynomial. ParseCost does not"
-        << " support non-polynomial expression.\n";
-    throw runtime_error(oss.str());
+    auto cost = make_shared<ExpressionCost>(e);
+    return CreateBinding(cost, cost->vars());
   }
   const symbolic::Polynomial poly{e};
   const int total_degree{poly.TotalDegree()};

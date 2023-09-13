@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load("@drake//tools/install:install.bzl", "install")
 load(
     "@drake//tools/skylark:drake_cc.bzl",
@@ -25,10 +23,6 @@ load(
     "generate_pybind11_version_py_file",
 )
 load("//bindings/pydrake:pydrake.bzl", "add_lint_tests_pydrake")
-load(
-    "@drake//tools/skylark:pybind.bzl",
-    "add_pybind_coverage_data",
-)
 
 package(default_visibility = [
     "//bindings/pydrake:__subpackages__",
@@ -231,6 +225,7 @@ drake_pybind_library(
         "//bindings/pydrake:autodiffutils_py",
         "//bindings/pydrake:symbolic_py",
     ],
+    py_srcs = ["_eigen_geometry_extra.py"],
 )
 
 # ODR does not matter, because the singleton will be stored in Python.
@@ -288,6 +283,7 @@ drake_cc_library(
     declare_installed_headers = 0,
     visibility = ["//visibility:public"],
     deps = [
+        ":cpp_template_pybind",
         "//:drake_shared_library",
         "//bindings/pydrake:pydrake_pybind",
     ],
@@ -341,12 +337,16 @@ drake_pybind_library(
     name = "serialize_test_util_py",
     testonly = 1,
     add_install = False,
-    cc_deps = [":serialize_pybind"],
+    cc_deps = [
+        ":cpp_template_pybind",
+        ":serialize_pybind",
+    ],
     cc_so_name = "test/serialize_test_util",
     cc_srcs = ["test/serialize_test_util_py.cc"],
     package_info = PACKAGE_INFO,
     py_deps = [
         ":cpp_param_py",
+        ":cpp_template_py",
         ":module_py",
     ],
     visibility = ["//visibility:private"],
@@ -365,6 +365,14 @@ drake_cc_library(
     declare_installed_headers = 0,
     visibility = ["//visibility:public"],
     deps = ["//:drake_shared_library"],
+)
+
+drake_pybind_cc_googletest(
+    name = "sorted_pair_pybind_test",
+    cc_deps = [
+        ":sorted_pair_pybind",
+        "//bindings/pydrake:test_util_pybind",
+    ],
 )
 
 drake_cc_library(
@@ -422,6 +430,7 @@ drake_py_library(
 drake_pybind_library(
     name = "schema_py",
     cc_deps = [
+        ":cpp_template_pybind",
         "//bindings/pydrake:documentation_pybind",
         "//bindings/pydrake:symbolic_types_pybind",
         "//bindings/pydrake/common:serialize_pybind",
@@ -484,20 +493,20 @@ install(
 
 drake_py_unittest(
     name = "module_test",
-    data = ["//examples/atlas:models"],
+    data = ["//examples/acrobot:models"],
+    num_threads = 2,
     deps = [
         ":module_py",
         "//bindings/pydrake:autodiffutils_py",
-        "//bindings/pydrake/common/test_utilities:deprecation_py",
     ],
 )
 
 drake_pybind_library(
-    name = "text_logging_test_py",
+    name = "text_logging_test_helpers_py",
     testonly = 1,
     add_install = False,
-    cc_so_name = "test/text_logging_test",
-    cc_srcs = ["test/text_logging_test_py.cc"],
+    cc_so_name = "test/text_logging_test_helpers",
+    cc_srcs = ["test/text_logging_test_helpers_py.cc"],
     package_info = PACKAGE_INFO,
     visibility = ["//visibility:private"],
 )
@@ -508,7 +517,7 @@ drake_py_binary(
     srcs = ["test/text_logging_example.py"],
     deps = [
         ":module_py",
-        ":text_logging_test_py",
+        ":text_logging_test_helpers_py",
     ],
 )
 
@@ -517,7 +526,7 @@ drake_py_unittest(
     data = [
         ":text_logging_example",
     ],
-    shard_count = 8,
+    shard_count = 16,
     deps = [
         "//bindings/pydrake/common/test_utilities:meta_py",
     ],
@@ -530,7 +539,23 @@ drake_py_unittest(
     ],
     deps = [
         ":module_py",
-        ":text_logging_test_py",
+        ":text_logging_test_helpers_py",
+    ],
+)
+
+drake_py_unittest(
+    name = "text_logging_threading_direct_to_stderr_test",
+    deps = [
+        ":module_py",
+        ":text_logging_test_helpers_py",
+    ],
+)
+
+drake_py_unittest(
+    name = "text_logging_threading_with_gil_release_test",
+    deps = [
+        ":module_py",
+        ":text_logging_test_helpers_py",
     ],
 )
 
@@ -563,7 +588,6 @@ generate_pybind_documentation_header(
     name = "generate_deprecation_example_class_documentation",
     testonly = 1,
     out = "test/deprecation_example/example_class_documentation.h",
-    out_xml = "test/deprecation_example/example_class_documentation.xml",
     targets = [":deprecation_example_class"],
 )
 
@@ -807,12 +831,31 @@ drake_py_unittest(
 )
 
 drake_py_unittest(
+    name = "schema_serialization_test",
+    deps = [
+        ":schema_py",
+        ":yaml_py",
+    ],
+)
+
+drake_py_unittest(
     name = "yaml_test",
     deps = [
         ":yaml_py",
     ],
 )
 
-add_pybind_coverage_data()
+drake_py_unittest(
+    name = "yaml_typed_test",
+    data = [
+        "//common/yaml:test/yaml_io_test_input_1.yaml",
+    ],
+    deps = [
+        ":serialize_test_util_py",
+        ":value_py",
+        ":yaml_py",
+        "//bindings/pydrake/common/test_utilities:meta_py",
+    ],
+)
 
 add_lint_tests_pydrake()

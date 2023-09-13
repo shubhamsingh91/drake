@@ -285,8 +285,9 @@ TEST_F(TestAggregateCostsAndConstraints, AggregateBoundingBoxConstraints1) {
   // -inf <= x1 <= 2. The returned bounds for x1 should be 4 <= x1 <= 2. This
   // test that we can return the bounds even if the lower bound is higher than
   // the upper bound.
-  bounding_box_constraints.emplace_back(std::make_shared<BoundingBoxConstraint>(
-      Vector1d(-kInf), Vector1d(2)), Vector1<symbolic::Variable>(x_[1]));
+  bounding_box_constraints.emplace_back(
+      std::make_shared<BoundingBoxConstraint>(Vector1d(-kInf), Vector1d(2)),
+      Vector1<symbolic::Variable>(x_[1]));
   result = AggregateBoundingBoxConstraints(bounding_box_constraints);
   EXPECT_EQ(result.size(), 3);
   // Only the bound of x_[1] should change, the rest should be the same.
@@ -311,6 +312,44 @@ TEST_F(TestAggregateCostsAndConstraints, AggregateBoundingBoxConstraints2) {
   EXPECT_TRUE(CompareMatrices(upper, Eigen::Vector4d(2, kInf, 3, 2)));
 }
 
+void CheckAggregateDuplicateVariables(const Eigen::SparseMatrix<double>& A,
+                                      const VectorX<symbolic::Variable>& vars) {
+  Eigen::SparseMatrix<double> A_new;
+  VectorX<symbolic::Variable> vars_new;
+  AggregateDuplicateVariables(A, vars, &A_new, &vars_new);
+  EXPECT_EQ(A.rows(), A_new.rows());
+  for (int i = 0; i < A.rows(); ++i) {
+    EXPECT_PRED2(symbolic::test::ExprEqual,
+                 A.toDense().row(i).dot(vars).Expand(),
+                 A_new.toDense().row(i).dot(vars_new).Expand());
+  }
+  // Make sure vars_new doesn't have duplicated variables.
+  std::unordered_set<symbolic::Variable::Id> vars_new_set;
+  for (int i = 0; i < vars_new.rows(); ++i) {
+    EXPECT_EQ(vars_new_set.find(vars_new(i).get_id()), vars_new_set.end());
+    vars_new_set.insert(vars_new(i).get_id());
+  }
+}
+TEST_F(TestAggregateCostsAndConstraints, AggregateDuplicateVariables) {
+  Eigen::SparseMatrix<double> A = Eigen::RowVector3d(1, 2, 3).sparseView();
+  // No duplication.
+  CheckAggregateDuplicateVariables(
+      A, Vector3<symbolic::Variable>(x_[0], x_[1], x_[2]));
+
+  // A is a row vector, vars has duplication.
+  CheckAggregateDuplicateVariables(
+      A, Vector3<symbolic::Variable>(x_[0], x_[1], x_[0]));
+  CheckAggregateDuplicateVariables(
+      A, Vector3<symbolic::Variable>(x_[0], x_[0], x_[0]));
+
+  // A is a matrix.
+  A = (Eigen::Matrix<double, 2, 3>() << 0, 1, 2, 3, 4, 0)
+          .finished()
+          .sparseView();
+  CheckAggregateDuplicateVariables(
+      A, Vector3<symbolic::Variable>(x_[1], x_[0], x_[1]));
+}
+
 GTEST_TEST(TestFindNonconvexQuadraticCost, Test) {
   MathematicalProgram prog;
   auto x = prog.NewContinuousVariables<2>();
@@ -318,16 +357,45 @@ GTEST_TEST(TestFindNonconvexQuadraticCost, Test) {
   auto convex_cost2 = prog.AddQuadraticCost(x(1) * x(1) + 2 * x(0) + 2);
   auto nonconvex_cost1 = prog.AddQuadraticCost(-x(0) * x(0) + 2 * x(1));
   auto nonconvex_cost2 = prog.AddQuadraticCost(-x(0) * x(0) + x(1) * x(1));
-  EXPECT_EQ(FindNonconvexQuadraticCost({convex_cost1, convex_cost2}), nullptr);
-  EXPECT_EQ(FindNonconvexQuadraticCost({convex_cost1, nonconvex_cost1})
-                ->evaluator()
-                .get(),
-            nonconvex_cost1.evaluator().get());
-  EXPECT_EQ(FindNonconvexQuadraticCost(
+  EXPECT_EQ(internal::FindNonconvexQuadraticCost({convex_cost1, convex_cost2}),
+            nullptr);
+  EXPECT_EQ(
+      internal::FindNonconvexQuadraticCost({convex_cost1, nonconvex_cost1})
+          ->evaluator()
+          .get(),
+      nonconvex_cost1.evaluator().get());
+  EXPECT_EQ(internal::FindNonconvexQuadraticCost(
                 {convex_cost1, nonconvex_cost1, nonconvex_cost2})
                 ->evaluator()
                 .get(),
             nonconvex_cost1.evaluator().get());
+}
+
+GTEST_TEST(TestFindNonconvexQuadraticConstraint, Test) {
+  MathematicalProgram prog;
+  auto x = prog.NewContinuousVariables<2>();
+  auto convex_constraint1 =
+      prog.AddQuadraticConstraint(x(0) * x(0) + 1, -kInf, 1);
+  auto convex_constraint2 =
+      prog.AddQuadraticConstraint(x(1) * x(1) + 2 * x(0) + 2, -kInf, 3);
+  auto nonconvex_constraint1 =
+      prog.AddQuadraticConstraint(-x(0) * x(0) + 2 * x(1), 0, 0);
+  auto nonconvex_constraint2 =
+      prog.AddQuadraticConstraint(-x(0) * x(0) + x(1) * x(1), 1, 2);
+  EXPECT_EQ(internal::FindNonconvexQuadraticConstraint(
+                {convex_constraint1, convex_constraint2}),
+            nullptr);
+  EXPECT_EQ(internal::FindNonconvexQuadraticConstraint(
+                {convex_constraint1, nonconvex_constraint1})
+                ->evaluator()
+                .get(),
+            nonconvex_constraint1.evaluator().get());
+  EXPECT_EQ(
+      internal::FindNonconvexQuadraticConstraint(
+          {convex_constraint1, nonconvex_constraint1, nonconvex_constraint2})
+          ->evaluator()
+          .get(),
+      nonconvex_constraint1.evaluator().get());
 }
 
 namespace internal {
@@ -367,6 +435,25 @@ GTEST_TEST(CheckConvexSolverAttributes, Test) {
   EXPECT_THAT(explanation, HasSubstr("is non-convex"));
   EXPECT_THAT(explanation, HasSubstr("foo"));
   EXPECT_THAT(explanation, HasSubstr(description));
+
+  // program has a non-convex quadratic constraint.
+  prog.RemoveCost(convex_cost);
+  prog.RemoveCost(nonconvex_cost);
+  auto nonconvex_constraint = prog.AddQuadraticConstraint(x(1) * x(1), 1, kInf);
+  // Use a description that would never be mistaken as any other part of the
+  // error message.
+  const std::string nonconvex_quadratic_constraint_description{"alibaba ipsum"};
+  nonconvex_constraint.evaluator()->set_description(
+      nonconvex_quadratic_constraint_description);
+  required_capabilities = {ProgramAttribute::kQuadraticConstraint};
+  EXPECT_FALSE(
+      CheckConvexSolverAttributes(prog, required_capabilities, "foo", nullptr));
+  EXPECT_FALSE(CheckConvexSolverAttributes(prog, required_capabilities, "foo",
+                                           &explanation));
+  EXPECT_THAT(explanation, HasSubstr("is non-convex"));
+  EXPECT_THAT(explanation, HasSubstr("foo"));
+  EXPECT_THAT(explanation,
+              HasSubstr(nonconvex_quadratic_constraint_description));
 }
 }  // namespace internal
 }  // namespace solvers

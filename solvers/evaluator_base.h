@@ -12,6 +12,7 @@
 #include "drake/common/drake_assert.h"
 #include "drake/common/drake_copyable.h"
 #include "drake/common/eigen_types.h"
+#include "drake/common/fmt_ostream.h"
 #include "drake/common/polynomial.h"
 #include "drake/common/symbolic/expression.h"
 #include "drake/math/autodiff.h"
@@ -102,6 +103,12 @@ class EvaluatorBase {
    */
   std::ostream& Display(std::ostream& os) const;
 
+  /** Returns a LaTeX string describing this evaluator. Does not include any
+   * characters to enter/exit math mode; you might want, e.g. "$$" +
+   * evaluator.ToLatex() + "$$". */
+  std::string ToLatex(const VectorX<symbolic::Variable>& vars,
+                      int precision = 3) const;
+
   /**
    * Getter for the number of variables, namely the number of rows in x, as
    * used in Eval(x, y).
@@ -132,7 +139,7 @@ class EvaluatorBase {
    * the gradient as potentially non-zero.
    */
   const std::optional<std::vector<std::pair<int, int>>>&
-      gradient_sparsity_pattern() const {
+  gradient_sparsity_pattern() const {
     return gradient_sparsity_pattern_;
   }
 
@@ -189,6 +196,9 @@ class EvaluatorBase {
    */
   virtual std::ostream& DoDisplay(
       std::ostream& os, const VectorX<symbolic::Variable>& vars) const;
+
+  virtual std::string DoToLatex(const VectorX<symbolic::Variable>& vars,
+                                int precision) const;
 
   // Setter for the number of outputs.
   // This method is only meant to be called, if the sub-class structure permits
@@ -385,3 +395,12 @@ class VisualizationCallback : public EvaluatorBase {
 
 }  // namespace solvers
 }  // namespace drake
+
+// TODO(jwnimmer-tri) Add a real formatter and deprecate the operator<<.
+namespace fmt {
+template <typename T>
+struct formatter<
+    T,
+    std::enable_if_t<std::is_base_of_v<drake::solvers::EvaluatorBase, T>, char>>
+    : drake::ostream_formatter {};
+}  // namespace fmt

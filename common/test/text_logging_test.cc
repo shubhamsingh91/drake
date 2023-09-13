@@ -1,7 +1,5 @@
 #include "drake/common/text_logging.h"
 
-#include <ostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -25,26 +23,23 @@
   #endif
 #endif
 
-#ifdef HAVE_SPDLOG
-#include <spdlog/sinks/dist_sink.h>
-#include <spdlog/sinks/ostream_sink.h>
-#endif  // HAVE_SPDLOG
+namespace {
+class Formattable {
+ public:
+  std::string to_string() const { return "OK"; }
+};
+}  // namespace
+
+DRAKE_FORMATTER_AS(, , Formattable, x, x.to_string())
 
 namespace {
 
 using drake::logging::kHaveSpdlog;
 
-class Streamable {
-  template<typename ostream_like>
-  friend ostream_like& operator<<(ostream_like& os, const Streamable& c) {
-    return os << "OK";
-  }
-};
-
 // Call each API function and macro to ensure that all of them compile.
 // These should all compile and run both with and without spdlog.
-GTEST_TEST(TextLoggingTest, SmokeTest) {
-  Streamable obj;
+GTEST_TEST(TextLoggingTest, SmokeTestFormattable) {
+  Formattable obj;
   drake::log()->trace("drake::log()->trace test: {} {}", "OK", obj);
   drake::log()->debug("drake::log()->debug test: {} {}", "OK", obj);
   drake::log()->info("drake::log()->info test: {} {}", "OK", obj);
@@ -60,7 +55,7 @@ GTEST_TEST(TextLoggingTest, SmokeTest) {
 // Check that floating point values format sensibly.  We'll just test fmt
 // directly, since we know that spdlog uses it internally.
 GTEST_TEST(TextLoggingTest, FloatingPoint) {
-  EXPECT_EQ(fmt::format("{:#}", 1.0), "1.0");
+  EXPECT_EQ(fmt::format("{}", 1.1), "1.1");
   // This number is particularly challenging.
   EXPECT_EQ(fmt::format("{}", 0.009), "0.009");
 }
@@ -177,30 +172,7 @@ GTEST_TEST(TextLoggingTest, SetLogPattern) {
   #endif
 }
 
-// We must run this test last because it changes the default configuration.
-GTEST_TEST(TextLoggingTest, ZZZ_ChangeDefaultSink) {
-  // The getter should never return nullptr, even with spdlog disabled.
-  drake::logging::sink* const sink_base = drake::logging::get_dist_sink();
-  ASSERT_NE(sink_base, nullptr);
-
-  // The remainder of the test case only makes sense when spdlog is enabled.
-  #if TEXT_LOGGING_TEST_SPDLOG
-    // Our API promises that the result always has this subtype.
-    auto* const sink = dynamic_cast<spdlog::sinks::dist_sink_mt*>(sink_base);
-    ASSERT_NE(sink, nullptr);
-
-    // Redirect all logs to a memory stream.
-    std::ostringstream messages;
-    auto custom_sink = std::make_shared<spdlog::sinks::ostream_sink_st>(
-        messages, true /* flush */);
-    sink->set_sinks({custom_sink});
-    drake::log()->info("This is some good info!");
-    EXPECT_THAT(messages.str(), testing::EndsWith(
-        "[console] [info] This is some good info!\n"));
-  #endif
-}
-
-}  // anon namespace
+}  // namespace
 
 // To enable compiling without depending on @spdlog, we need to provide our own
 // main routine.  The default drake_cc_googletest_main depends on @spdlog.

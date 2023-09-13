@@ -1,6 +1,7 @@
 #include "drake/systems/primitives/affine_system.h"
 
 #include <set>
+#include <string>
 #include <utility>
 
 #include <Eigen/Eigenvalues>
@@ -41,7 +42,12 @@ TimeVaryingAffineSystem<T>::TimeVaryingAffineSystem(
       this->DeclareContinuousState(num_states_);
     } else {
       this->DeclareDiscreteState(num_states_);
-      this->DeclarePeriodicDiscreteUpdate(time_period_, 0.0);
+      this->DeclarePeriodicDiscreteUpdateEvent(
+          time_period_, 0.0, &TimeVaryingAffineSystem<T>::CalcDiscreteUpdate);
+
+      // Allow a forced update to trigger the same handler.
+      this->DeclareForcedDiscreteUpdateEvent(
+          &TimeVaryingAffineSystem<T>::CalcDiscreteUpdate);
     }
   }
 
@@ -58,15 +64,13 @@ TimeVaryingAffineSystem<T>::TimeVaryingAffineSystem(
 }
 
 template <typename T>
-const InputPort<T>& TimeVaryingAffineSystem<T>::get_input_port()
-    const {
+const InputPort<T>& TimeVaryingAffineSystem<T>::get_input_port() const {
   DRAKE_DEMAND(num_inputs_ > 0);
   return System<T>::get_input_port(0);
 }
 
 template <typename T>
-const OutputPort<T>& TimeVaryingAffineSystem<T>::get_output_port()
-    const {
+const OutputPort<T>& TimeVaryingAffineSystem<T>::get_output_port() const {
   DRAKE_DEMAND(num_outputs_ > 0);
   return System<T>::get_output_port(0);
 }
@@ -85,8 +89,8 @@ void TimeVaryingAffineSystem<T>::configure_random_state(
   DRAKE_DEMAND(covariance.rows() == num_states_);
   DRAKE_DEMAND(covariance.cols() == num_states_);
   if (num_states_ == 0) return;
-  Sqrt_Sigma_x0_ = Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(covariance)
-                        .operatorSqrt();
+  Sqrt_Sigma_x0_ =
+      Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(covariance).operatorSqrt();
 }
 
 template <typename T>
@@ -115,10 +119,12 @@ void TimeVaryingAffineSystem<T>::CalcOutputY(
   if (num_states_ > 0) {
     const MatrixX<T> Ct = C(t);
     DRAKE_DEMAND(Ct.rows() == num_outputs_ && Ct.cols() == num_states_);
-    const VectorX<T>& x = (this->time_period() == 0.)
-        ? dynamic_cast<const BasicVector<T>&>(
-            context.get_continuous_state_vector()).get_value()
-        : context.get_discrete_state().get_vector().get_value();
+    const VectorX<T>& x =
+        (this->time_period() == 0.0)
+            ? dynamic_cast<const BasicVector<T>&>(
+                  context.get_continuous_state_vector())
+                  .get_value()
+            : context.get_discrete_state().get_vector().get_value();
     y += Ct * x;
   }
 
@@ -159,12 +165,13 @@ void TimeVaryingAffineSystem<T>::DoCalcTimeDerivatives(
   derivatives->SetFromVector(xdot);
 }
 
+// This is the default implementation; may be overridden in derived classes.
 template <typename T>
-void TimeVaryingAffineSystem<T>::DoCalcDiscreteVariableUpdates(
-    const drake::systems::Context<T>& context,
-    const std::vector<const drake::systems::DiscreteUpdateEvent<T>*>&,
-    drake::systems::DiscreteValues<T>* updates) const {
-  if (num_states_ == 0 || time_period_ == 0.0) return;
+EventStatus TimeVaryingAffineSystem<T>::CalcDiscreteUpdate(
+    const Context<T>& context, DiscreteValues<T>* updates) const {
+  if (num_states_ == 0 || time_period_ == 0.0) {
+    return EventStatus::DidNothing();
+  }
 
   const T t = context.get_time();
 
@@ -188,6 +195,7 @@ void TimeVaryingAffineSystem<T>::DoCalcDiscreteVariableUpdates(
     xn += Bt * u;
   }
   updates->set_value(xn);
+  return EventStatus::Succeeded();
 }
 
 template <typename T>
@@ -233,15 +241,116 @@ AffineSystem<T>::AffineSystem(const Eigen::Ref<const Eigen::MatrixXd>& A,
                               const Eigen::Ref<const Eigen::MatrixXd>& D,
                               const Eigen::Ref<const Eigen::VectorXd>& y0,
                               double time_period)
-    : AffineSystem<T>(
-          SystemTypeTag<AffineSystem>{},
-          A, B, f0, C, D, y0, time_period) {}
+    : AffineSystem<T>(SystemTypeTag<AffineSystem>{}, A, B, f0, C, D, y0,
+                      time_period) {}
 
 namespace {
 
+// Returns the number of states, where any empty matrix is assumed to have the
+// correct size.
+int CalcNumStates(const Eigen::Ref<const Eigen::MatrixXd>& A,
+                  const Eigen::Ref<const Eigen::MatrixXd>& B,
+                  const Eigen::Ref<const Eigen::VectorXd>& f0,
+                  const Eigen::Ref<const Eigen::MatrixXd>& C) {
+  int num_states = 0;
+  if (A.size() > 0) {
+    num_states = A.rows();
+    DRAKE_DEMAND(A.rows() == A.cols());
+  }
+  if (B.size() > 0) {
+    if (num_states) {
+      // This error message is more informative than comparing with num_states.
+      DRAKE_DEMAND(B.rows() == A.rows());
+    } else {
+      num_states = B.rows();
+    }
+  }
+  if (f0.size() > 0) {
+    if (num_states) {
+      DRAKE_DEMAND(f0.size() == num_states);
+    } else {
+      num_states = f0.size();
+    }
+  }
+  if (C.size() > 0) {
+    if (num_states) {
+      DRAKE_DEMAND(C.cols() == num_states);
+    } else {
+      num_states = C.cols();
+    }
+  }
+  return num_states;
+}
+
+// Returns the number of inputs, where any empty matrix is assumed to have the
+// correct size.
+int CalcNumInputs(const Eigen::Ref<const Eigen::MatrixXd>& B,
+                  const Eigen::Ref<const Eigen::MatrixXd>& D) {
+  int num_inputs = 0;
+  if (B.size() > 0) {
+    num_inputs = B.cols();
+  }
+  if (D.size() > 0) {
+    if (num_inputs) {
+      DRAKE_DEMAND(D.cols() == B.cols());
+    } else {
+      num_inputs = D.cols();
+    }
+  }
+  return num_inputs;
+}
+
+// Returns the number of outputs, where any empty matrix is assumed to have the
+// correct size.
+int CalcNumOutputs(const Eigen::Ref<const Eigen::MatrixXd>& C,
+                   const Eigen::Ref<const Eigen::MatrixXd>& D,
+                   const Eigen::Ref<const Eigen::VectorXd>& y0) {
+  int num_outputs = 0;
+  if (C.size() > 0) {
+    num_outputs = C.rows();
+  }
+  if (D.size() > 0) {
+    if (num_outputs) {
+      DRAKE_DEMAND(D.rows() == C.rows());
+    } else {
+      num_outputs = D.rows();
+    }
+  }
+  if (y0.size() > 0) {
+    if (num_outputs) {
+      DRAKE_DEMAND(y0.size() == num_outputs);
+    } else {
+      num_outputs = y0.size();
+    }
+  }
+  return num_outputs;
+}
+
 // Returns whether a matrix is "meaningful" when pre-multiplying a vector.
-bool IsMeaningful(const Eigen::MatrixXd& m) {
+bool IsMeaningful(const Eigen::Ref<const Eigen::MatrixXd>& m) {
   return m.size() > 0 && (m.array() != 0).any();
+}
+
+void CompareMatrixSize(const Eigen::Ref<const Eigen::MatrixXd>& M1,
+                       const Eigen::Ref<const Eigen::MatrixXd>& M2,
+                       const std::string& matrix_name) {
+  if (M1.rows() != M2.rows() || M1.cols() != M2.cols()) {
+    throw std::runtime_error(
+        fmt::format("New and current {} have different sizes.", matrix_name));
+  }
+}
+
+void CheckOutputConsistency(const bool is_meaningful,
+                            const bool is_meaningful_new,
+                            const std::string& matrix_name,
+                            const std::string& dependency_name) {
+  if (!is_meaningful && is_meaningful_new) {
+    throw std::runtime_error(fmt::format(
+        "{} makes the output dependent on {}, when it was "
+        "previously independent. This would change the dependencies "
+        "of the output port, and it is currently unsupported.",
+        matrix_name, dependency_name));
+  }
 }
 
 }  // namespace
@@ -258,24 +367,24 @@ AffineSystem<T>::AffineSystem(SystemScalarConverter converter,
                               const Eigen::Ref<const Eigen::VectorXd>& y0,
                               double time_period)
     : TimeVaryingAffineSystem<T>(
-          std::move(converter), f0.size(), D.cols(), D.rows(), time_period),
-      A_(A),
-      B_(B),
-      f0_(f0),
-      C_(C),
-      D_(D),
-      y0_(y0),
+          std::move(converter), CalcNumStates(A, B, f0, C), CalcNumInputs(B, D),
+          CalcNumOutputs(C, D, y0), time_period),
+      A_(A.size()
+             ? A
+             : Eigen::MatrixXd::Zero(this->num_states(), this->num_states())),
+      B_(B.size()
+             ? B
+             : Eigen::MatrixXd::Zero(this->num_states(), this->num_inputs())),
+      f0_(f0.size() ? f0 : Eigen::VectorXd::Zero(this->num_states())),
+      C_(C.size()
+             ? C
+             : Eigen::MatrixXd::Zero(this->num_outputs(), this->num_states())),
+      D_(D.size()
+             ? D
+             : Eigen::MatrixXd::Zero(this->num_outputs(), this->num_inputs())),
+      y0_(y0.size() ? y0 : Eigen::VectorXd::Zero(this->num_outputs())),
       has_meaningful_C_(IsMeaningful(C)),
       has_meaningful_D_(IsMeaningful(D)) {
-  DRAKE_DEMAND(this->num_states() == A.rows());
-  DRAKE_DEMAND(this->num_states() == A.cols());
-  DRAKE_DEMAND(this->num_states() == B.rows());
-  DRAKE_DEMAND(this->num_states() == C.cols());
-  DRAKE_DEMAND(this->num_inputs() == B.cols());
-  DRAKE_DEMAND(this->num_inputs() == D.cols());
-  DRAKE_DEMAND(this->num_outputs() == C.rows());
-  DRAKE_DEMAND(this->num_outputs() == D.rows());
-
   // Specify our output port's dependencies more precisely than our base class
   // is able to.  We know that output never depends on time nor parameters,
   // only on state (iff C if non-zero) and input (iff D is non-zero).
@@ -347,10 +456,12 @@ void AffineSystem<T>::CalcOutputY(const Context<T>& context,
   y = y0_;
 
   if (has_meaningful_C_) {
-    const VectorX<T>& x = (this->time_period() == 0.)
-        ? dynamic_cast<const BasicVector<T>&>(
-            context.get_continuous_state_vector()).get_value()
-        : context.get_discrete_state().get_vector().get_value();
+    const VectorX<T>& x =
+        (this->time_period() == 0.0)
+            ? dynamic_cast<const BasicVector<T>&>(
+                  context.get_continuous_state_vector())
+                  .get_value()
+            : context.get_discrete_state().get_vector().get_value();
     y += C_ * x;
   }
 
@@ -379,12 +490,12 @@ void AffineSystem<T>::DoCalcTimeDerivatives(
   derivatives->SetFromVector(xdot);
 }
 
+// Overrides the base class default event handler with a simpler one.
 template <typename T>
-void AffineSystem<T>::DoCalcDiscreteVariableUpdates(
-    const drake::systems::Context<T>& context,
-    const std::vector<const drake::systems::DiscreteUpdateEvent<T>*>&,
-    drake::systems::DiscreteValues<T>* updates) const {
-  if (this->num_states() == 0 || this->time_period() == 0.0) return;
+EventStatus AffineSystem<T>::CalcDiscreteUpdate(
+    const Context<T>& context, DiscreteValues<T>* updates) const {
+  if (this->num_states() == 0 || this->time_period() == 0.0)
+    return EventStatus::DidNothing();
 
   const auto& x = context.get_discrete_state(0).get_value();
 
@@ -396,11 +507,46 @@ void AffineSystem<T>::DoCalcDiscreteVariableUpdates(
     xnext += B_ * u;
   }
   updates->set_value(xnext);
+  return EventStatus::Succeeded();
 }
 
+template <typename T>
+void AffineSystem<T>::UpdateCoefficients(
+    const Eigen::Ref<const Eigen::MatrixXd>& new_A,
+    const Eigen::Ref<const Eigen::MatrixXd>& new_B,
+    const Eigen::Ref<const Eigen::VectorXd>& new_f0,
+    const Eigen::Ref<const Eigen::MatrixXd>& new_C,
+    const Eigen::Ref<const Eigen::MatrixXd>& new_D,
+    const Eigen::Ref<const Eigen::VectorXd>& new_y0) {
+  CompareMatrixSize(new_A, A_, "A");
+  CompareMatrixSize(new_B, B_, "B");
+  CompareMatrixSize(new_f0, f0_, "f0");
+  CompareMatrixSize(new_C, C_, "C");
+  CompareMatrixSize(new_D, D_, "D");
+  CompareMatrixSize(new_y0, y0_, "y0");
+
+  const bool is_new_C_meaningful = IsMeaningful(new_C);
+  const bool is_new_D_meaningful = IsMeaningful(new_D);
+  CheckOutputConsistency(has_meaningful_C_, is_new_C_meaningful, "new_C",
+                         "state");
+  CheckOutputConsistency(has_meaningful_D_, is_new_D_meaningful, "new_D",
+                         "input");
+
+  A_ = new_A;
+  B_ = new_B;
+  f0_ = new_f0;
+  C_ = new_C;
+  D_ = new_D;
+  y0_ = new_y0;
+  has_meaningful_C_ = is_new_C_meaningful;
+  has_meaningful_D_ = is_new_D_meaningful;
+}
+
+// clang-format off
 DRAKE_DEFINE_FUNCTION_TEMPLATE_INSTANTIATIONS_ON_DEFAULT_SCALARS((
     &TimeVaryingAffineSystem<T>::template ConfigureDefaultAndRandomStateFrom<U>
 ))
+// clang-format on
 
 }  // namespace systems
 }  // namespace drake

@@ -15,7 +15,11 @@ namespace multibody {
  * postures of the robot satisfying certain constraints.
  * The decision variables include the generalized position of the robot.
  *
- * @ingroup planning
+ * To perform IK on a subset of the plant, use the constructor overload that
+ * takes a `plant_context` and use `Joint::Lock` on the joints in that Context
+ * that should be fixed during IK.
+ *
+ * @ingroup planning_kinematics
  */
 class InverseKinematics {
  public:
@@ -48,15 +52,17 @@ class InverseKinematics {
    * @param plant The robot on which the inverse kinematics problem will be
    * solved. This plant should have been connected to a SceneGraph within a
    * Diagram
-   * @param context The context for the plant. This context should be a part of
-   * the Diagram context.
-   * To construct a plant connected to a SceneGraph, with the corresponding
-   * plant_context, the steps are
+   * @param plant_context The context for the plant. This context should be a
+   * part of the Diagram context. Any locked joints in the `plant_context` will
+   * remain fixed at their locked value. (This provides a convenient way to
+   * perform IK on a subset of the plant.) To construct a plant connected to a
+   * SceneGraph, with the corresponding plant_context, the steps are:
+   * ```
    * // 1. Add a diagram containing the MultibodyPlant and SceneGraph
    * systems::DiagramBuilder<double> builder;
    * auto items = AddMultibodyPlantSceneGraph(&builder, 0.0);
    * // 2. Add collision geometries to the plant
-   * Parser(&(items.plant)).AddModelFromFile("model.sdf");
+   * Parser(&(items.plant)).AddModels("model.sdf");
    * // 3. Construct the diagram
    * auto diagram = builder.Build();
    * // 4. Create diagram context.
@@ -64,6 +70,7 @@ class InverseKinematics {
    * // 5. Get the context for the plant.
    * auto plant_context = &(diagram->GetMutableSubsystemContext(items.plant,
    * diagram_context.get()));
+   * ```
    * This context will be modified during calling ik.prog.Solve(...). When
    * Solve() returns `result`, context will store the optimized posture, namely
    * plant.GetPositions(*context) will be the same as in
@@ -334,6 +341,29 @@ class InverseKinematics {
       double distance_upper);
 
   /**
+   * Add a constraint that the distance between point P attached to frame_point
+   * (denoted as B1) and a line attached to frame_line (denoted as B2) is within
+   * the range [distance_lower, distance_upper]. The line passes through a point
+   * Q with a directional vector n.
+   * @param frame_point The frame to which P is attached.
+   * @param p_B1P The position of P measured and expressed in frame_point.
+   * @param frame_line The frame to which the line is attached.
+   * @param p_B2Q The position of Q measured and expressed in frame_line, the
+   * line passes through Q.
+   * @param n_B2 The direction vector of the line measured and expressed in
+   * frame_line.
+   * @param distance_lower The lower bound on the distance.
+   * @param distance_upper The upper bound on the distance.
+   */
+  solvers::Binding<solvers::Constraint> AddPointToLineDistanceConstraint(
+      const Frame<double>& frame_point,
+      const Eigen::Ref<const Eigen::Vector3d>& p_B1P,
+      const Frame<double>& frame_line,
+      const Eigen::Ref<const Eigen::Vector3d>& p_B2Q,
+      const Eigen::Ref<const Eigen::Vector3d>& n_B2, double distance_lower,
+      double distance_upper);
+
+  /**
    * Adds the constraint that the position of P1, ..., Pn satisfy A *
    * [p_FP1; p_FP2; ...; p_FPn] <= b.
    * @param frameF The frame in which the position P is measured and expressed
@@ -341,8 +371,8 @@ class InverseKinematics {
    * @param p_GP p_GP.col(i) is the position of the i'th point Pi measured and
    * expressed in frame G.
    * @param A We impose the constraint A * [p_FP1; p_FP2; ...; p_FPn] <= b. @pre
-   * A.cols() = 3 * p_GP.cols();
-   * @param b We impose the constraint A * [p_FP1; p_FP2; ...; p_FPn] <= b
+   * A.cols() = 3 * p_GP.cols().
+   * @param b We impose the constraint A * [p_FP1; p_FP2; ...; p_FPn] <= b.
    */
   solvers::Binding<solvers::Constraint> AddPolyhedronConstraint(
       const Frame<double>& frameF, const Frame<double>& frameG,
@@ -358,7 +388,7 @@ class InverseKinematics {
   const solvers::MathematicalProgram& prog() const { return *prog_; }
 
   /** Getter for the optimization program constructed by InverseKinematics. */
-  solvers::MathematicalProgram* get_mutable_prog() const { return prog_.get(); }
+  solvers::MathematicalProgram* get_mutable_prog() { return prog_.get(); }
 
   /** Getter for the plant context. */
   const systems::Context<double>& context() const { return *context_; }
@@ -367,6 +397,13 @@ class InverseKinematics {
   systems::Context<double>* get_mutable_context() { return context_; }
 
  private:
+  /* Both public constructors delegate to here. Exactly one of owned_context or
+  plant_context must be non-null. */
+  InverseKinematics(const MultibodyPlant<double>& plant,
+                    std::unique_ptr<systems::Context<double>> owned_context,
+                    systems::Context<double>* plant_context,
+                    bool with_joint_limits);
+
   std::unique_ptr<solvers::MathematicalProgram> prog_;
   const MultibodyPlant<double>& plant_;
   std::unique_ptr<systems::Context<double>> const owned_context_;

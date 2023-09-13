@@ -1,5 +1,3 @@
-# -*- python -*-
-
 load("@drake//tools/workspace:github.bzl", "github_archive")
 
 def googlebenchmark_repository(
@@ -8,7 +6,12 @@ def googlebenchmark_repository(
     github_archive(
         name = name,
         repository = "google/benchmark",
-        commit = "v1.7.0",
-        sha256 = "3aff99169fa8bdee356eaa1f691e835a6e57b1efeadb8a0f9f228531158246ac",  # noqa
+        commit = "v1.8.3",
+        sha256 = "6bc180a57d23d4d9515519f92b0c83d61b05b5bab188961f36ac7b06b0d9e9ce",  # noqa
         mirrors = mirrors,
+        patches = [
+            ":patches/console_allocs.patch",
+            ":patches/remove_overloaded_fixture_set_up.patch",
+            ":patches/string_precision.patch",
+        ],
     )

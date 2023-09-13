@@ -13,6 +13,15 @@
 
 namespace drake {
 namespace lcm {
+// Provides friend access to the underlying LCM object.
+class DrakeLcmTester {
+ public:
+  DrakeLcmTester() = delete;
+  static ::lcm::LCM* get_native(DrakeLcm* dut) {
+    DRAKE_DEMAND(dut != nullptr);
+    return dut->get_native();
+  }
+};
 namespace {
 
 // A udpm URL that is not the default.  We'll transmit here in our tests.
@@ -50,6 +59,8 @@ class DrakeLcmTest : public ::testing::Test {
     EXPECT_TRUE(message_was_received);
   }
 
+  ::lcm::LCM* get_native() { return DrakeLcmTester::get_native(dut_.get()); }
+
   // The device under test.
   std::unique_ptr<DrakeLcm> dut_ = std::make_unique<DrakeLcm>();
 
@@ -66,6 +77,12 @@ TEST_F(DrakeLcmTest, CustomUrlTest) {
   EXPECT_EQ(dut_->get_lcm_url(), kUdpmUrl);
 }
 
+TEST_F(DrakeLcmTest, BadUrlTest) {
+  // At the moment, invalid URLs print to the console but do not throw.
+  // We probably want to revisit this as some point (to fail-fast).
+  EXPECT_NO_THROW(DrakeLcm("no-such-scheme://foo"));
+}
+
 TEST_F(DrakeLcmTest, DeferThreadTest) {
   DrakeLcmParams params;
   params.lcm_url = kUdpmUrl;
@@ -78,27 +95,26 @@ TEST_F(DrakeLcmTest, DeferThreadTest) {
 
 TEST_F(DrakeLcmTest, EmptyChannelTest) {
   auto noop = [](const void*, int) {};
-  DRAKE_EXPECT_THROWS_MESSAGE(dut_->Subscribe("", noop),
-      ".*channel.empty.*");
+  DRAKE_EXPECT_THROWS_MESSAGE(dut_->Subscribe("", noop), ".*channel.empty.*");
 
   char data[1] = {};
   DRAKE_EXPECT_THROWS_MESSAGE(dut_->Publish("", data, 1, {}),
-      ".*channel.empty.*");
+                              ".*channel.empty.*");
 }
 
 // Tests DrakeLcm's ability to publish an LCM message.
 // We subscribe using the native LCM APIs.
 TEST_F(DrakeLcmTest, PublishTest) {
-  ::lcm::LCM* const native_lcm = dut_->get_lcm_instance();
+  ::lcm::LCM* const native_lcm = get_native();
   const std::string channel_name = "DrakeLcmTest.PublishTest";
 
   lcmt_drake_signal received{};
-  ::lcm::LCM::HandlerFunction<lcmt_drake_signal> handler = [&received](
-      const ::lcm::ReceiveBuffer*, const std::string&,
-      const lcmt_drake_signal* new_value) {
-    DRAKE_DEMAND(new_value != nullptr);
-    received = *new_value;
-  };
+  ::lcm::LCM::HandlerFunction<lcmt_drake_signal> handler =
+      [&received](const ::lcm::ReceiveBuffer*, const std::string&,
+                  const lcmt_drake_signal* new_value) {
+        DRAKE_DEMAND(new_value != nullptr);
+        received = *new_value;
+      };
   native_lcm->subscribe(channel_name, std::move(handler));
 
   LoopUntilDone(&received, 20 /* retries */, [&]() {
@@ -110,14 +126,14 @@ TEST_F(DrakeLcmTest, PublishTest) {
 // Tests DrakeLcm's ability to subscribe to an LCM message.
 // We publish using the native LCM APIs.
 TEST_F(DrakeLcmTest, SubscribeTest) {
-  ::lcm::LCM* const native_lcm = dut_->get_lcm_instance();
+  ::lcm::LCM* const native_lcm = get_native();
   const std::string channel_name = "DrakeLcmTest.SubscribeTest";
 
   lcmt_drake_signal received{};
-  auto subscription = dut_->Subscribe(channel_name, [&received](
-      const void* data, int size) {
-    received.decode(data, 0, size);
-  });
+  auto subscription =
+      dut_->Subscribe(channel_name, [&received](const void* data, int size) {
+        received.decode(data, 0, size);
+      });
   subscription.reset();  // Deleting the subscription should be a no-op.
 
   int total = 0;
@@ -130,14 +146,14 @@ TEST_F(DrakeLcmTest, SubscribeTest) {
 
 // Repeats the above test, but with explicit opt-out of unsubscribe.
 TEST_F(DrakeLcmTest, SubscribeTest2) {
-  ::lcm::LCM* const native_lcm = dut_->get_lcm_instance();
+  ::lcm::LCM* const native_lcm = get_native();
   const std::string channel_name = "DrakeLcmTest.SubscribeTest2";
 
   lcmt_drake_signal received{};
-  auto subscription = dut_->Subscribe(channel_name, [&received](
-      const void* data, int size) {
-    received.decode(data, 0, size);
-  });
+  auto subscription =
+      dut_->Subscribe(channel_name, [&received](const void* data, int size) {
+        received.decode(data, 0, size);
+      });
   subscription->set_unsubscribe_on_delete(false);  // We shall be explicit.
   subscription.reset();
 
@@ -151,15 +167,16 @@ TEST_F(DrakeLcmTest, SubscribeTest2) {
 
 // Repeat SubscribeTest for SubscribeAllChannels.
 TEST_F(DrakeLcmTest, SubscribeAllTest) {
-  ::lcm::LCM* const native_lcm = dut_->get_lcm_instance();
+  ::lcm::LCM* const native_lcm = get_native();
   const std::string channel_name = "DrakeLcmTest.SubscribeAllTest";
 
   lcmt_drake_signal received{};
-  auto subscription = dut_->SubscribeAllChannels([&received, &channel_name](
-      std::string_view channel, const void* data, int size) {
-    EXPECT_EQ(channel, channel_name);
-    received.decode(data, 0, size);
-  });
+  auto subscription = dut_->SubscribeAllChannels(
+      [&received, &channel_name](std::string_view channel, const void* data,
+                                 int size) {
+        EXPECT_EQ(channel, channel_name);
+        received.decode(data, 0, size);
+      });
   subscription.reset();  // Deleting the subscription should be a no-op.
 
   int total = 0;
@@ -172,15 +189,16 @@ TEST_F(DrakeLcmTest, SubscribeAllTest) {
 
 // Repeat SubscribeTest2 for SubscribeAllChannels.
 TEST_F(DrakeLcmTest, SubscribeAllTest2) {
-  ::lcm::LCM* const native_lcm = dut_->get_lcm_instance();
+  ::lcm::LCM* const native_lcm = get_native();
   const std::string channel_name = "DrakeLcmTest.SubscribeAllTest2";
 
   lcmt_drake_signal received{};
-  auto subscription = dut_->SubscribeAllChannels([&received, &channel_name](
-      std::string_view channel, const void* data, int size) {
-    EXPECT_EQ(channel, channel_name);
-    received.decode(data, 0, size);
-  });
+  auto subscription = dut_->SubscribeAllChannels(
+      [&received, &channel_name](std::string_view channel, const void* data,
+                                 int size) {
+        EXPECT_EQ(channel, channel_name);
+        received.decode(data, 0, size);
+      });
   subscription->set_unsubscribe_on_delete(false);  // We shall be explicit.
   subscription.reset();
 
@@ -236,10 +254,10 @@ TEST_F(DrakeLcmTest, UnsubscribeTest) {
 
   // First, confirm that the subscriber is active.
   lcmt_drake_signal received{};
-  auto subscription = dut_->Subscribe(channel_name, [&](
-      const void* data, int size) {
-    received.decode(data, 0, size);
-  });
+  auto subscription =
+      dut_->Subscribe(channel_name, [&](const void* data, int size) {
+        received.decode(data, 0, size);
+      });
   subscription->set_unsubscribe_on_delete(true);
   LoopUntilDone(&received, 20 /* retries */, [&]() {
     Publish(dut_.get(), channel_name, message_);
@@ -262,10 +280,10 @@ TEST_F(DrakeLcmTest, UnsubscribeFromMultichannelTest) {
 
   // First, confirm that the subscriber is active.
   lcmt_drake_signal received{};
-  auto subscription = dut_->SubscribeAllChannels([&](
-      std::string_view channel, const void* data, int size) {
-    received.decode(data, 0, size);
-  });
+  auto subscription = dut_->SubscribeAllChannels(
+      [&](std::string_view channel, const void* data, int size) {
+        received.decode(data, 0, size);
+      });
   subscription->set_unsubscribe_on_delete(true);
   LoopUntilDone(&received, 20 /* retries */, [&]() {
     Publish(dut_.get(), channel_name, message_);
@@ -287,10 +305,10 @@ TEST_F(DrakeLcmTest, QueueCapacityTest) {
   const std::string channel_name = "DrakeLcmTest.QueueCapacityTest";
 
   int count = 0;
-  auto subscription = dut_->Subscribe(channel_name, [&count](
-      const void* data, int size) {
-    ++count;
-  });
+  auto subscription =
+      dut_->Subscribe(channel_name, [&count](const void* data, int size) {
+        ++count;
+      });
   EXPECT_EQ(dut_->HandleSubscriptions(10 /* millis */), 0);
 
   // Send three messages, but only one comes out.
@@ -351,24 +369,24 @@ TEST_F(DrakeLcmTest, Suffix) {
   DrakeLcmParams params;
   params.channel_suffix = "_SUFFIX";
   dut_ = std::make_unique<DrakeLcm>(params);
-  ::lcm::LCM* const native_lcm = dut_->get_lcm_instance();
+  ::lcm::LCM* const native_lcm = get_native();
 
   // Subscribe using native LCM (with the fully-qualified channel name).
   lcmt_drake_signal received_native{};
-  ::lcm::LCM::HandlerFunction<lcmt_drake_signal> handler = [&received_native](
-      const ::lcm::ReceiveBuffer*, const std::string&,
-      const lcmt_drake_signal* new_value) {
-    DRAKE_DEMAND(new_value != nullptr);
-    received_native = *new_value;
-  };
+  ::lcm::LCM::HandlerFunction<lcmt_drake_signal> handler =
+      [&received_native](const ::lcm::ReceiveBuffer*, const std::string&,
+                         const lcmt_drake_signal* new_value) {
+        DRAKE_DEMAND(new_value != nullptr);
+        received_native = *new_value;
+      };
   native_lcm->subscribe("SuffixDrakeLcmTest_SUFFIX", std::move(handler));
 
   // Subscribe using Drake LCM (with the abbreviated channel name).
   lcmt_drake_signal received_drake{};
-  auto subscription = dut_->Subscribe("SuffixDrakeLcmTest", [&received_drake](
-      const void* data, int size) {
-    received_drake.decode(data, 0, size);
-  });
+  auto subscription = dut_->Subscribe(
+      "SuffixDrakeLcmTest", [&received_drake](const void* data, int size) {
+        received_drake.decode(data, 0, size);
+      });
 
   // Publish using the abbreviated channel name.
   // Check that the native subscription gets it.
@@ -389,24 +407,27 @@ TEST_F(DrakeLcmTest, Suffix) {
 TEST_F(DrakeLcmTest, SuffixInSubscribeAllChannels) {
   // The device under test will listen for messages.
   DrakeLcmParams params;
-  params.channel_suffix = "_SUFFIX";
+  params.channel_suffix = ".SUFFIX";
   params.lcm_url = kUdpmUrl;
   dut_ = std::make_unique<DrakeLcm>(params);
 
+  // Here we use a suffix string that contains a regex character.
+  // We want it to be treated as a string literal, not a regex.
   const std::string unadorned = "SuffixInSubscribeAllChannels";
-  const std::string suffixed = unadorned + "_SUFFIX";
-  const std::string mismatched = unadorned + "_WRONG!";
+  const std::string suffixed = unadorned + ".SUFFIX";
+  const std::string mismatched = unadorned + "xSUFFIX";
 
   // Use a separate publisher, to have direct control over the channel name.
   auto publisher = std::make_unique<DrakeLcm>(kUdpmUrl);
 
   // Check SubscribeAll, expecting to see the unadorned channel name.
   lcmt_drake_signal received_drake{};
-  auto subscription = dut_->SubscribeAllChannels([&received_drake, unadorned](
-      std::string_view channel_name, const void* data, int size) {
-    EXPECT_EQ(channel_name, unadorned);
-    received_drake.decode(data, 0, size);
-  });
+  auto subscription = dut_->SubscribeAllChannels(
+      [&received_drake, unadorned](std::string_view channel_name,
+                                   const void* data, int size) {
+        EXPECT_EQ(channel_name, unadorned);
+        received_drake.decode(data, 0, size);
+      });
   subscription->set_queue_capacity(30);
   const lcmt_drake_signal empty_data{};
   LoopUntilDone(&received_drake, 200 /* retries */, [&]() {
@@ -415,6 +436,40 @@ TEST_F(DrakeLcmTest, SuffixInSubscribeAllChannels) {
     dut_->HandleSubscriptions(5 /* millis */);
   });
 }
+
+// Confirm that SubscribeMultichannel ignores mismatched channel names.
+TEST_F(DrakeLcmTest, SubscribeMultiTest) {
+  ::lcm::LCM* const native_lcm = get_native();
+  const std::string channel_name = "DrakeLcmTest.SubscribeMultiTest";
+
+  lcmt_drake_signal received{};
+  auto subscription = dut_->SubscribeMultichannel(
+      "Drake.*MultiTest",
+      [&received, &channel_name](std::string_view channel, const void* data,
+                                 int size) {
+        EXPECT_EQ(channel, channel_name);
+        received.decode(data, 0, size);
+      });
+  subscription.reset();  // Deleting the subscription should be a no-op.
+
+  int total = 0;
+  LoopUntilDone(&received, 20 /* retries */, [&]() {
+    native_lcm->publish("WRONG_" + channel_name, &message_);
+    native_lcm->publish(channel_name, &message_);
+    total += dut_->HandleSubscriptions(50 /* millis */);
+  });
+  EXPECT_EQ(total, 1);
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+TEST_F(DrakeLcmTest, DeprecatedGetter) {
+  ::lcm::LCM* const deprecated = dut_->get_lcm_instance();
+  EXPECT_TRUE(deprecated != nullptr);
+  ::lcm::LCM* native = get_native();
+  EXPECT_TRUE(native == deprecated);
+}
+#pragma GCC diagnostic pop
 
 }  // namespace
 }  // namespace lcm

@@ -41,8 +41,8 @@ using geometry::Meshcat;
 using geometry::MeshcatVisualizerd;
 using geometry::SceneGraph;
 using multibody::AddMultibodyPlantSceneGraph;
-using multibody::MultibodyPlant;
 using multibody::ModelInstanceIndex;
+using multibody::MultibodyPlant;
 using multibody::Parser;
 using systems::DiagramBuilder;
 using systems::Simulator;
@@ -66,12 +66,12 @@ void WaitForNextButtonClick() {
 
 TEST_P(ParseTest, Quantities) {
   const std::string object_name = GetParam();
-  const std::string filename = FindResourceOrThrow(fmt::format(
-      "drake/manipulation/models/ycb/sdf/{}.sdf", object_name));
+  const std::string filename = FindResourceOrThrow(
+      fmt::format("drake/manipulation/models/ycb/sdf/{}.sdf", object_name));
 
   DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, 0.0);
-  Parser(&plant).AddModelFromFile(filename);
+  Parser(&plant).AddModels(filename);
   const auto& visualizer = MeshcatVisualizerd::AddToBuilder(
       &builder, scene_graph, GetTestEnvironmentMeshcat());
   plant.Finalize();
@@ -91,12 +91,13 @@ TEST_P(ParseTest, Quantities) {
   // Display the object; optionally wait for user input.
   drake::log()->info("Visualize: {}", object_name);
   auto context = diagram->CreateDefaultContext();
-  diagram->Publish(*context);
+  diagram->ForcedPublish(*context);
   if (FLAGS_pause) {
     WaitForNextButtonClick();
   }
 }
 
+// clang-format off
 INSTANTIATE_TEST_SUITE_P(Both, ParseTest, testing::Values(
     "003_cracker_box",
     "004_sugar_box",
@@ -104,6 +105,7 @@ INSTANTIATE_TEST_SUITE_P(Both, ParseTest, testing::Values(
     "006_mustard_bottle",
     "009_gelatin_box",
     "010_potted_meat_can"));
+// clang-format on
 
 }  // namespace
 }  // namespace manipulation

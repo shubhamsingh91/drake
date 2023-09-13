@@ -1,5 +1,4 @@
-#include "pybind11/eigen.h"
-#include "pybind11/pybind11.h"
+#include "drake/bindings/pydrake/multibody/inverse_kinematics_py.h"
 
 #include "drake/bindings/pydrake/common/default_scalars_pybind.h"
 #include "drake/bindings/pydrake/common/sorted_pair_pybind.h"
@@ -16,6 +15,7 @@
 #include "drake/multibody/inverse_kinematics/minimum_distance_constraint.h"
 #include "drake/multibody/inverse_kinematics/orientation_constraint.h"
 #include "drake/multibody/inverse_kinematics/orientation_cost.h"
+#include "drake/multibody/inverse_kinematics/point_to_line_distance_constraint.h"
 #include "drake/multibody/inverse_kinematics/point_to_point_distance_constraint.h"
 #include "drake/multibody/inverse_kinematics/polyhedron_constraint.h"
 #include "drake/multibody/inverse_kinematics/position_constraint.h"
@@ -25,6 +25,25 @@
 namespace drake {
 namespace pydrake {
 namespace {
+// This is used in the MinimumDistanceConstraint to convert a penalty function
+// in python to a penalty function in C++.
+using CppPenaltyFunction = std::function<void(double, double*, double*)>;
+using PyPenaltyFunction = std::function<py::tuple(double, bool)>;
+CppPenaltyFunction UnwrapPyPenaltyFunction(PyPenaltyFunction penalty_function) {
+  if (penalty_function) {
+    return [penalty_function](double x, double* penalty, double* dpenalty) {
+      py::tuple penalty_tuple(2);
+      const bool compute_grad = dpenalty != nullptr;
+      penalty_tuple = penalty_function(x, compute_grad);
+      *penalty = penalty_tuple[0].cast<double>();
+      if (compute_grad) {
+        *dpenalty = penalty_tuple[1].cast<double>();
+      }
+    };
+  } else {
+    return multibody::MinimumDistancePenaltyFunction{};
+  }
+}
 
 using solvers::Constraint;
 
@@ -115,6 +134,12 @@ PYBIND11_MODULE(inverse_kinematics, m) {
         .def("AddDistanceConstraint", &Class::AddDistanceConstraint,
             py::arg("geometry_pair"), py::arg("distance_lower"),
             py::arg("distance_upper"), cls_doc.AddDistanceConstraint.doc)
+        .def("AddPointToLineDistanceConstraint",
+            &Class::AddPointToLineDistanceConstraint, py::arg("frame_point"),
+            py::arg("p_B1P"), py::arg("frame_line"), py::arg("p_B2Q"),
+            py::arg("n_B2"), py::arg("distance_lower"),
+            py::arg("distance_upper"),
+            cls_doc.AddPointToLineDistanceConstraint.doc)
         .def("AddPointToPointDistanceConstraint",
             &Class::AddPointToPointDistanceConstraint, py::arg("frame1"),
             py::arg("p_B1P1"), py::arg("frame2"), py::arg("p_B2P2"),
@@ -256,6 +281,53 @@ PYBIND11_MODULE(inverse_kinematics, m) {
             py::keep_alive<1, 9>(), cls_doc.ctor.doc_autodiff);
   }
   {
+    using Class = PointToLineDistanceConstraint;
+    constexpr auto& cls_doc = doc.PointToLineDistanceConstraint;
+    using Ptr = std::shared_ptr<Class>;
+    py::class_<Class, Constraint, Ptr>(
+        m, "PointToLineDistanceConstraint", cls_doc.doc)
+        .def(py::init([](const multibody::MultibodyPlant<double>* const plant,
+                          const multibody::Frame<double>& frame_point,
+                          const Eigen::Ref<const Eigen::Vector3d>& p_B1P,
+                          const multibody::Frame<double>& frame_line,
+                          const Eigen::Ref<const Eigen::Vector3d>& p_B2Q,
+                          const Eigen::Ref<const Eigen::Vector3d>& n_B2,
+                          double distance_lower, double distance_upper,
+                          systems::Context<double>* plant_context) {
+          return std::make_shared<Class>(plant, frame_point, p_B1P, frame_line,
+              p_B2Q, n_B2, distance_lower, distance_upper, plant_context);
+        }),
+            py::arg("plant"), py::arg("frame_point"), py::arg("p_B1P"),
+            py::arg("frame_line"), py::arg("p_B2Q"), py::arg("n_B2"),
+            py::arg("distance_lower"), py::arg("distance_upper"),
+            py::arg("plant_context"),
+            // Keep alive, reference: `self` keeps `plant` alive.
+            py::keep_alive<1, 2>(),
+            // Keep alive, reference: `self` keeps `plant_context` alive.
+            py::keep_alive<1, 10>(), cls_doc.ctor.doc_double)
+        .def(py::init(
+                 [](const multibody::MultibodyPlant<AutoDiffXd>* const plant,
+                     const multibody::Frame<AutoDiffXd>& frame_point,
+                     const Eigen::Ref<const Eigen::Vector3d>& p_B1P,
+                     const multibody::Frame<AutoDiffXd>& frame_line,
+                     const Eigen::Ref<const Eigen::Vector3d>& p_B2Q,
+                     const Eigen::Ref<const Eigen::Vector3d>& n_B2,
+                     double distance_lower, double distance_upper,
+                     systems::Context<AutoDiffXd>* plant_context) {
+                   return std::make_shared<Class>(plant, frame_point, p_B1P,
+                       frame_line, p_B2Q, n_B2, distance_lower, distance_upper,
+                       plant_context);
+                 }),
+            py::arg("plant"), py::arg("frame_point"), py::arg("p_B1P"),
+            py::arg("frame_line"), py::arg("p_B2Q"), py::arg("n_B2"),
+            py::arg("distance_lower"), py::arg("distance_upper"),
+            py::arg("plant_context"),
+            // Keep alive, reference: `self` keeps `plant` alive.
+            py::keep_alive<1, 2>(),
+            // Keep alive, reference: `self` keeps `plant_context` alive.
+            py::keep_alive<1, 10>(), cls_doc.ctor.doc_autodiff);
+  }
+  {
     using Class = PolyhedronConstraint;
     constexpr auto& cls_doc = doc.PolyhedronConstraint;
     using Ptr = std::shared_ptr<Class>;
@@ -379,8 +451,9 @@ PYBIND11_MODULE(inverse_kinematics, m) {
     using Class = MinimumDistanceConstraint;
     constexpr auto& cls_doc = doc.MinimumDistanceConstraint;
     using Ptr = std::shared_ptr<Class>;
-    py::class_<Class, Constraint, Ptr>(
-        m, "MinimumDistanceConstraint", cls_doc.doc)
+    py::class_<Class, Constraint, Ptr> minimum_distance_constraint(
+        m, "MinimumDistanceConstraint", cls_doc.doc);
+    minimum_distance_constraint
         .def(py::init([](const multibody::MultibodyPlant<double>* const plant,
                           double minimum_distance,
                           systems::Context<double>* plant_context,
@@ -396,7 +469,7 @@ PYBIND11_MODULE(inverse_kinematics, m) {
             // Keep alive, reference: `self` keeps `plant` alive.
             py::keep_alive<1, 2>(),
             // Keep alive, reference: `self` keeps `plant_context` alive.
-            py::keep_alive<1, 4>(), cls_doc.ctor.doc_double)
+            py::keep_alive<1, 4>(), cls_doc.ctor.doc_double_no_upper_bound)
         .def(py::init(
                  [](const multibody::MultibodyPlant<AutoDiffXd>* const plant,
                      double minimum_distance,
@@ -414,7 +487,104 @@ PYBIND11_MODULE(inverse_kinematics, m) {
             // Keep alive, reference: `self` keeps `plant` alive.
             py::keep_alive<1, 2>(),
             // Keep alive, reference: `self` keeps `plant_context` alive.
-            py::keep_alive<1, 4>(), cls_doc.ctor.doc_autodiff);
+            py::keep_alive<1, 4>(), cls_doc.ctor.doc_autodiff_no_upper_bound)
+        .def(py::init([](const planning::CollisionChecker* collision_checker,
+                          double minimum_distance,
+                          planning::CollisionCheckerContext*
+                              collision_checker_context,
+                          PyPenaltyFunction penalty_function,
+                          double influence_distance_offset) {
+          return std::make_unique<MinimumDistanceConstraint>(collision_checker,
+              minimum_distance, collision_checker_context,
+              UnwrapPyPenaltyFunction(penalty_function),
+              influence_distance_offset);
+        }),
+            py::arg("collision_checker"), py::arg("minimum_distance"),
+            py::arg("collision_checker_context"),
+            py::arg("penalty_function") = MinimumDistancePenaltyFunction{},
+            py::arg("influence_distance_offset") = 1,
+            // Keep alive, reference: `self` keeps collision_checker
+            // alive.
+            py::keep_alive<1, 2>(),
+            // Keep alive, reference: `self` keeps collision_checker_context
+            // alive.
+            py::keep_alive<1, 4>(),
+            cls_doc.ctor.doc_collision_checker_no_upper_bound)
+        .def(py::init([](const planning::CollisionChecker* collision_checker,
+                          double minimum_distance_lower,
+                          double minimum_distance_upper,
+                          planning::CollisionCheckerContext*
+                              collision_checker_context,
+                          PyPenaltyFunction penalty_function,
+                          double influence_distance) {
+          return std::make_unique<MinimumDistanceConstraint>(collision_checker,
+              minimum_distance_lower, minimum_distance_upper,
+              collision_checker_context,
+              UnwrapPyPenaltyFunction(penalty_function), influence_distance);
+        }),
+            py::arg("collision_checker"), py::arg("minimum_distance_lower"),
+            py::arg("minimum_distance_upper"),
+            py::arg("collision_checker_context"), py::arg("penalty_function"),
+            py::arg("influence_distance"),
+            // Keep alive, reference: `self` keeps `collision_checker`
+            // alive.
+            py::keep_alive<1, 2>(),
+            // Keep alive, reference: `self` keeps `collision_checker_context`
+            // alive.
+            py::keep_alive<1, 5>(),
+            cls_doc.ctor.doc_collision_checker_with_upper_bound);
+
+    std::string py_penalty_doc =
+        "The penalty function penalty_function(x: float, compute_grad: bool) "
+        "-> tuple[float, Optional[float]] returns [penalty_val,  "
+        "penalty_gradient] when compute_grad=True, or [penalty_value, None] "
+        "when compute_grad=False. See minimum_value_constraint.h on the "
+        "requirement on MinimumValuePenaltyFunction. Set penalty_function=None "
+        "and then the constraint will use the default penalty function.";
+    const std::string constructor_double_with_upper_bound_doc =
+        cls_doc.ctor.doc_double_with_upper_bound + py_penalty_doc;
+
+    minimum_distance_constraint.def(
+        py::init(
+            [](const multibody::MultibodyPlant<double>* plant,
+                double minimum_distance_lower, double minimum_distance_upper,
+                systems::Context<double>* plant_context,
+                PyPenaltyFunction penalty_function, double influence_distance) {
+              return std::make_unique<MinimumDistanceConstraint>(plant,
+                  minimum_distance_lower, minimum_distance_upper, plant_context,
+                  UnwrapPyPenaltyFunction(penalty_function),
+                  influence_distance);
+            }),
+        py::arg("plant"), py::arg("minimum_distance_lower"),
+        py::arg("minimum_distance_upper"), py::arg("plant_context"),
+        py::arg("penalty_function"), py::arg("influence_distance"),
+        // Keep alive, reference: `self` keeps `plant` alive.
+        py::keep_alive<1, 2>(),
+        // Keep alive, reference: `self` keeps `plant_context` alive.
+        py::keep_alive<1, 5>(),
+        constructor_double_with_upper_bound_doc.c_str());
+
+    const std::string constructor_autodiff_with_upper_bound_doc =
+        cls_doc.ctor.doc_autodiff_with_upper_bound + py_penalty_doc;
+    minimum_distance_constraint.def(
+        py::init(
+            [](const multibody::MultibodyPlant<AutoDiffXd>* plant,
+                double minimum_distance_lower, double minimum_distance_upper,
+                systems::Context<AutoDiffXd>* plant_context,
+                PyPenaltyFunction penalty_function, double influence_distance) {
+              return std::make_unique<MinimumDistanceConstraint>(plant,
+                  minimum_distance_lower, minimum_distance_upper, plant_context,
+                  UnwrapPyPenaltyFunction(penalty_function),
+                  influence_distance);
+            }),
+        py::arg("plant"), py::arg("minimum_distance_lower"),
+        py::arg("minimum_distance_upper"), py::arg("plant_context"),
+        py::arg("penalty_function"), py::arg("influence_distance"),
+        // Keep alive, reference: `self` keeps `plant` alive.
+        py::keep_alive<1, 2>(),
+        // Keep alive, reference: `self` keeps `plant_context` alive.
+        py::keep_alive<1, 5>(),
+        constructor_autodiff_with_upper_bound_doc.c_str());
   }
 
   {
@@ -817,6 +987,12 @@ PYBIND11_MODULE(inverse_kinematics, m) {
     // TODO(russt): Add bindings for Polytope3D struct and related methods
     // (or convert those methods to use ConvexSets).
   }
+
+  // TODO(SeanCurtis-TRI): Refactor this into its own stand-alone .cc file and
+  // re-introduce the inverse_kinematics_py.cc that just assembles the full
+  // module.
+  internal::DefineIkDifferential(m);
+
   // NOLINTNEXTLINE(readability/fn_size)
 }
 

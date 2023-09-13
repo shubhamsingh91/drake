@@ -44,9 +44,14 @@ def check_logical(func, a, b, expected):
 
 class TestAutoDiffXd(unittest.TestCase):
     def test_scalar_api(self):
-        a = AD(1, [1., 0])
-        self.assertEqual(a.value(), 1.)
-        numpy_compare.assert_equal(a.derivatives(), [1., 0])
+        # Test the unit vector constructor.
+        a = AD(value=1, size=2, offset=1)
+        self.assertEqual(a.value(), 1.0)
+        numpy_compare.assert_equal(a.derivatives(), [0.0, 1.0])
+        # Test the dense derivatives vector constructor.
+        a = AD(value=1, derivatives=[1.0, 2.0])
+        self.assertEqual(a.value(), 1.0)
+        numpy_compare.assert_equal(a.derivatives(), [1.0, 2.0])
         self.assertEqual(str(a), "AD{1.0, nderiv=2}")
         self.assertEqual(repr(a), "<AutoDiffXd 1.0 nderiv=2>")
         numpy_compare.assert_equal(a, a)
@@ -98,12 +103,12 @@ class TestAutoDiffXd(unittest.TestCase):
         # Conversion.
         with self.assertRaises(TypeError):
             # Avoid implicit coercion, as this will imply information loss.
-            xf = np.zeros(2, dtype=np.float)
+            xf = np.zeros(2, dtype=float)
             xf[:] = x
         with self.assertRaises(TypeError):
             # We could define `__float__` to allow this, but then that will
             # enable implicit coercion, which we should avoid.
-            xf = x.astype(dtype=np.float)
+            xf = x.astype(dtype=float)
         # Presently, does not convert.
         x = np.zeros((3, 3), dtype=AD)
         self.assertFalse(isinstance(x[0, 0], AD))

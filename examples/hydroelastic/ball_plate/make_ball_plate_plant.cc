@@ -3,7 +3,6 @@
 #include <string>
 #include <utility>
 
-#include "drake/common/find_resource.h"
 #include "drake/geometry/proximity_properties.h"
 #include "drake/multibody/parsing/parser.h"
 #include "drake/multibody/tree/multibody_tree_indexes.h"
@@ -72,10 +71,8 @@ void AddBallPlateBodies(
 
   // Add the ball. Let B be the ball's frame (at its center). The ball's
   // center of mass Bcm is coincident with Bo.
-  const Vector3<double> p_BoBcm = Vector3<double>::Zero();
   const RigidBody<double>& ball = plant->AddRigidBody(
-      "Ball", SpatialInertia<double>{mass, p_BoBcm,
-                                     UnitInertia<double>::SolidSphere(radius)});
+      "Ball", SpatialInertia<double>::SolidSphereWithMass(mass, radius));
   // Set up mechanical properties of the ball.
   ProximityProperties ball_props;
   AddContactMaterial(dissipation, {} /* point stiffness */, surface_friction,
@@ -92,14 +89,12 @@ void AddBallPlateBodies(
 
   // Add the dinner plate.
   drake::multibody::Parser parser(plant);
-  std::string plate_file_name = FindResourceOrThrow(
-      "drake/examples/hydroelastic/ball_plate/plate_8in.sdf");
-  parser.AddModelFromFile(plate_file_name);
+  parser.AddModelsFromUrl(
+      "package://drake/examples/hydroelastic/ball_plate/plate_8in.sdf");
 
   // Add the floor. Assume the frame named "Floor" is in the SDFormat file.
-  std::string floor_file_name =
-      FindResourceOrThrow("drake/examples/hydroelastic/ball_plate/floor.sdf");
-  parser.AddModelFromFile(floor_file_name);
+  parser.AddModelsFromUrl(
+      "package://drake/examples/hydroelastic/ball_plate/floor.sdf");
   plant->WeldFrames(plant->world_frame(), plant->GetFrameByName("Floor"),
                     RigidTransformd::Identity());
 

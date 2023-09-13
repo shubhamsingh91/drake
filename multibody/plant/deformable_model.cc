@@ -7,13 +7,13 @@
 #include "drake/multibody/fem/corotated_model.h"
 #include "drake/multibody/fem/fem_state.h"
 #include "drake/multibody/fem/linear_constitutive_model.h"
+#include "drake/multibody/fem/linear_corotated_model.h"
 #include "drake/multibody/fem/linear_simplex_element.h"
 #include "drake/multibody/fem/simplex_gaussian_quadrature.h"
 #include "drake/multibody/fem/volumetric_model.h"
 
 namespace drake {
 namespace multibody {
-namespace internal {
 
 using geometry::FrameId;
 using geometry::GeometryId;
@@ -62,6 +62,37 @@ DeformableBodyId DeformableModel<T>::RegisterDeformableBody(
   geometry_id_to_body_id_.emplace(geometry_id, body_id);
   body_ids_.emplace_back(body_id);
   return body_id;
+}
+
+template <typename T>
+void DeformableModel<T>::SetWallBoundaryCondition(DeformableBodyId id,
+                                                  const Vector3<T>& p_WQ,
+                                                  const Vector3<T>& n_W) {
+  this->ThrowIfSystemResourcesDeclared(__func__);
+  ThrowUnlessRegistered(__func__, id);
+  DRAKE_DEMAND(n_W.norm() > 1e-10);
+  const Vector3<T>& nhat_W = n_W.normalized();
+
+  fem::FemModel<T>& fem_model = *fem_models_.at(id);
+  const int num_nodes = fem_model.num_nodes();
+  constexpr int kDim = 3;
+  auto is_inside_wall = [&p_WQ, &nhat_W](const Vector3<T>& p_WV) {
+    T distance_to_wall = (p_WV - p_WQ).dot(nhat_W);
+    return distance_to_wall < 0;
+  };
+
+  const VectorX<T>& p_WVs = GetReferencePositions(id);
+  fem::internal::DirichletBoundaryCondition<T> bc;
+  for (int n = 0; n < num_nodes; ++n) {
+    const int dof_index = kDim * n;
+    const auto p_WV = p_WVs.template segment<kDim>(dof_index);
+    if (is_inside_wall(p_WV)) {
+      /* Set this node to be subject to zero Dirichlet BC. */
+      bc.AddBoundaryCondition(fem::FemNodeIndex(n),
+                              {p_WV, Vector3<T>::Zero(), Vector3<T>::Zero()});
+    }
+  }
+  fem_model.SetDirichletBoundaryCondition(std::move(bc));
 }
 
 template <typename T>
@@ -136,6 +167,10 @@ void DeformableModel<T>::BuildLinearVolumetricModel(
     case MaterialModel::kCorotated:
       BuildLinearVolumetricModelHelper<fem::internal::CorotatedModel>(id, mesh,
                                                                       config);
+      break;
+    case MaterialModel::kLinearCorotated:
+      BuildLinearVolumetricModelHelper<fem::internal::LinearCorotatedModel>(
+          id, mesh, config);
       break;
   }
 }
@@ -249,8 +284,7 @@ void DeformableModel<T>::ThrowUnlessRegistered(const char* source_method,
   }
 }
 
-}  // namespace internal
 }  // namespace multibody
 }  // namespace drake
 
-template class drake::multibody::internal::DeformableModel<double>;
+template class drake::multibody::DeformableModel<double>;

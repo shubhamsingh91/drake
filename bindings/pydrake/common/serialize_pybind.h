@@ -10,12 +10,10 @@
 #include <variant>
 #include <vector>
 
-#include "bindings/pydrake/pydrake_pybind.h"
-#include "pybind11/eigen.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 #include <fmt/format.h>
 
+#include "drake/bindings/pydrake/common/cpp_template_pybind.h"
+#include "drake/bindings/pydrake/pydrake_pybind.h"
 #include "drake/common/drake_copyable.h"
 #include "drake/common/drake_throw.h"
 #include "drake/common/eigen_types.h"
@@ -221,7 +219,7 @@ class DefAttributesArchive {
   const Docs* const cls_docs_;
 
   // As we visit each field, we'll accumulate a list of [{name=, type=}, ...]
-  // to bind later as the `__fields__` static propery.
+  // to bind later as the `__fields__` static property.
   py::list fields_;
 };
 
@@ -254,6 +252,7 @@ void DefAttributesUsingSerialize(PyClass* ppy_class) {
   internal::DefAttributesArchive<PyClass, void> archive(
       ppy_class, &prototype, nullptr);
   prototype.Serialize(&archive);
+  archive.Finished();
 }
 
 namespace internal {
@@ -290,7 +289,7 @@ void DefReprUsingSerialize(PyClass* ppy_class) {
   ppy_class->def("__repr__",
       [names = std::move(archive.property_names())](py::object self) {
         std::ostringstream result;
-        result << py::str(self.attr("__class__").attr("__name__"));
+        result << py::str(internal::PrettyClassName(self.attr("__class__")));
         result << "(";
         bool first = true;
         for (const std::string& name : names) {

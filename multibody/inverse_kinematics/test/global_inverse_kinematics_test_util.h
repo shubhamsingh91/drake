@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -37,18 +38,29 @@ class KukaTest : public ::testing::Test {
    * @param info_expected Expected return status from nonlinear IK
    * @return The nonlinear IK solution.
    */
-  Eigen::VectorXd CheckNonlinearIK(const Eigen::Vector3d& ee_pos_lb_W,
-                                   const Eigen::Vector3d& ee_pos_ub_W,
-                                   const Eigen::Quaterniond& ee_orient,
-                                   double angle_tol,
-                                   const Eigen::Matrix<double, 7, 1>& q_guess,
-                                   const Eigen::Matrix<double, 7, 1>& q_nom,
-                                   bool ik_success_expected) const;
+  Eigen::VectorXd CheckNonlinearIK(
+      const Eigen::Vector3d& ee_pos_lb_W, const Eigen::Vector3d& ee_pos_ub_W,
+      const Eigen::Quaterniond& ee_orient, double angle_tol,
+      const std::vector<Eigen::Matrix<double, 7, 1>>& q_guess,
+      const Eigen::Matrix<double, 7, 1>& q_nom, bool ik_success_expected) const;
 
  protected:
   std::unique_ptr<MultibodyPlant<double>> plant_;
   GlobalInverseKinematics global_ik_;
   BodyIndex ee_idx_;  // end effector's body index.
+};
+
+// Construct a toy robot. This robot uses non-identity transform between the
+// mobilizer and the parent/child joints. It also intentionally flips the order
+// of constructing the parent/child links, such that the child link has smaller
+// body index than the parent link.
+class ToyTest : public testing::Test {
+ public:
+  ToyTest();
+
+ protected:
+  std::unique_ptr<MultibodyPlant<double>> plant_;
+  std::vector<BodyIndex> body_indices_;
 };
 }  // namespace multibody
 }  // namespace drake
